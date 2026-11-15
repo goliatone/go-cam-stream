@@ -75,8 +75,17 @@ jobs:
           PY
       - name: Native and pack checks
         run: |
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'macos')
+          from runtime_pack import load_lock, selected_pack, unpack_locked
+          lock = load_lock()
+          unpack_locked(selected_pack(lock), Path(os.environ['RUNNER_TEMP']) / 'camera-runtime-check', lock)
+          PY
+          export CAMSTREAM_PREVIEW_RUNTIME="$RUNNER_TEMP/camera-runtime-check/tools"
           python3 -m unittest discover -s macos -p 'test_*.py' -q
-          xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$RUNNER_TEMP/camera-tests"
+          xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/PreviewReader.swift macos/CameraApp/PreviewController.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$RUNNER_TEMP/camera-tests"
           "$RUNNER_TEMP/camera-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
       - name: Prepare temporary signing Keychain
         if: ${{ inputs.distribution }}

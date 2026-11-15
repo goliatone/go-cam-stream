@@ -90,7 +90,7 @@
     "darwin-arm64": {
       "file": "camera-runtime-2-darwin-arm64-macos26.0.tar.gz",
       "sha256": "b5e5fec2046297ab6989ca56b800cfb52f6e2ab17e781b4059544922058711e4",
-      "url": null
+      "url": "https://github.com/goliatone/go-cam-stream/releases/download/camera-runtime-2/camera-runtime-2-darwin-arm64-macos26.0.tar.gz"
     }
   }
 }
