@@ -1,0 +1,349 @@
+package maccamera
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestValidationAndDeviceSelection(t *testing.T) {
+	for _, change := range []func(*Config){
+		func(c *Config) { c.Listen = "192.168.1.2" }, func(c *Config) { c.Host = "rtsp://host" },
+		func(c *Config) { c.Path = "foo#exec" }, func(c *Config) { c.Port = 0 },
+		func(c *Config) { c.Width = 1279 }, func(c *Config) { c.FPS = 100 },
+		func(c *Config) { c.Device = "Capture screen 0" }, func(c *Config) { c.Device = "0:0" },
+	} {
+		c := DefaultConfig()
+		change(&c)
+		if c.Validate() == nil {
+			t.Fatalf("accepted invalid config: %+v", c)
+		}
+	}
+	devices := parseDevices([]byte("[avf] AVFoundation video devices:\n[avf] [0] Phone Camera\n[avf] [1] MacBook Pro Desk View Camera\n[avf] [2] MacBook Pro Camera\n[avf] [3] Capture screen 0\n[avf] AVFoundation audio devices:\n[avf] [0] Microphone\n"))
+	if len(devices) != 3 {
+		t.Fatalf("unexpected devices: %v", devices)
+	}
+	name, err := selectDevice("auto", devices)
+	if err != nil || name != "MacBook Pro Camera" {
+		t.Fatalf("wrong built-in selection: %s %v", name, err)
+	}
+	if _, err = selectDevice("auto", devices[:1]); err == nil {
+		t.Fatal("auto selected a phone")
+	}
+	if _, err = selectDevice("3", devices); err == nil {
+		t.Fatal("selected screen")
+	}
+}
+
+func TestAuthAndCapturePolicy(t *testing.T) {
+	c := DefaultConfig()
+	c.Device = "MacBook Pro Camera"
+	secret, err := newCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := mediaConfig(c, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conf struct {
+		RTSPTransports    []string `json:"rtspTransports"` //nolint:tagliatelle // Upstream MediaMTX schema.
+		AuthInternalUsers []struct {
+			User        string
+			Pass        string
+			IPs         []string
+			Permissions []struct {
+				Action string
+				Path   string
+			}
+		} `json:"authInternalUsers"` //nolint:tagliatelle // Upstream MediaMTX schema.
+		API, WebRTC, HLS, RTMP, SRT, MOQ bool
+	}
+	if err = json.Unmarshal(b, &conf); err != nil {
+		t.Fatal(err)
+	}
+	if conf.API || conf.WebRTC || conf.HLS || conf.RTMP || conf.SRT || conf.MOQ {
+		t.Fatal("extra listeners enabled")
+	}
+	if len(conf.RTSPTransports) != 1 || conf.RTSPTransports[0] != "tcp" {
+		t.Fatal("not TCP-only")
+	}
+	if len(conf.AuthInternalUsers) != 2 {
+		t.Fatal("unexpected auth users")
+	}
+	pub, reader := conf.AuthInternalUsers[0], conf.AuthInternalUsers[1]
+	if pub.User != "any" || len(pub.IPs) != 1 || pub.IPs[0] != "127.0.0.1" || len(pub.Permissions) != 1 || pub.Permissions[0].Action != "publish" {
+		t.Fatal("publisher not constrained")
+	}
+	if reader.Pass != secret.Password || len(reader.Permissions) != 1 || reader.Permissions[0].Action != "read" {
+		t.Fatal("reader auth invalid")
+	}
+	args := strings.Join(ffmpegArgs(c), " ")
+	if !strings.Contains(args, "MacBook Pro Camera:none -an") || strings.Contains(args, secret.Password) || !strings.Contains(args, "-rtsp_transport tcp") {
+		t.Fatal("capture policy invalid")
+	}
+}
+
+func TestPrivateConfigAndDuplicateLock(t *testing.T) {
+	s := testService(t)
+	lock, err := s.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.lock(); err == nil {
+		t.Fatal("duplicate lock accepted")
+	}
+	if err = lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(s.Dir, "camera.json")
+	if err = os.Chmod(p, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = load(s.Dir); err == nil {
+		t.Fatal("public configuration accepted")
+	}
+	if err = os.Chmod(p, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = writePrivate(p, []byte(`{"unknown":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = load(s.Dir); err == nil {
+		t.Fatal("unknown fields accepted")
+	}
+}
+
+func TestConfigureCommandPreservesCredentialsAndExports(t *testing.T) {
+	s := testService(t)
+	s.Tools = fakeTools(t)
+	ctx := context.Background()
+	_, before, err := load(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := DefaultConfig()
+	c.Host = "mac.example.test"
+	c.Listen = "0.0.0.0"
+	h := ConfigureHandler{Service: s}
+	if err = h.Execute(ctx, Configure{Config: c}); err != nil {
+		t.Fatal(err)
+	}
+	got, after, err := load(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after || got.Device != "MacBook Pro Camera" {
+		t.Fatal("credentials changed or built-in camera not selected")
+	}
+	snippet, err := os.ReadFile(filepath.Join(s.Dir, "camstream-camera.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(snippet), after.Password) || !strings.Contains(string(snippet), "env://MAC_CAMERA_PASSWORD") {
+		t.Fatal("export does not use secret references")
+	}
+	for _, name := range []string{"camera.json", "credentials.json", "camstream-camera.env", "camstream-camera.yaml"} {
+		info, statErr := os.Stat(filepath.Join(s.Dir, name))
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("%s permissions: %o", name, info.Mode().Perm())
+		}
+	}
+	lock, err := s.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close() //nolint:errcheck // Test cleanup.
+	if err = h.Execute(ctx, Configure{Config: c}); err == nil {
+		t.Fatal("configured an active instance")
+	}
+}
+
+func testService(t *testing.T) *Service {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := privateDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{Dir: dir}
+	c := DefaultConfig()
+	c.Device = "MacBook Pro Camera"
+	secret, err := newCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = writeJSON(filepath.Join(dir, "camera.json"), c); err != nil {
+		t.Fatal(err)
+	}
+	if err = writeJSON(filepath.Join(dir, "credentials.json"), secret); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir, err := s.runtimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(runtimeDir); err != nil {
+			t.Error(err)
+		}
+	})
+	return s
+}
+
+func TestSupervisorLifecycle(t *testing.T) {
+	for _, action := range []string{"stop", "owner-loss", "producer-failure"} {
+		t.Run(action, func(t *testing.T) {
+			s := testService(t)
+			s.Tools = fakeTools(t)
+			if action == "producer-failure" {
+				t.Setenv("CAMERA_TEST_EXIT", "1")
+			}
+			reader, writer := io.Pipe()
+			defer reader.Close() //nolint:errcheck // Test cleanup.
+			defer writer.Close() //nolint:errcheck // Test cleanup.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- s.Supervise(ctx, reader, io.Discard) }()
+			if action != "producer-failure" {
+				waitStreaming(t, ctx, s)
+				if _, err := s.lock(); err == nil {
+					t.Fatal("running instance did not hold lock")
+				}
+				if action == "stop" {
+					if err := s.Stop(ctx); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			select {
+			case err := <-done:
+				if (err != nil) != (action == "producer-failure") {
+					t.Fatalf("unexpected result: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("supervisor did not terminate")
+			}
+			status, err := s.Status(ctx)
+			if err != nil || status.State != "stopped" {
+				t.Fatalf("not stopped: %+v %v", status, err)
+			}
+			lock, err := s.lock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = lock.Close(); err != nil {
+				t.Fatal(err)
+			}
+			dir, err := s.runtimeDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = os.Stat(filepath.Join(dir, "mediamtx.json")); !os.IsNotExist(err) {
+				t.Fatal("runtime credentials retained")
+			}
+		})
+	}
+}
+
+func waitStreaming(t *testing.T, ctx context.Context, s *Service) {
+	t.Helper()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatal("never streamed")
+		case <-ticker.C:
+			status, err := s.Status(ctx)
+			if err == nil && status.State == "streaming" {
+				return
+			}
+		}
+	}
+}
+
+func fakeTools(t *testing.T) Tools {
+	t.Helper()
+	t.Setenv("CAMERA_RUNTIME_HELPER", "1")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, name := range []string{"ffmpeg", "mediamtx"} {
+		body := "#!/bin/sh\nexec '" + strings.ReplaceAll(exe, "'", "'\\''") + "' -test.run=TestRuntimeHelper -- " + name + " \"$@\"\n"
+		if err = os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return Tools{FFmpeg: filepath.Join(dir, "ffmpeg"), MediaMTX: filepath.Join(dir, "mediamtx")}
+}
+
+func TestRuntimeHelper(t *testing.T) {
+	if os.Getenv("CAMERA_RUNTIME_HELPER") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) < 2 {
+		os.Exit(2)
+	}
+	if args[1] == "mediamtx" {
+		if args[2] == "--version" {
+			fmt.Println(MediaMTXVersion)
+			os.Exit(0)
+		}
+		fmt.Println("[RTSP] started with listeners on 127.0.0.1 (TCP)")
+	} else {
+		if strings.Contains(strings.Join(args, " "), "-list_devices") {
+			fmt.Fprintln(os.Stderr, "[avf] AVFoundation video devices:\n[avf] [0] MacBook Pro Camera\n[avf] AVFoundation audio devices:")
+			os.Exit(1)
+		}
+		if os.Getenv("CAMERA_TEST_EXIT") == "1" {
+			os.Exit(2)
+		}
+		fmt.Println("frame=10\nprogress=continue")
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	<-sig
+	os.Exit(0)
+}
+
+func TestOwnedReadinessRejectsForeignListener(t *testing.T) {
+	lc := net.ListenConfig{}
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close() //nolint:errcheck // Test cleanup.
+	cmd := exec.CommandContext(context.Background(), "/usr/bin/false")
+	server, err := startChild(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = waitServer(context.Background(), server, make(chan struct{}))
+	if err == nil {
+		t.Fatal("foreign listener treated as owned readiness")
+	}
+}

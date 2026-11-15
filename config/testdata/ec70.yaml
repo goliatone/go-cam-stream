@@ -1,0 +1,52 @@
+# Startup-only example. Addresses and references are placeholders; validation
+# never reads credential values or contacts these cameras.
+installation_id: home-camera-viewer
+origin: https://camera-pi.example.ts.net
+listen: 127.0.0.1:8080
+backend:
+  driver: go2rtc
+  executable: /usr/local/bin/go2rtc
+  runtime_dir: /var/lib/camstream/runtime
+  media_address: 100.64.0.10
+  candidate_address: 100.64.0.10
+  network: tcp+udp
+  private_ports: {first: 35000, last: 35099}
+  media_ports: {first: 35100, last: 35131}
+cameras:
+  - id: room1
+    name: Room 1
+    physical_id: ec70-001
+    strategy: ec70
+    config: {host: 192.0.2.11, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+    streams: [default]
+  - id: room2
+    name: Room 2
+    physical_id: ec70-002
+    strategy: ec70
+    config: {host: 192.0.2.12, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+  - id: livingroom
+    name: Living Room
+    physical_id: ec70-003
+    strategy: ec70
+    config: {host: 192.0.2.13, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+  - id: hall
+    name: Hall
+    physical_id: ec70-004
+    strategy: ec70
+    config: {host: 192.0.2.14, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+  - id: front-porch
+    name: Front Porch
+    physical_id: ec70-005
+    strategy: ec70
+    config: {host: 192.0.2.15, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+access:
+  - login: operator@example.test
+    grants:
+      - {camera_id: room1, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: room2, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: livingroom, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: hall, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: front-porch, streams: [default], view: true, diagnose: true, reconnect: true}
+  - login: viewer@example.test
+    grants:
+      - {camera_id: room1, streams: [default], view: true}

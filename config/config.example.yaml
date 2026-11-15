@@ -1,0 +1,61 @@
+# Startup-only example. Addresses and references are placeholders; validation
+# never reads credential values or contacts these cameras.
+installation_id: home-camera-viewer
+origin: https://camera-pi.example.ts.net
+listen: 127.0.0.1:8080
+backend:
+  driver: go2rtc
+  executable: /usr/local/bin/go2rtc
+  runtime_dir: /var/lib/camstream/runtime
+  media_address: 100.64.0.10
+  candidate_address: 100.64.0.10
+  network: tcp+udp
+  private_ports: {first: 35000, last: 35099}
+  media_ports: {first: 35100, last: 35131}
+cameras:
+  - id: room1
+    name: Room 1
+    physical_id: ec70-001
+    strategy: ec70
+    config: {host: 192.0.2.11, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+    streams: [default]
+  - id: room2
+    name: Room 2
+    physical_id: ec70-002
+    strategy: ec70
+    config: {host: 192.0.2.12, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+  # Pi CSI/USB capture runs in a separately managed RTSP bridge.
+  - id: workshop
+    name: Pi Workshop
+    physical_id: pi-camera-001
+    strategy: rtsp
+    config:
+      host: 192.0.2.21
+      port: 8554
+      profiles:
+        - {id: default, name: Camera, path: /cam, audio: false}
+  # Obtain this path/query from the camera's local RTSP documentation.
+  - id: driveway
+    name: Driveway
+    physical_id: ip-camera-001
+    strategy: rtsp
+    config:
+      host: 192.0.2.31
+      username_ref: env://DRIVEWAY_USERNAME
+      password_ref: env://DRIVEWAY_PASSWORD
+      profiles:
+        - {id: main, name: Main, path: /cam/realmonitor, query: 'channel=1&subtype=0'}
+        - {id: sub, name: Substream, path: /cam/realmonitor, query: 'channel=1&subtype=1'}
+    streams: [main, sub]
+access:
+  - login: operator@example.test
+    grants:
+      - {camera_id: room1, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: room2, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: workshop, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: driveway, streams: [main, sub], view: true, diagnose: true, reconnect: true}
+  - login: viewer@example.test
+    grants:
+      - {camera_id: room1, streams: [default], view: true}
+      - {camera_id: workshop, streams: [default], view: true}
+      - {camera_id: driveway, streams: [sub], view: true}

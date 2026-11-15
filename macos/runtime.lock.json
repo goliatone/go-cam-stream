@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "runtime_id": "camera-runtime-1",
+  "target": {
+    "os": "darwin",
+    "arch": "arm64",
+    "minimum_macos": "26.0"
+  },
+  "sources": {
+    "ffmpeg": {
+      "version": "9.0.2",
+      "file": "ffmpeg-9.0.2.tar.xz",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "license": "GPL-2.0-or-later (configured with libx264)"
+    },
+    "x264": {
+      "version": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "file": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "sha256": "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9",
+      "license": "GPL-2.0-or-later"
+    },
+    "pkgconf": {
+      "version": "2.5.1",
+      "file": "pkgconf-2.5.1.tar.xz",
+      "url": "https://distfiles.ariadne.space/pkgconf/pkgconf-2.5.1.tar.xz",
+      "sha256": "cd05c9589b9f86ecf044c10a2269822bc9eb001eced2582cfffd658b0a50c243",
+      "license": "ISC",
+      "build_only": true
+    },
+    "mediamtx": {
+      "version": "1.21.3",
+      "file": "mediamtx_v1.21.3_darwin_arm64.tar.gz",
+      "url": "https://github.com/bluenviron/mediamtx/releases/download/v1.21.3/mediamtx_v1.21.3_darwin_arm64.tar.gz",
+      "sha256": "bc1a0762fd18ffb413bcd81dcb9a072ac159fbd1f27e79ac6f14598aaac5ed3f",
+      "license": "MIT",
+      "prebuilt": true
+    }
+  },
+  "configure": {
+    "pkgconf": [
+      "--disable-shared",
+      "--enable-static",
+      "--disable-dependency-tracking"
+    ],
+    "x264": [
+      "--enable-static",
+      "--enable-pic",
+      "--disable-cli",
+      "--disable-opencl",
+      "--disable-avs",
+      "--disable-lavf",
+      "--disable-ffms",
+      "--disable-gpac",
+      "--disable-lsmash",
+      "--disable-swscale",
+      "--disable-bashcompletion",
+      "--bit-depth=8",
+      "--chroma-format=420"
+    ],
+    "ffmpeg": [
+      "--disable-autodetect",
+      "--disable-everything",
+      "--disable-doc",
+      "--disable-debug",
+      "--disable-shared",
+      "--enable-static",
+      "--enable-small",
+      "--enable-gpl",
+      "--enable-libx264",
+      "--enable-ffmpeg",
+      "--enable-avfoundation",
+      "--disable-ffplay",
+      "--disable-ffprobe",
+      "--disable-iconv",
+      "--disable-sdl2",
+      "--disable-securetransport",
+      "--enable-indev=avfoundation,lavfi",
+      "--enable-decoder=rawvideo,h264,wrapped_avframe",
+      "--enable-parser=h264",
+      "--enable-encoder=libx264,wrapped_avframe",
+      "--enable-muxer=rtsp,null",
+      "--enable-demuxer=rtsp,concat",
+      "--enable-protocol=file,pipe,tcp,udp,rtp",
+      "--enable-filter=buffer,buffersink,format,scale,null,testsrc2"
+    ]
+  },
+  "packs": {
+    "darwin-arm64": {
+      "file": "camera-runtime-1-darwin-arm64-macos26.0.tar.gz",
+      "sha256": "5eafd7129ab833754e8075c357edad7b29f431552808c82fc96fd0f8e7a4b79c",
+      "url": null
+    }
+  }
+}

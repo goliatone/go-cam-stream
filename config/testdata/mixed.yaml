@@ -1,0 +1,45 @@
+# Offline registration fixture; reserved endpoints and unresolved references.
+installation_id: mixed-provider-test
+origin: https://camera.example.test
+backend:
+  executable: /nonexistent/go2rtc
+  media_address: 100.64.0.10
+  candidate_address: 100.64.0.10
+cameras:
+  - id: kasa
+    name: Kasa
+    physical_id: ec70-001
+    strategy: ec70
+    config:
+      host: 192.0.2.11
+      username_ref: env://T04_KASA_USERNAME
+      password_ref: env://T04_KASA_PASSWORD
+  - id: pi
+    name: Pi
+    physical_id: pi-001
+    strategy: rtsp
+    config:
+      host: PI.example.test.
+      profiles:
+        - {id: main, path: /private-camera, query: 'channel=1&subtype=0'}
+        - {id: sub, name: Substream, path: /private-camera, query: 'channel=1&subtype=1', audio: true}
+  - id: ip
+    name: IP Camera
+    physical_id: ip-001
+    strategy: rtsp
+    config:
+      host: 192.0.2.31
+      port: 8554
+      username_ref: env://T04_RTSP_USERNAME
+      password_ref: env://T04_RTSP_PASSWORD
+      profiles:
+        - {id: default, path: /private-ip-camera}
+access:
+  - login: owner
+    grants:
+      - {camera_id: kasa, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: pi, streams: [main, sub], view: true, diagnose: true, reconnect: true}
+      - {camera_id: ip, streams: [default], view: true, diagnose: true, reconnect: true}
+  - login: viewer
+    grants:
+      - {camera_id: pi, streams: [main], view: true}

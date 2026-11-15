@@ -1,0 +1,8 @@
+api:
+  listen: "127.0.0.1:34002"
+rtsp:
+  listen: "127.0.0.1:34003"
+webrtc:
+  listen: ""
+streams:
+  t05-other-private: "exec:ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /fixture/clip.mkv -c copy -rtsp_transport tcp -f rtsp {output}"

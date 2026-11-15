@@ -1,0 +1,11 @@
+api:
+  listen: "127.0.0.1:34000"
+rtsp:
+  listen: "127.0.0.1:34001"
+  username: t05-user
+  password: t05-fixture-password
+webrtc:
+  listen: ""
+streams:
+  t05-main-private: "exec:ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /fixture/clip.mkv -c copy -rtsp_transport tcp -f rtsp {output}"
+  t05-sub-private: "exec:ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /fixture/clip.mkv -c copy -rtsp_transport tcp -f rtsp {output}"
