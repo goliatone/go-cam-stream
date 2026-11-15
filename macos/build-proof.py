@@ -3,6 +3,8 @@
 import argparse
 import os
 import platform
+import json
+import re
 from pathlib import Path
 import plistlib
 import shutil
@@ -16,7 +18,25 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
 
 
-def assemble(runtime, app, lock, production=False, version="0.1.0"):
+def validate_version(version):
+    if not re.fullmatch(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,1})\.(0|[1-9][0-9]{0,1})", version):
+        raise ValueError("version must be MAJOR.MINOR.PATCH (up to 4/2/2 digits, no leading zeros)")
+    return version
+
+
+def sign(path, identity, entitlements=None):
+    args = ["codesign", "--force", "--sign", identity, "--options", "runtime"]
+    if identity != "-":
+        args.append("--timestamp")
+    if entitlements:
+        args.extend(["--entitlements", str(entitlements)])
+    run(*args, str(path))
+
+
+def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"):
+    validate_version(version)
+    if identity != "-" and not identity.startswith("Developer ID Application: "):
+        raise ValueError("use a Developer ID Application signing identity")
     executable = "CamstreamCamera" if production else "CameraProof"
     bundle_name = "Camstream Camera" if production else "Camstream Camera Proof"
     root = ROOT
@@ -29,6 +49,12 @@ def assemble(runtime, app, lock, production=False, version="0.1.0"):
         shutil.copytree(runtime / name, contents / "Resources" / name)
     for name in ("BUILDINFO.json", "MANIFEST.json"):
         shutil.copy2(runtime / name, contents / "Resources" / ("runtime-" + name))
+    shutil.copy2(root / "LICENSE", contents / "Resources/licenses/camstream.LICENSE")
+    info = {"schema": 1, "version": version, "target": lock["target"],
+            "runtime_id": lock["runtime_id"],
+            "runtime_pack_sha256": lock["packs"]["darwin-arm64"]["sha256"],
+            "signing": "ad-hoc" if identity == "-" else "Developer ID"}
+    (contents / "Resources/BUILDINFO.json").write_text(json.dumps(info, indent=2) + "\n")
     run("go", "build", "-trimpath", "-buildvcs=false", "-o", str(contents / "Helpers" / "camstream-camera"),
         "./cmd/camstream-camera", cwd=root,
         env={**os.environ, "CGO_ENABLED": "0", "GOOS": "darwin", "GOARCH": "arm64", "GOWORK": "off", "GOFLAGS": ""})
@@ -40,8 +66,8 @@ def assemble(runtime, app, lock, production=False, version="0.1.0"):
     with (contents / "Info.plist").open("wb") as file:
         plistlib.dump({"CFBundleExecutable": executable,
             "CFBundleIdentifier": "com.goliatone.camstream.camera" + ("" if production else ".proof"),
-            "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": production,
-            "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "CFBundleShortVersionString": version,
+            "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": False,
+            "CFBundlePackageType": "APPL", "CFBundleVersion": version, "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": lock["target"]["minimum_macos"], "NSHighResolutionCapable": True,
             "NSCameraUsageDescription": "Share the built-in webcam as a private RTSP camera while this app is running."
         }, file)
@@ -49,14 +75,15 @@ def assemble(runtime, app, lock, production=False, version="0.1.0"):
     inspect_macho(contents / "MacOS" / executable, lock["target"])
     for binary in sorted((contents / "Helpers").iterdir()):
         inspect_macho(binary, lock["target"])
-        run("codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", entitlements, str(binary))
-    run("codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", entitlements, str(app))
+        sign(binary, identity, entitlements)
+    sign(app, identity, entitlements)
     run("codesign", "--verify", "--deep", "--strict", str(app))
 
 
 def main(production=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", default="0.1.0", help="application version (local development build)")
+    parser.add_argument("--sign-identity", default="-", help="Developer ID Application identity; defaults to local ad-hoc")
     parser.add_argument("--runtime-pack", type=Path, help="preseeded pack (must match the lock)")
     parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
@@ -76,9 +103,9 @@ def main(production=False):
             runtime = Path(temp) / "runtime"
             unpack_locked(archive, runtime, lock)
             staged = Path(temp) / app.name
-            assemble(runtime, staged, lock, production, args.version)
+            assemble(runtime, staged, lock, production, args.version, args.sign_identity)
             staged.rename(app)
-        print(f"Local ad-hoc hardened app (macOS 26+, arm64): {app}")
+        print(f"Hardened app ({'ad-hoc' if args.sign_identity == '-' else 'Developer ID; not yet notarized'}): {app}")
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"App build failed: {error}\n")
 

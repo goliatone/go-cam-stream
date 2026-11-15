@@ -64,7 +64,7 @@ struct CaptureState {
 
 func cameraMessage(_ code: String) -> String {
     switch code {
-    case "busy": return "This camera is already in use. Stop the other Camstream session, then try again."
+    case "busy": return "This camera is already in use. Stop the other Camstream session, then quit and reopen Camstream Camera."
     case "not_configured": return "Save your camera settings before starting."
     case "configuration_failed": return "Settings could not be saved. Check camera permission, refresh the camera list, and try again."
     case "device_unavailable": return "No available webcam was found. Check camera permission and reconnect the camera, then refresh."

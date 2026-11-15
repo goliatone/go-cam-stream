@@ -7,6 +7,7 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var status: NSStatusItem!
     private var toggle: NSMenuItem!
     private var stateItem: NSMenuItem!
+    private var appToggle: NSMenuItem!
     private var quitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,7 +21,12 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let main = NSMenu(), application = NSMenuItem()
         main.addItem(application)
         let appMenu = NSMenu()
+        appMenu.autoenablesItems = false
+        appMenu.delegate = self
         application.submenu = appMenu
+        appToggle = NSMenuItem(title: "Start Camera", action: #selector(toggleCapture), keyEquivalent: "")
+        appToggle.target = self; appMenu.addItem(appToggle)
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(settings), keyEquivalent: ",").target = self
         appMenu.addItem(withTitle: "Connection Details", action: #selector(connection), keyEquivalent: "l").target = self
         appMenu.addItem(.separator())
@@ -37,7 +43,10 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: CameraView(model: model))
         window.center()
-        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        status.isVisible = true
+        status.button?.title = ""
+        status.button?.imagePosition = .imageOnly
         let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
         stateItem = NSMenuItem(title: "Camera stopped", action: nil, keyEquivalent: ""); stateItem.isEnabled = false
         menu.addItem(stateItem); menu.addItem(.separator())
@@ -61,8 +70,13 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stateItem.title = model.title
         toggle.title = model.capture.active ? "Stop Camera" : "Start Camera"
         toggle.isEnabled = model.capture.active ? model.canStop : model.canStart
-        let symbol = model.capture.phase == .streaming ? "video.fill" : (model.capture.phase == .error ? "exclamationmark.triangle" : "video")
-        status.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Camstream Camera: \(model.title)")
+        appToggle.title = toggle.title
+        appToggle.isEnabled = toggle.isEnabled
+        let symbol = model.capture.phase == .streaming ? "video.fill" : "video"
+        let icon = NSImage(systemSymbolName: symbol, accessibilityDescription: "Camstream Camera")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 17, weight: .regular))
+        icon?.isTemplate = true
+        status.button?.image = icon
         status.button?.toolTip = "Camstream Camera: \(model.title)"
         status.button?.setAccessibilityLabel("Camstream Camera: \(model.title)")
     }
@@ -84,5 +98,5 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 let app = NSApplication.shared
 let delegate = CameraApp()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.regular)
 app.run()

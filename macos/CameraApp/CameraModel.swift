@@ -31,7 +31,7 @@ final class CameraModel: ObservableObject {
         return value
     }
     var dirty: Bool { saved != config }
-    var canStart: Bool { ready && !working && !capture.active && permission == "authorized" && saved != nil && !dirty }
+    var canStart: Bool { ready && !working && !capture.active && permission == "authorized" && saved != nil && !dirty && validation == nil }
     var canStop: Bool { ready && (capture.phase == .starting || capture.phase == .streaming) }
     var canSave: Bool { ready && !working && !capture.active && permission == "authorized" && validation == nil && dirty }
     var canExport: Bool { ready && !working && !capture.active && saved != nil && !dirty }
@@ -62,9 +62,10 @@ final class CameraModel: ObservableObject {
         refreshPermission()
         client.onReady = { [weak self] in
             guard let self = self else { return }
-            self.ready = true
+            self.ready = true; self.working = true
             self.client.request("config") { [weak self] reply in
                 guard let self = self else { return }
+                self.working = false
                 if let value: CameraConfig = self.decode(reply["result"]) {
                     self.saved = value; self.draft = value; self.portText = String(value.port)
                 } else if self.errorCode(reply) != "not_configured" { self.showError(reply) }

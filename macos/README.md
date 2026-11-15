@@ -1,7 +1,60 @@
-# Native camera proof and pinned runtime
+# Native camera app and pinned runtime
 
-This is the small permission/lifetime harness used before building the T06 setup
-and menu-bar app. It is a local development artifact, not an installable release.
+## Menu-bar app
+
+Build the local Apple Silicon/macOS 26+ development app from the prepared pack:
+
+```sh
+python3 macos/build-app.py
+```
+
+Open `dist/Camstream Camera.app` in Finder. Allow camera access, select a webcam,
+choose a camera name (stream ID), and save settings. Saving never starts capture.
+Choose **Start Camera** explicitly. The camera icon in the menu bar offers Start/Stop,
+Connection Details, Settings and Quit. Closing the window leaves the menu-bar
+app running; the Dock entry and app menu also provide access to the controls.
+The icon is outlined while stopped and filled while live; its menu and accessibility label report the full capture state.
+Quit waits for helper-owned capture cleanup. Reopening starts stopped.
+
+**Only this Mac** binds loopback for local testing. For a server on another
+computer, choose **Private network** and enter this Mac’s reachable private IP or
+hostname. The listener uses all IPv4 interfaces, with authenticated readers; use
+a trusted LAN/VPN and keep the port off the public internet. Settings are locked
+while capture is starting, live or stopping.
+
+Connection Details shows a credential-free endpoint. While stopped, **Export
+Connection Files** creates mode-0600 YAML and environment files; **Show Files in
+Finder** reveals them without displaying the password in the app or clipboard.
+Merge the YAML camera/grant into the server config and supply the environment
+values separately. This does not automatically pair with or restart a server.
+
+The app identity is `com.goliatone.camstream.camera`. Settings and credentials
+live in `~/Library/Application Support/camstream-camera-app`, separate from the
+CLI and proof. Replacing the app preserves this directory and credentials;
+there is no automatic import of prototype settings. Permission is independent of
+Camstream Camera Proof. If denied, enable **Camstream Camera** in Privacy &
+Security → Camera, return to the app, refresh devices and retry explicitly.
+Errors remain visible until an explicit successful action; polling cannot hide
+capture failures. Unexpected helper exit requires quitting/reopening the app.
+
+`build-app.py` shares the proof’s verified offline assembler and accepts the same
+`--runtime-pack`, `--cache`, `--download`, `--output` and `--version` flags. The
+bundle is ad-hoc hardened and includes the pinned runtime, sources and notices.
+Developer ID signing, notarization, DMG installation and oldest-OS release
+validation remain T05; this build is not a published release.
+
+Camera-free app state and transport checks:
+
+```sh
+app_check_dir=$(mktemp -d)
+xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$app_check_dir/camera-app-tests"
+"$app_check_dir/camera-app-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
+rm -rf "$app_check_dir"
+```
+
+## Permission and lifecycle proof
+
+This is the small permission/lifetime harness retained for isolated permission and helper-lifetime checks. It is a local development artifact, not an installable release.
 It consumes the prepared runtime pack pinned in `runtime.lock.json`.
 
 On the tested Apple Silicon/macOS 26 build host:

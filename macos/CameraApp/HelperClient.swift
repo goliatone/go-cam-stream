@@ -56,8 +56,8 @@ final class HelperClient {
             process = task
             input = stdinPipe.fileHandleForWriting
             output = stdoutPipe.fileHandleForReading
-            try stdinPipe.fileHandleForReading.close()
-            try stdoutPipe.fileHandleForWriting.close()
+            try? stdinPipe.fileHandleForReading.close()
+            try? stdoutPipe.fileHandleForWriting.close()
             deadline = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.fail() }
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil

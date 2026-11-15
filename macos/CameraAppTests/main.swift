@@ -37,6 +37,40 @@ check(config == decoded && decoded.endpoint == "rtsp://localhost:8554/macbook", 
 check(!String(data: bytes, encoding: .utf8)!.contains("password"), "native config contains no credentials")
 print("PASS: \(checks) native state/protocol checks (no camera access)")
 
+let model = CameraModel()
+check(!model.canStart && !model.canSave && !model.canExport, "unready helper disables mutations")
+model.ready = true
+model.permission = "denied"
+check(!model.canStart && !model.canSave, "permission denial blocks setup/capture")
+model.permission = "restricted"
+check(!model.canStart && !model.canSave, "restricted permission blocks setup/capture")
+model.permission = "authorized"
+check(model.canSave && !model.canStart, "first setup can save but cannot start implicitly")
+model.saved = model.config
+check(model.canStart && model.canExport && !model.canSave, "saved settings enable explicit capture and export")
+model.portText = "80"
+check(model.validation != nil && !model.canSave && !model.canStart, "invalid and dirty port disables capture/save")
+model.portText = "8554"
+model.draft.path = "bad name"
+check(model.validation != nil && !model.canSave, "stream name validation")
+model.draft.path = "macbook"
+model.draft.listen = "0.0.0.0"
+check(model.validation != nil && !model.canSave, "network mode requires reachable host")
+model.draft.host = "camera.local"
+check(model.canSave && !model.canStart, "network changes require explicit save before capture")
+model.saved = model.config
+_ = model.capture.start()
+check(model.canStop && !model.canSave && !model.canExport, "startup locks settings and secrets export but allows Stop")
+model.capture.status("streaming", frames: 30)
+check(model.canStop && !model.canStart && !model.canExport, "live controls remain consistent")
+model.capture.stop()
+check(!model.canStop && !model.canStart && !model.canExport, "cleanup blocks repeat actions")
+model.capture.stopped()
+model.working = true
+check(!model.canSave && !model.canStart && !model.canExport, "pending device/config work cannot trigger capture")
+model.working = false
+check(model.canStart, "idle controls recover")
+
 let fixture = URL(fileURLWithPath: CommandLine.arguments[1])
 for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof"] {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

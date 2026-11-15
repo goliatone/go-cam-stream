@@ -37,7 +37,7 @@ struct CameraView: View {
             }
             Spacer(minLength: 0)
             Divider()
-            Text("Video only · No microphone or recording. Closing this window keeps the camera controls in the menu bar. Quit stops the camera.")
+            Text("Video only · No microphone or recording. Closing this window keeps the app running. Use the camera icon in the menu bar or reopen from the Dock. Quit stops the camera.")
                 .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(24).frame(width: 600, height: 720)
     }

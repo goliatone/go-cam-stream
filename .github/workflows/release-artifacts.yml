@@ -1,0 +1,174 @@
+name: Versioned release artifacts
+
+# Manual only. No tag creation, pushes, or public release publication.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Shared camera/server version (MAJOR.MINOR.PATCH)
+        required: true
+        type: string
+      runtime_pack_url:
+        description: HTTPS URL of the exact runtime pack in macos/runtime.lock.json
+        required: true
+        type: string
+      distribution:
+        description: Use provisioned Developer ID/notary runner (requires existing vVERSION tag)
+        default: false
+        type: boolean
+      create_draft:
+        description: Create a GitHub draft with BOTH signed camera and server assets (never publish)
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+
+jobs:
+  camera:
+    runs-on: ${{ inputs.distribution && fromJSON('["self-hosted","macOS","ARM64","camstream-release"]') || fromJSON('["macos-26"]') }}
+    environment: camera-release
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Validate version and release source
+        env:
+          DISTRIBUTION: ${{ inputs.distribution }}
+          CREATE_DRAFT: ${{ inputs.create_draft }}
+        run: |
+          PYTHONPATH=macos python3 - "$RELEASE_VERSION" <<'PY'
+          import runpy, sys
+          runpy.run_path('macos/package-release.py')['builder']['validate_version'](sys.argv[1])
+          PY
+          if [ "$CREATE_DRAFT" = true ] && [ "$DISTRIBUTION" != true ]; then
+            echo 'Draft releases require notarized distribution artifacts' >&2; exit 1
+          fi
+          if [ "$DISTRIBUTION" = true ]; then
+            test "$(git rev-parse "refs/tags/v$RELEASE_VERSION^{commit}")" = "$(git rev-parse HEAD)"
+          fi
+      - name: Fetch exact locked runtime
+        env:
+          RUNTIME_PACK_URL: ${{ inputs.runtime_pack_url }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'macos')
+          from runtime_pack import load_lock, fetch
+          record = dict(load_lock()['packs']['darwin-arm64'], url=os.environ['RUNTIME_PACK_URL'])
+          fetch(record, '.cache/camera-runtime/packs', offline=False)
+          PY
+      - name: Native and pack checks
+        run: |
+          python3 -m unittest discover -s macos -p 'test_*.py' -q
+          xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$RUNNER_TEMP/camera-tests"
+          "$RUNNER_TEMP/camera-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
+      - name: Assemble DMG
+        env:
+          DISTRIBUTION: ${{ inputs.distribution }}
+          CAMERA_SIGN_IDENTITY: ${{ vars.CAMERA_SIGN_IDENTITY }}
+          CAMERA_NOTARY_PROFILE: ${{ vars.CAMERA_NOTARY_PROFILE }}
+        run: |
+          if [ "$DISTRIBUTION" = true ]; then
+            # Provision these on the protected release runner; never commit credentials.
+            test -n "$CAMERA_SIGN_IDENTITY" && test -n "$CAMERA_NOTARY_PROFILE"
+            python3 macos/package-release.py "$RELEASE_VERSION" \
+              --sign-identity "$CAMERA_SIGN_IDENTITY" --notary-profile "$CAMERA_NOTARY_PROFILE" \
+              --output "$RUNNER_TEMP/camera-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          else
+            python3 macos/package-release.py "$RELEASE_VERSION" --development \
+              --output "$RUNNER_TEMP/camera-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          fi
+      - name: Retain camera assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: camera-${{ inputs.version }}
+          path: |
+            ${{ runner.temp }}/camera-release-${{ github.run_id }}-${{ github.run_attempt }}/**/*.dmg
+            ${{ runner.temp }}/camera-release-${{ github.run_id }}-${{ github.run_attempt }}/**/release.json
+            ${{ runner.temp }}/camera-release-${{ github.run_id }}-${{ github.run_attempt }}/**/SHA256SUMS
+            ${{ runner.temp }}/camera-release-${{ github.run_id }}-${{ github.run_attempt }}/**/notary-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  server:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.2
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate shared version
+        run: |
+          PYTHONPATH=macos python3 - "$RELEASE_VERSION" <<'PY'
+          import runpy, sys
+          runpy.run_path('macos/build-proof.py')['validate_version'](sys.argv[1])
+          PY
+      - name: Build embedded web and pinned Linux package
+        run: |
+          ./scripts/build-web.sh
+          curl --fail --location --retry 3 --max-time 180 \
+            https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_linux_arm64 -o "$RUNNER_TEMP/go2rtc"
+          # package.sh verifies the pinned digest before copying/building.
+          ./scripts/package.sh "$RELEASE_VERSION" "$RUNNER_TEMP/go2rtc"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-${{ inputs.version }}
+          path: |
+            dist/camstream-*-linux-arm64.tar.gz
+            dist/camstream-*-linux-arm64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    if: ${{ inputs.create_draft && inputs.distribution }}
+    needs: [camera, server]
+    runs-on: ubuntu-24.04-arm
+    environment: release-draft
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: assets
+          pattern: '*-${{ inputs.version }}'
+      - name: Verify release assets and create a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          camera="assets/camera-$RELEASE_VERSION/camstream-camera-$RELEASE_VERSION-darwin-arm64"
+          server="assets/server-$RELEASE_VERSION"
+          (cd "$camera" && sha256sum -c SHA256SUMS)
+          (cd "$server" && sha256sum -c "camstream-$RELEASE_VERSION-linux-arm64.tar.gz.sha256")
+          python3 - "$camera/release.json" "$RELEASE_VERSION" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          assert r['version'] == sys.argv[2] and r['distribution'] == 'developer-id-notarized'
+          PY
+          # A tag must already exist. Never create a tag or replace release assets.
+          gh release create "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "Camstream $RELEASE_VERSION" --notes 'Draft: validate downloaded camera on the minimum supported macOS before publication.' \
+            "$camera/"*.dmg "$camera/release.json#camera-release.json" "$camera/SHA256SUMS#camera-SHA256SUMS" \
+            "$server/"*.tar.gz "$server/"*.sha256
