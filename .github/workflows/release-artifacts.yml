@@ -1,7 +1,9 @@
 name: Versioned release artifacts
 
-# Manual only. No tag creation, pushes, or public release publication.
+# Version tags build signed drafts automatically; publication waits for approval.
 on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
     inputs:
       version:
@@ -25,21 +27,53 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-artifacts-${{ inputs.version }}
+  group: release-artifacts-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
   cancel-in-progress: false
 
-env:
-  RELEASE_VERSION: ${{ inputs.version }}
-
 jobs:
+  prepare:
+    if: ${{ github.event_name != 'push' || !github.event.deleted }}
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      distribution: ${{ steps.plan.outputs.distribution }}
+      draft: ${{ steps.plan.outputs.draft }}
+      publish: ${{ steps.plan.outputs.publish }}
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: plan
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DISTRIBUTION: ${{ inputs.distribution }}
+          INPUT_DRAFT: ${{ inputs.create_draft }}
+        run: python3 macos/release_workflow.py plan
+      - id: source
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          DISTRIBUTION: ${{ steps.plan.outputs.distribution }}
+        run: |
+          set -euo pipefail
+          if [ "$DISTRIBUTION" = true ]; then
+            test "$(git rev-parse "refs/tags/v$VERSION^{commit}")" = "$(git rev-parse HEAD)"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   camera:
+    needs: prepare
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     runs-on: macos-26
-    environment: ${{ inputs.distribution && 'camera-release' || 'camera-build' }}
+    environment: ${{ needs.prepare.outputs.distribution == 'true' && 'camera-release' || 'camera-build' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -47,8 +81,8 @@ jobs:
           cache: false
       - name: Validate version and release source
         env:
-          DISTRIBUTION: ${{ inputs.distribution }}
-          CREATE_DRAFT: ${{ inputs.create_draft }}
+          DISTRIBUTION: ${{ needs.prepare.outputs.distribution == 'true' }}
+          CREATE_DRAFT: ${{ needs.prepare.outputs.draft }}
         run: |
           PYTHONPATH=macos python3 - "$RELEASE_VERSION" <<'PY'
           import runpy, sys
@@ -88,7 +122,7 @@ jobs:
           xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/PreviewReader.swift macos/CameraApp/PreviewController.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$RUNNER_TEMP/camera-tests"
           "$RUNNER_TEMP/camera-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
       - name: Prepare temporary signing Keychain
-        if: ${{ inputs.distribution }}
+        if: ${{ needs.prepare.outputs.distribution == 'true' }}
         env:
           CAMERA_CERTIFICATE_P12_BASE64: ${{ secrets.CAMERA_CERTIFICATE_P12_BASE64 }}
           CAMERA_CERTIFICATE_PASSWORD: ${{ secrets.CAMERA_CERTIFICATE_PASSWORD }}
@@ -129,7 +163,7 @@ jobs:
           rm -f "$RUNNER_TEMP/camera-signing.p12"
       - name: Assemble DMG
         env:
-          DISTRIBUTION: ${{ inputs.distribution }}
+          DISTRIBUTION: ${{ needs.prepare.outputs.distribution == 'true' }}
           CAMERA_SIGN_IDENTITY: ${{ vars.CAMERA_SIGN_IDENTITY }}
           CAMERA_NOTARY_PROFILE: ${{ vars.CAMERA_NOTARY_PROFILE }}
         run: |
@@ -145,14 +179,14 @@ jobs:
               --output "$RUNNER_TEMP/camera-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           fi
       - name: Remove signing material
-        if: ${{ always() && inputs.distribution }}
+        if: ${{ always() && needs.prepare.outputs.distribution == 'true' }}
         run: |
           security delete-keychain "$RUNNER_TEMP/camera-signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/camera-signing.p12"
       - name: Retain camera assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: camera-${{ inputs.version }}
+          name: camera-${{ needs.prepare.outputs.version }}
           path: |
             ${{ runner.temp }}/camera-release-${{ github.run_id }}-${{ github.run_attempt }}/**/*.dmg
             ${{ runner.temp }}/camera-release-${{ github.run_id }}-${{ github.run_attempt }}/**/release.json
@@ -162,12 +196,16 @@ jobs:
           retention-days: 14
 
   server:
+    needs: prepare
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
@@ -192,7 +230,7 @@ jobs:
           ./scripts/package.sh "$RELEASE_VERSION" "$RUNNER_TEMP/go2rtc"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: server-${{ inputs.version }}
+          name: server-${{ needs.prepare.outputs.version }}
           path: |
             dist/camstream-*-linux-arm64.tar.gz
             dist/camstream-*-linux-arm64.tar.gz.sha256
@@ -200,18 +238,30 @@ jobs:
           retention-days: 14
 
   draft:
-    if: ${{ inputs.create_draft && inputs.distribution }}
-    needs: [camera, server]
+    if: ${{ needs.prepare.outputs.draft == 'true' }}
+    needs: [prepare, camera, server]
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+      fingerprint: ${{ steps.draft.outputs.fingerprint }}
+      url: ${{ steps.draft.outputs.url }}
     runs-on: ubuntu-24.04-arm
     environment: release-draft
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: assets
-          pattern: '*-${{ inputs.version }}'
-      - name: Verify release assets and create a draft
+          pattern: '*-${{ needs.prepare.outputs.version }}'
+      - id: draft
+        name: Verify release assets and create a draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -221,15 +271,50 @@ jobs:
           (cd "$camera" && sha256sum -c SHA256SUMS)
           (cd "$server" && sha256sum -c "camstream-$RELEASE_VERSION-linux-arm64.tar.gz.sha256")
           python3 - "$camera/release.json" "$RELEASE_VERSION" <<'PY'
-          import json, sys
+          import json, os, sys
           r = json.load(open(sys.argv[1]))
           assert r['version'] == sys.argv[2] and r['distribution'] == 'developer-id-notarized'
+          assert r['source'] == {'commit': os.environ['RELEASE_SHA'], 'dirty': False}
           PY
           mv "$camera/release.json" "$camera/camera-release.json"
           sed 's/  release.json$/  camera-release.json/' "$camera/SHA256SUMS" > "$camera/camera-SHA256SUMS"
           (cd "$camera" && sha256sum -c camera-SHA256SUMS)
           # A tag must already exist. Never create a tag or replace release assets.
-          gh release create "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+          gh release create "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --target "$RELEASE_SHA" \
             --title "Camstream $RELEASE_VERSION" --notes 'Draft: validate downloaded camera on the minimum supported macOS before publication.' \
             "$camera/"*.dmg "$camera/camera-release.json" "$camera/camera-SHA256SUMS" \
             "$server/"*.tar.gz "$server/"*.sha256
+          # The REST tag endpoint excludes unpublished drafts; resolve its ID via gh.
+          draft_id=$(gh release view "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" > "$RUNNER_TEMP/draft.json"
+          python3 macos/release_workflow.py snapshot "$RUNNER_TEMP/draft.json"
+          echo "Draft v$RELEASE_VERSION at $RELEASE_SHA is ready for download and validation before publication approval." >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    if: ${{ needs.prepare.outputs.publish == 'true' }}
+    needs: [prepare, draft]
+    runs-on: ubuntu-24.04-arm
+    environment:
+      name: release-publish
+      url: ${{ needs.draft.outputs.url }}
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+      EXPECTED_RELEASE_ID: ${{ needs.draft.outputs.release_id }}
+      EXPECTED_FINGERPRINT: ${{ needs.draft.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Publish the approved unchanged draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/v$RELEASE_VERSION" --jq .sha)" = "$RELEASE_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID" > "$RUNNER_TEMP/approved-draft.json"
+          python3 macos/release_workflow.py verify "$RUNNER_TEMP/approved-draft.json"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID" -F draft=false

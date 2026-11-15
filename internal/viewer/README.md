@@ -8,6 +8,11 @@ Constructors perform no backend or secret I/O. Provider-owned config is immutabl
 A trusted ingress adapter calls `WithPrincipal` only after authenticating the exact
 Serve login. This function does not validate headers or establish a trust boundary.
 List/detail return only viewable profiles; status/create require view permission.
+Each listed camera's `availability` summarizes its viewable profiles from the
+core's `StreamSnapshot`: `playing` when any plays, then `failed` (including a
+latched fault), `offline`, `reconnecting` or `connecting` when any is; `idle` when
+all are idle; otherwise `unknown`. Listing performs no backend I/O and never waits
+for a busy source, and it reveals nothing the status route would not.
 Session close requires its creating principal with view permission, or an operator
 with reconnect permission for that session's scope. Unknown sessions are denied;
 known owned closes remain idempotent. Principal bindings, like core session records,

@@ -30,7 +30,7 @@ export function CameraLinks({
   /** This page's player state, shown on the selected row. */
   view?: ViewState;
   onSelect: (selection: StreamRef) => void;
-  /** Name each row in a tooltip, for the collapsed rail that hides names. */
+  /** Name each row and its status in a tooltip, for the collapsed rail that hides both. */
   titles?: boolean;
 }) {
   return (
@@ -38,10 +38,15 @@ export function CameraLinks({
       {cameras.map((camera) => {
         const first = camera.streams[0];
         const current = selected?.camera_id === camera.id;
-        // Real status or none: the catalog reports availability only as a
-        // snapshot, often unknown, and no row should say "Status unknown".
-        const badge =
-          current && view ? view : describeView({ state: camera.availability });
+        const own = current && view;
+        // The selected row shows this page's player state, never "Status
+        // unknown". Other rows show the server's availability only when it says
+        // something: live, starting or failed. Idle is not shown, because it
+        // does not establish that the camera can play. A failed camera is dimmed.
+        const badge = own || describeView({ state: camera.availability });
+        const shown = own
+          ? badge.label !== stateLabels.unknown
+          : badge.tone !== "idle";
         const content = (
           <>
             <span class="camera-icon">
@@ -52,9 +57,7 @@ export function CameraLinks({
               {!first ? (
                 <span class="small">No supported streams</span>
               ) : (
-                badge.label !== stateLabels.unknown && (
-                  <StatusBadge view={badge} />
-                )
+                shown && <StatusBadge view={badge} />
               )}
             </span>
           </>
@@ -63,10 +66,20 @@ export function CameraLinks({
           <li key={camera.id}>
             {first ? (
               <a
-                class="camera-choice"
+                class={
+                  !own && badge.tone === "danger"
+                    ? "camera-choice dim"
+                    : "camera-choice"
+                }
                 href={linkFor(camera)}
                 {...(current ? { "aria-current": "page" as const } : {})}
-                {...(titles ? { title: camera.name } : {})}
+                {...(titles
+                  ? {
+                      title: shown
+                        ? `${camera.name} · ${badge.label}`
+                        : camera.name,
+                    }
+                  : {})}
                 onClick={(event) => {
                   if (opensElsewhere(event)) return;
                   event.preventDefault();

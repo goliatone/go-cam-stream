@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/goliatone/go-cam-stream/internal/viewer"
 	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
 	"github.com/goliatone/go-cam-stream/pkg/camstream/strategies/ec70"
+	"github.com/goliatone/go-cam-stream/pkg/camstream/strategies/rtsp"
 	"github.com/goliatone/go-command"
 )
 
@@ -220,6 +222,20 @@ func TestPolicyDeniesUnknownScopeAndCrossPrincipalClose(t *testing.T) {
 	}
 	_, err = s.Camera(actor("alice"), "room2")
 	assertCode(t, err, cs.CodeAccessDenied)
+	for _, login := range []string{"", "unknown"} {
+		_, err = s.Camera(actor(login), "room1")
+		assertCode(t, err, cs.CodeAccessDenied)
+	}
+	_, err = s.Camera(actor("owner"), "missing")
+	assertCode(t, err, cs.CodeAccessDenied)
+	canceled, stop := context.WithCancel(actor("alice"))
+	stop()
+	if _, err = s.Camera(canceled, "room1"); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled detail", err)
+	}
+	if detail, detailErr := s.Camera(actor("alice"), "room1"); detailErr != nil || !reflect.DeepEqual(detail, list.Cameras[0]) {
+		t.Fatal("detail differs from the list", detail, detailErr)
+	}
 	_, err = s.CreateSession(actor("alice"), "room2", "default", api.CreateSessionRequest{})
 	assertCode(t, err, cs.CodeAccessDenied)
 	_, err = s.Diagnose(actor("alice"), "room1", "")
@@ -416,4 +432,191 @@ func TestConcurrentAuthorizedCreateAndCanceledNegotiation(t *testing.T) {
 	if err = s.CloseSession(actor("owner"), v.ID); err != nil {
 		t.Fatal("failed creation lost principal binding", err)
 	}
+}
+
+func TestListReportsObservedAvailabilityWithoutWaiting(t *testing.T) {
+	s, _, b, catalog := fixture(t)
+	availability := func(login string) map[cs.CameraID]cs.State {
+		t.Helper()
+		list, err := s.List(actor(login))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[cs.CameraID]cs.State{}
+		for _, camera := range list.Cameras {
+			out[camera.ID] = camera.Availability
+		}
+		return out
+	}
+	until := func(check func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if check() {
+				return
+			}
+		}
+		t.Fatal("condition did not become true")
+	}
+	source := func(id cs.CameraID) cs.SourceKey {
+		for _, camera := range catalog.Cameras {
+			if camera.Camera.ID == id {
+				return camera.Sources["default"]
+			}
+		}
+		t.Fatal("no camera", id)
+		return ""
+	}
+	if got := availability("owner"); len(got) != 3 || got["room1"] != cs.StateIdle || got["hall"] != cs.StateIdle || got["room2"] != cs.StateIdle {
+		t.Fatal("undemanded cameras", got)
+	}
+	create(t, s, "alice", "room1")
+	// Aliases of one source report the same observation.
+	until(func() bool {
+		got := availability("owner")
+		return got["room1"] == cs.StatePlaying && got["hall"] == cs.StatePlaying && got["room2"] == cs.StateIdle
+	})
+
+	// A latched fault outlasts its sessions and is listed as failed, only to
+	// principals who may view the camera.
+	other := create(t, s, "owner", "room2")
+	b.mu.Lock()
+	b.faults[source("room2")] = cs.CodeCameraUnreachable
+	b.mu.Unlock()
+	until(func() bool { return availability("owner")["room2"] == cs.StateFailed })
+	if err := s.CloseSession(actor("owner"), other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := availability("owner"); got["room2"] != cs.StateFailed || got["room1"] != cs.StatePlaying {
+		t.Fatal("after close", got)
+	}
+	if got := availability("alice"); len(got) != 1 || got["room1"] != cs.StatePlaying {
+		t.Fatal("alice", got)
+	}
+	// A camera's detail summarizes it as the list does.
+	list, err := s.List(actor("owner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list.Cameras {
+		if detail, detailErr := s.Camera(actor("owner"), item.ID); detailErr != nil || !reflect.DeepEqual(detail, item) {
+			t.Fatal("detail differs from the list", item.ID, detail, detailErr)
+		}
+	}
+
+	// A source busy with a create does not hold up the list.
+	b.mu.Lock()
+	b.blockCreate = true
+	before := b.creates
+	b.mu.Unlock()
+	ctx, cancel := context.WithCancel(actor("bob"))
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CreateSession(ctx, "room1", "default", api.CreateSessionRequest{Offer: api.SDPOffer{Type: "offer", SDP: "v=0\r\n"}})
+		done <- err
+	}()
+	until(func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.creates > before
+	})
+	got := availability("owner")
+	select {
+	case err := <-done:
+		t.Fatal("the create ended before the list was read", err)
+	default:
+	}
+	if got["room1"] != cs.StatePlaying {
+		t.Fatal("busy source", got)
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("canceled create succeeded")
+	}
+}
+
+func TestListSummarizesOnlyViewableProfiles(t *testing.T) {
+	raw, err := config.Load(context.Background(), "../../config/config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := config.Prepare(context.Background(), raw, config.DefaultProviders()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend()
+	core, err := cs.NewService(b, cs.ServiceOptions{PollInterval: 10 * time.Millisecond}, ec70.Strategy{}, rtsp.Strategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = core.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		b.mu.Lock()
+		clear(b.faults)
+		b.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if closeErr := core.Close(ctx); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	s, err := viewer.NewCameraService(core, catalog, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operator, guest = "operator@example.test", "viewer@example.test"
+	driveway := func(login string) cs.State {
+		t.Helper()
+		list, listErr := s.List(actor(login))
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		for _, camera := range list.Cameras {
+			if camera.ID == "driveway" {
+				return camera.Availability
+			}
+		}
+		t.Fatal("driveway not listed for", login)
+		return ""
+	}
+	until := func(check func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if check() {
+				return
+			}
+		}
+		t.Fatal("condition did not become true")
+	}
+	var main cs.SourceKey
+	for _, camera := range catalog.Cameras {
+		if camera.Camera.ID == "driveway" {
+			main = camera.Sources["main"]
+		}
+	}
+	offer := api.CreateSessionRequest{Offer: api.SDPOffer{Type: "offer", SDP: "v=0\r\n"}}
+	v, err := s.CreateSession(actor(operator), "driveway", "main", offer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	b.faults[main] = cs.CodeAuthenticationFailed
+	b.mu.Unlock()
+	until(func() bool { return driveway(operator) == cs.StateFailed })
+	// The guest may view only the substream, so the main profile's fault is not
+	// theirs to see.
+	if got := driveway(guest); got != cs.StateIdle {
+		t.Fatal("guest saw another profile's state", got)
+	}
+	if err = s.CloseSession(actor(operator), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Video playing on one profile outranks a latched fault on another.
+	until(func() bool {
+		_, createErr := s.CreateSession(actor(guest), "driveway", "sub", offer)
+		return createErr == nil
+	})
+	until(func() bool { return driveway(operator) == cs.StatePlaying && driveway(guest) == cs.StatePlaying })
 }

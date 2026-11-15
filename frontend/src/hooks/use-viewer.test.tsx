@@ -5,10 +5,11 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app";
-import { useViewer } from "./use-viewer";
+import { AVAILABILITY_MS, useViewer } from "./use-viewer";
 import type { PlaybackSnapshot } from "../services/playback";
 import type { CameraList } from "../services/contracts";
 import samples from "../../../data/api/examples.json";
@@ -127,7 +128,7 @@ describe("live media binding", () => {
     expect(video.srcObject).toBeNull();
     expect(control.dispose).toHaveBeenCalled();
   });
-  it("passes the recovery deadline and status times to the view", async () => {
+  it("passes the recovery and retry deadlines and status times to the view", async () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     render(<Live />);
     await waitFor(() => expect(control.select).toHaveBeenCalled());
@@ -152,6 +153,19 @@ describe("live media binding", () => {
     act(() => control.changed!(snapshot("reconnecting")));
     expect(await screen.findByText("No update yet")).toBeTruthy();
     expect(document.querySelector(".countdown")).toBeNull();
+    // A lost connection that is tried again on its own counts down too.
+    act(() =>
+      control.changed!({
+        selection: ref,
+        state: "failed",
+        media: null,
+        error: { code: "media_connection_failed", message: "", retryable: true },
+        retryAt: performance.now() + 3000,
+      }),
+    );
+    expect(
+      document.querySelector(".player-message h2 + p")!.textContent,
+    ).toBe("Trying again automatically in 3 s.");
   });
   it("starts without observation in a page opened in the background", async () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
@@ -192,6 +206,206 @@ describe("live media binding", () => {
       audio: true,
       video: true,
     }));
+  });
+});
+
+describe("camera availability", () => {
+  it("refreshes only each camera's availability, while the page is visible", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    try {
+      vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+      render(<Live />);
+      await advance(0);
+      expect(control.select).toHaveBeenLastCalledWith(ref, {
+        audio: true,
+        video: true,
+      });
+      const selects = control.select.mock.calls.length;
+      const rail = document.querySelector<HTMLElement>("#camera-rail")!;
+      const row = (name: string) =>
+        within(rail).getByRole("link", { name: new RegExp(name) });
+      const badge = (name: string) =>
+        row(name).querySelector(".status-badge")?.textContent;
+      expect(badge("Room 2")).toBe("Live");
+      const [room1, room2] = catalog.cameras;
+      api.list.mockResolvedValue({
+        cameras: [
+          { ...room1!, availability: "playing" },
+          { ...room2!, availability: "failed" },
+          { ...room2!, id: "room3", name: "Room 3", availability: "playing" },
+        ],
+      });
+      await advance(AVAILABILITY_MS - 1);
+      expect(api.list).toHaveBeenCalledOnce();
+      await advance(1);
+      expect(api.list).toHaveBeenCalledTimes(2);
+      expect(badge("Room 2")).toBe("Unavailable");
+      expect(row("Room 2").classList.contains("dim")).toBe(true);
+      // The selected row keeps this page's own state; the list and the
+      // selection change only on reload.
+      expect(badge("Room 1")).toBeUndefined();
+      expect(within(rail).queryByText("Room 3")).toBeNull();
+      expect(control.select).toHaveBeenCalledTimes(selects);
+      // A camera the refresh leaves out, and a failed refresh, show none.
+      api.list.mockResolvedValue({ cameras: [{ ...room1!, availability: "idle" }] });
+      await advance(AVAILABILITY_MS);
+      expect(badge("Room 2")).toBeUndefined();
+      api.list.mockResolvedValue(catalog);
+      await advance(AVAILABILITY_MS);
+      expect(badge("Room 2")).toBe("Live");
+      api.list.mockRejectedValue(new Error("offline"));
+      await advance(AVAILABILITY_MS);
+      expect(badge("Room 2")).toBeUndefined();
+      // A hidden page stops refreshing; showing it again refreshes at once.
+      const visibility = vi
+        .spyOn(document, "visibilityState", "get")
+        .mockReturnValue("hidden");
+      fireEvent(document, new Event("visibilitychange"));
+      const calls = api.list.mock.calls.length;
+      await advance(AVAILABILITY_MS * 3);
+      expect(api.list).toHaveBeenCalledTimes(calls);
+      api.list.mockResolvedValue(catalog);
+      visibility.mockReturnValue("visible");
+      fireEvent(document, new Event("visibilitychange"));
+      await advance(0);
+      expect(api.list).toHaveBeenCalledTimes(calls + 1);
+      expect(badge("Room 2")).toBe("Live");
+      expect(control.select).toHaveBeenCalledTimes(selects);
+      // An answer that arrives after the page is hidden changes nothing and
+      // starts no further refresh.
+      let answer!: (list: CameraList) => void;
+      api.list.mockImplementation(
+        () =>
+          new Promise<CameraList>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      await advance(AVAILABILITY_MS);
+      const pending = api.list.mock.calls.length;
+      visibility.mockReturnValue("hidden");
+      fireEvent(document, new Event("visibilitychange"));
+      answer({ cameras: [{ ...room2!, availability: "failed" }] });
+      await advance(AVAILABILITY_MS * 3);
+      expect(badge("Room 2")).toBe("Live");
+      expect(api.list).toHaveBeenCalledTimes(pending);
+      expect(AVAILABILITY_MS).toBe(10000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Each test renders the viewer with fake timers and reads one camera row.
+  async function start() {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const view = render(<Live />);
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    await advance(0);
+    const badge = (name: string) =>
+      within(document.querySelector<HTMLElement>("#camera-rail")!)
+        .getByRole("link", { name: new RegExp(name) })
+        .querySelector(".status-badge")?.textContent;
+    expect(api.list).toHaveBeenCalledOnce();
+    expect(badge("Room 2")).toBe("Live");
+    return { view, advance, badge };
+  }
+  const [room1, room2] = catalog.cameras;
+  const failedRoom2: CameraList = {
+    cameras: [room1!, { ...room2!, availability: "failed" }],
+  };
+  function deferList() {
+    let answer!: (list: CameraList) => void;
+    api.list.mockImplementationOnce(
+      () =>
+        new Promise<CameraList>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    return (list: CameraList) => answer(list);
+  }
+
+  it("keeps refreshing after a failed refresh", async () => {
+    try {
+      const { advance, badge } = await start();
+      api.list.mockRejectedValueOnce(new Error("offline"));
+      await advance(AVAILABILITY_MS);
+      expect(api.list).toHaveBeenCalledTimes(2);
+      expect(badge("Room 2")).toBeUndefined();
+      await advance(AVAILABILITY_MS);
+      expect(api.list).toHaveBeenCalledTimes(3);
+      expect(badge("Room 2")).toBe("Live");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps one refresh schedule when the page is hidden and shown again", async () => {
+    try {
+      const { advance } = await start();
+      const visibility = vi.spyOn(document, "visibilityState", "get");
+      await advance(AVAILABILITY_MS / 2);
+      visibility.mockReturnValue("hidden");
+      fireEvent(document, new Event("visibilitychange"));
+      visibility.mockReturnValue("visible");
+      fireEvent(document, new Event("visibilitychange"));
+      fireEvent(document, new Event("visibilitychange"));
+      await advance(0);
+      expect(api.list).toHaveBeenCalledTimes(3);
+      // The schedule restarts from the last refresh; none is left behind.
+      await advance(AVAILABILITY_MS - 1);
+      expect(api.list).toHaveBeenCalledTimes(3);
+      await advance(1);
+      expect(api.list).toHaveBeenCalledTimes(4);
+      await advance(AVAILABILITY_MS * 3);
+      expect(api.list).toHaveBeenCalledTimes(7);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops refreshing once closed, also with an answer still to come", async () => {
+    try {
+      const { view, advance } = await start();
+      const answer = deferList();
+      await advance(AVAILABILITY_MS);
+      expect(api.list).toHaveBeenCalledTimes(2);
+      view.unmount();
+      answer(catalog);
+      await advance(AVAILABILITY_MS * 3);
+      expect(api.list).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a reload's statuses over an older refresh that answers later", async () => {
+    try {
+      const { advance, badge } = await start();
+      const answer = deferList();
+      await advance(AVAILABILITY_MS);
+      expect(api.list).toHaveBeenCalledTimes(2);
+      api.list.mockResolvedValueOnce(failedRoom2);
+      fireEvent(window, new PageTransitionEvent("pageshow", { persisted: true }));
+      await advance(0);
+      expect(api.list).toHaveBeenCalledTimes(3);
+      expect(badge("Room 2")).toBe("Unavailable");
+      answer(catalog);
+      await advance(0);
+      expect(badge("Room 2")).toBe("Unavailable");
+      // The skipped answer still schedules the next refresh.
+      await advance(AVAILABILITY_MS);
+      expect(api.list).toHaveBeenCalledTimes(4);
+      expect(badge("Room 2")).toBe("Live");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

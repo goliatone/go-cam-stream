@@ -362,8 +362,10 @@ main:-webkit-full-screen {
   background: #e0b04a;
 }
 .countdown {
-  color: #b1c0c4;
   font-variant-numeric: tabular-nums;
+}
+.player-notice .countdown {
+  color: #b1c0c4;
 }
 .primary-button {
   display: inline-flex;
@@ -663,6 +665,14 @@ a.camera-choice:hover {
 }
 .camera-choice[aria-disabled="true"] {
   color: #667779;
+}
+/* A failed camera stays a link. Its dimmed name keeps 4.5:1 contrast and its
+   icon, the only visible content in the collapsed rail, keeps 3:1. */
+.camera-choice.dim {
+  color: var(--muted);
+}
+.camera-choice.dim .camera-icon {
+  color: #71837f;
 }
 .camera-icon {
   display: grid;

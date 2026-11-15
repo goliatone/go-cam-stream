@@ -19,6 +19,9 @@ offline CLI use `config.DefaultProviders()` for both. See the
 2. Call `service.Start(runtimeContext)` to enable admission and observation.
 3. Use `Streams`, `StreamStatus`, `CreateSession`, `SessionStatus` and `CloseSession`.
    `SessionBinding` returns camera/profile identifiers for host access checks.
+   `StreamSnapshot` reads a profile's latest background observation without backend
+   I/O and without waiting for a busy source, for summaries of many streams such as
+   a camera list. A stale observation is unknown; a latched fault is always reported.
 4. Authorize `ResetSource` as a separate operator action. It cancels affected
    negotiations, delegates cleanup/reset, and returns affected session IDs; the
    host maps catalog aliases. It is never part of viewer retry.

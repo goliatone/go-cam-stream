@@ -220,7 +220,7 @@ func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, can
 func (s *Service) sourceDefinition(spec StreamSpec) (*serviceSource, error) {
 	src := s.sources[spec.Key]
 	if src != nil {
-		if src.device != spec.PhysicalCameraID || src.kind != spec.Source.Kind() || src.capabilities != spec.Capabilities || src.constraints != spec.Constraints {
+		if !sameSource(src, spec) {
 			return nil, NewError(CodeConflict, nil)
 		}
 		return src, nil

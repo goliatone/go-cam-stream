@@ -56,10 +56,9 @@ func (s *Service) StreamStatus(ctx context.Context, camera Camera, stream Stream
 	src := s.sources[spec.Key]
 	s.mu.Unlock()
 	if src == nil {
-		zero := 0
-		return StreamState{Key: spec.Key, State: StateIdle, Upstream: PresenceAbsent, ActiveSessions: &zero, ObservedAt: time.Now()}, nil
+		return idleState(spec.Key), nil
 	}
-	if src.device != spec.PhysicalCameraID || src.kind != spec.Source.Kind() || src.constraints != spec.Constraints || src.capabilities != spec.Capabilities {
+	if !sameSource(src, spec) {
 		return StreamState{}, NewError(CodeConflict, nil)
 	}
 	if err = serviceEnter(ctx, src); err != nil {
@@ -71,6 +70,43 @@ func (s *Service) StreamStatus(ctx context.Context, camera Camera, stream Stream
 	state := copyStreamState(src.state)
 	s.mu.Unlock()
 	return state, serviceError(err)
+}
+
+// StreamSnapshot reports a profile's latest background observation without
+// backend I/O and without waiting for its source's operations, for summaries
+// of many streams such as a camera list. A profile with no source is idle and a
+// latched fault is always reported. An observation older than
+// ObservationMaxAge, such as one held back by a busy source, is unknown.
+func (s *Service) StreamSnapshot(ctx context.Context, camera Camera, stream StreamID) (StreamState, error) {
+	spec, err := s.resolve(ctx, camera, stream)
+	if err != nil {
+		return StreamState{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.sources[spec.Key]
+	if src == nil {
+		return idleState(spec.Key), nil
+	}
+	if !sameSource(src, spec) {
+		return StreamState{}, NewError(CodeConflict, nil)
+	}
+	state := copyStreamState(src.state)
+	state.Key, state.Fault = src.key, src.fault
+	if !s.fresh(state.ObservedAt) {
+		state.State, state.Upstream, state.ActiveSessions = StateUnknown, PresenceUnknown, nil
+	}
+	return state, nil
+}
+
+// Before first demand the service owns no resources for a profile.
+func idleState(key SourceKey) StreamState {
+	zero := 0
+	return StreamState{Key: key, State: StateIdle, Upstream: PresenceAbsent, ActiveSessions: &zero, ObservedAt: time.Now()}
+}
+
+func sameSource(src *serviceSource, spec StreamSpec) bool {
+	return src.device == spec.PhysicalCameraID && src.kind == spec.Source.Kind() && src.constraints == spec.Constraints && src.capabilities == spec.Capabilities
 }
 
 func copyStreamState(state StreamState) StreamState {

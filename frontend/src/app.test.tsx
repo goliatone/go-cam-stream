@@ -749,19 +749,32 @@ describe("video-first shell", () => {
     );
   });
 
-  it("collapses the rail to icons and keeps every name available", async () => {
+  it("collapses the rail to icons and keeps every name and status available", async () => {
     const user = userEvent.setup();
-    render(<App catalog={catalog} />);
+    const { rerender } = render(<App catalog={catalog} />);
+    const title = (name: RegExp) =>
+      screen.getByRole("link", { name }).getAttribute("title");
     const toggle = screen.getByRole("button", { name: "Camera list" });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(title(/Room 2/)).toBeNull();
     await user.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(document.querySelector(".app")!.getAttribute("data-rail")).toBe(
       "collapsed",
     );
-    expect(
-      screen.getByRole("link", { name: /Room 2/ }).getAttribute("title"),
-    ).toBe("Room 2");
+    // The tooltip adds the status the open rail would show, so a dimmed
+    // icon says why.
+    expect(title(/Room 1/)).toBe("Room 1");
+    expect(title(/Room 2/)).toBe("Room 2 · Live");
+    const [room1, room2] = catalog.cameras;
+    rerender(
+      <App
+        catalog={{
+          cameras: [room1!, { ...room2!, availability: "failed" }],
+        }}
+      />,
+    );
+    expect(title(/Room 2/)).toBe("Room 2 · Unavailable");
   });
 
   it("opens the camera sheet from the player and closes it on a choice", async () => {
@@ -1048,6 +1061,73 @@ describe("live status and recovery", () => {
     expect(spoken.textContent).toBe("");
   });
 
+  it("counts down an automatic retry that Stop can end", () => {
+    vi.useFakeTimers({ now: T0 });
+    const lost = () =>
+      failed({ code: "media_connection_failed", message: "", retryable: true });
+    const viewer = lost();
+    viewer.presentation.retryAt = performance.now() + 3000;
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    expect(screen.getByRole("heading", { name: "Connection lost" })).toBeTruthy();
+    const detail = document.querySelector(".player-message h2 + p")!;
+    expect(detail.textContent).toBe("Trying again automatically in 3 s.");
+    // The seconds are visual only, inside the message's live region. The
+    // region present from the start says what happens, once.
+    expect(
+      detail.querySelector(".countdown")!.getAttribute("aria-hidden"),
+    ).toBe("true");
+    const spoken = document.querySelector(
+      "section.player p.sr-only[role='status']",
+    )!;
+    expect(spoken.textContent).toBe(
+      "Connection lost. Trying again automatically.",
+    );
+    // Still recovering, not a dead end: badge, tab title, favicon and row agree.
+    const rail = document.querySelector<HTMLElement>("#camera-rail")!;
+    const badge = document.querySelector(".stage-badge .status-badge")!;
+    expect(badge.textContent).toBe("Reconnecting");
+    expect(badge.classList.contains("tone-busy")).toBe(true);
+    expect(document.title).toBe("Room 1 · Reconnecting · camstream");
+    const icon = () =>
+      decodeURIComponent(
+        document
+          .querySelector<HTMLLinkElement>('link[rel~="icon"]')!
+          .getAttribute("href")!,
+      );
+    expect(icon()).toContain("#d4900f");
+    expect(
+      rail.querySelector("[aria-current='page']")!.textContent,
+    ).toContain("Reconnecting");
+    expect(document.querySelector("video")!.getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    tick(2000);
+    expect(detail.textContent).toBe("Trying again automatically in 1 s.");
+    tick(1000);
+    expect(detail.textContent).toBe("Trying again automatically.");
+    // Try again starts at once; Stop ends the automatic retry.
+    const actions = viewer.presentation.actions!;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(actions.onRetry).toHaveBeenCalledOnce();
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(stop);
+    expect(actions.onStop).toHaveBeenCalledOnce();
+    // With no retry pending, the same failure waits for Try again.
+    rerender(<App catalog={catalog} viewer={lost()} />);
+    expect(
+      screen.getByText(errorCopy.media_connection_failed.detail),
+    ).toBeTruthy();
+    expect(spoken.textContent).toBe("");
+    const failedBadge = document.querySelector(".stage-badge .status-badge")!;
+    expect(failedBadge.textContent).toBe("Unavailable");
+    expect(failedBadge.classList.contains("tone-danger")).toBe(true);
+    expect(icon()).toContain("#d23f3f");
+    expect(
+      screen.getByRole("button", { name: "Stop" }).getAttribute("aria-disabled"),
+    ).toBe("true");
+  });
+
   it("shows how fresh the status is and warns when updates stop", () => {
     vi.useFakeTimers({ now: T0 });
     const viewer = input();
@@ -1232,5 +1312,55 @@ describe("live status and recovery", () => {
     rerender(<App catalog={unknown} />);
     expect(badge("Room 1")).toBeUndefined();
     expect(within(rail).queryByText("Status unknown")).toBeNull();
+  });
+
+  it("shows another camera's status only when it says something, and dims a failed one", () => {
+    const rows = (room1: State, room2: State): CameraList => ({
+      cameras: [
+        { ...catalog.cameras[0]!, availability: room1 },
+        { ...catalog.cameras[1]!, availability: room2 },
+      ],
+    });
+    const { rerender } = render(
+      <App catalog={rows("idle", "idle")} viewer={input("playing")} />,
+    );
+    const rail = document.querySelector<HTMLElement>("#camera-rail")!;
+    const row = (name: string) =>
+      within(rail).getByRole("link", { name: new RegExp(name) });
+    const badge = (name: string) =>
+      row(name).querySelector(".status-badge")?.textContent;
+    const dimmed = (name: string) => row(name).classList.contains("dim");
+    // Idle does not establish that a camera can play.
+    for (const state of ["idle", "unknown", "closing", "closed"] as const) {
+      rerender(<App catalog={rows("idle", state)} viewer={input("playing")} />);
+      expect(badge("Room 2")).toBeUndefined();
+      expect(dimmed("Room 2")).toBe(false);
+    }
+    for (const [state, label, dim] of [
+      ["connecting", "Connecting", false],
+      ["reconnecting", "Reconnecting", false],
+      ["playing", "Live", false],
+      ["failed", "Unavailable", true],
+      ["offline", "Offline", true],
+    ] as const) {
+      rerender(<App catalog={rows("idle", state)} viewer={input("playing")} />);
+      expect(badge("Room 2")).toBe(label);
+      expect(dimmed("Room 2")).toBe(dim);
+    }
+    // A failed camera stays a link to its view.
+    expect(row("Room 2").getAttribute("href")).toContain("camera=room2");
+    // The selected row shows this page's own state and is never dimmed, even
+    // when that state is a failure.
+    rerender(<App catalog={rows("failed", "idle")} viewer={input("playing")} />);
+    expect(badge("Room 1")).toBe("Live");
+    expect(dimmed("Room 1")).toBe(false);
+    const unreachable = failed({
+      code: "camera_unreachable",
+      message: "",
+      retryable: false,
+    });
+    rerender(<App catalog={rows("failed", "idle")} viewer={unreachable} />);
+    expect(badge("Room 1")).toBe("Unavailable");
+    expect(dimmed("Room 1")).toBe(false);
   });
 });

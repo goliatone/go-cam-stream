@@ -10,6 +10,17 @@ provision = runpy.run_path(str(Path(__file__).with_name('provision-release-secre
 
 
 class ReleaseSecretTests(unittest.TestCase):
+    def test_signing_requires_tag_restriction_and_publication_review(self):
+        signing = {'deployment_branch_policy': {'custom_branch_policies': True, 'protected_branches': False}}
+        branches = {'branch_policies': [{'type': 'tag', 'name': 'v*'}]}
+        publication = {'protection_rules': [{'type': 'required_reviewers', 'reviewers': [{'type': 'User'}]}]}
+        provision['check_environments'](signing, branches, publication)
+        for env, policy, review in [({}, branches, publication), (signing, {}, publication),
+                                    (signing, branches, {}),
+                                    (signing, {'branch_policies': [{'type': 'branch', 'name': 'v*'}]}, publication)]:
+            with self.assertRaises(ValueError):
+                provision['check_environments'](env, policy, review)
+
     def test_secret_goes_to_stdin_not_arguments(self):
         result = subprocess.CompletedProcess([], 0, b'', b'')
         with patch.object(subprocess, 'run', return_value=result) as run:

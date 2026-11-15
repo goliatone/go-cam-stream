@@ -59,6 +59,8 @@ export interface PlayerPresentation {
   reloadRequired?: boolean;
   /** While a dropped connection may recover: when it fails (performance.now()). */
   recoverBy?: number;
+  /** After a lost connection: when it is tried again on its own (performance.now()). */
+  retryAt?: number;
   state: State;
   error?: ErrorBody;
   controls?: PlayerControls;
@@ -169,6 +171,7 @@ export function Player({
     paused = false,
     reloadRequired = false,
     recoverBy,
+    retryAt,
     transport,
   } = presentation;
   const [muted, setMuted] = useState(true);
@@ -262,12 +265,15 @@ export function Player({
   const canResume = resumable({ state, error, paused, reloadRequired });
   const stopped = state === "closed" && !error && !reloadRequired;
   const playing = live && !paused && !needsPlay;
+  // A lost connection waiting to be tried again on its own.
+  const retryIn = error ? retryAt : undefined;
   const view = describeView({
     state,
     error,
     paused,
     needsPlay,
     reloadRequired,
+    retryAt: retryIn,
   });
   const copy = reloadRequired
     ? {
@@ -299,7 +305,10 @@ export function Player({
   const recovering = !message && state === "reconnecting";
   const busy =
     !prompt &&
-    (state === "connecting" || state === "reconnecting" || state === "closing");
+    (retryIn !== undefined ||
+      state === "connecting" ||
+      state === "reconnecting" ||
+      state === "closing");
   const mayRetry =
     !prompt &&
     !reloadRequired &&
@@ -330,11 +339,13 @@ export function Player({
   const playReason = toggle
     ? undefined
     : "Available while video is connected.";
+  // Stop also ends an automatic retry that has yet to start.
   const stopReason = !actions.onStop
     ? "Stop control is not connected."
-    : !error &&
-        !reloadRequired &&
-        ["connecting", "playing", "reconnecting"].includes(state)
+    : retryIn !== undefined ||
+        (!error &&
+          !reloadRequired &&
+          ["connecting", "playing", "reconnecting"].includes(state))
       ? undefined
       : "Nothing is playing.";
   const audioReason = !stream.capabilities.audio
@@ -513,7 +524,16 @@ export function Player({
                 <CameraIcon />
               </span>
               <h2>{message.title}</h2>
-              <p>{message.detail}</p>
+              <p>
+                {retryIn === undefined ? (
+                  message.detail
+                ) : (
+                  <>
+                    Trying again automatically
+                    <Countdown until={retryIn} prefix=" in " />.
+                  </>
+                )}
+              </p>
               <div class="message-actions">
                 {prompt && (
                   <button
@@ -591,7 +611,11 @@ export function Player({
         {/* Present from the start, so the change is announced; a region
             inserted with its text may go unannounced. */}
         <p class="sr-only" role="status">
-          {recovering ? "Reconnecting. Waiting for video to resume." : ""}
+          {recovering
+            ? "Reconnecting. Waiting for video to resume."
+            : retryIn !== undefined
+              ? "Connection lost. Trying again automatically."
+              : ""}
         </p>
         <div
           class="player-toolbar"
@@ -656,13 +680,14 @@ export function Player({
   );
 }
 
-// Seconds left in the recovery window. Visual only: a live region that
-// changed every second would interrupt a screen reader.
-function Countdown({ until }: { until: number }) {
+// Seconds left until `until`. Visual only: a live region that changed every
+// second would interrupt a screen reader.
+function Countdown({ until, prefix = "" }: { until: number; prefix?: string }) {
   useTick(true);
   const left = Math.ceil((until - performance.now()) / 1000);
   return left > 0 ? (
     <span class="countdown" aria-hidden="true">
+      {prefix}
       {left} s
     </span>
   ) : null;

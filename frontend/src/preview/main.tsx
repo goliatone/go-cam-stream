@@ -36,7 +36,8 @@ export const catalog: CameraList = {
     {
       id: "hall",
       name: "Hall",
-      availability: "offline",
+      // A latched fault, which the server lists as failed.
+      availability: "failed",
       streams: [
         {
           id: "default",
@@ -64,6 +65,7 @@ const scenarios = [
   "playing",
   "paused",
   "reconnecting",
+  "retrying",
   "stale",
   "stopping",
   "stopped",
@@ -87,6 +89,7 @@ const failures: Partial<Record<Scenario, ErrorBody>> = {
   backend: { code: "backend_unavailable", message: "", retryable: true },
   signaling: { code: "signaling_failed", message: "", retryable: true },
   media: { code: "media_connection_failed", message: "", retryable: true },
+  retrying: { code: "media_connection_failed", message: "", retryable: true },
   busy: { code: "camera_busy", message: "", retryable: true },
   capacity: { code: "capacity_exceeded", message: "", retryable: true },
 };
@@ -122,13 +125,20 @@ function Preview() {
     const timer = setInterval(() => setPolled(performance.now()), 2000);
     return () => clearInterval(timer);
   }, [live]);
-  // As a real connection that stays down, the recovery window ends in failure.
+  // As a real connection that stays down: the recovery window ends in a lost
+  // connection, which is tried again on its own 3 s later.
   useEffect(() => {
-    if (scenario !== "reconnecting") return;
+    const next =
+      scenario === "reconnecting"
+        ? (["retrying", 15000, "Recovery window ended"] as const)
+        : scenario === "retrying"
+          ? (["connecting", 3000, "Automatic retry"] as const)
+          : undefined;
+    if (!next) return;
     const timer = setTimeout(() => {
-      show("media");
-      setEvent("Recovery window ended; preview only");
-    }, 15000);
+      show(next[0]);
+      setEvent(`${next[2]}; preview only`);
+    }, next[1]);
     return () => clearTimeout(timer);
   }, [scenario, since]);
   const error =
@@ -175,13 +185,15 @@ function Preview() {
       state,
       paused: scenario === "paused",
       ...(scenario === "reconnecting" ? { recoverBy: since + 15000 } : {}),
+      ...(scenario === "retrying" ? { retryAt: since + 3000 } : {}),
       ...(error ? { error } : {}),
       controls,
       actions: {
         onRetry: () => {
           setAttempt(attempt + 1);
           setEvent(`Viewer retry callback ${attempt + 1}; no network request`);
-          if (scenario === "stopped") show("connecting");
+          if (scenario === "stopped" || scenario === "retrying")
+            show("connecting");
         },
         onPlay: () => {
           show("playing");

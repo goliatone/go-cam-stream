@@ -16,6 +16,13 @@ app running; the Dock entry and app menu also provide access to the controls.
 The icon is outlined while stopped and filled while live; its menu and accessibility label report the full capture state.
 Quit waits for helper-owned capture cleanup. Reopening starts stopped.
 
+If the camera icon is missing, check **System Settings → Menu Bar → Allow in the
+Menu Bar → Camstream Camera**. A crowded menu bar can also hide it behind a
+MacBook notch. Temporarily hide another menu-bar item, hold **Command** and drag
+the camera icon farther right, then restore the other item. The Dock entry and
+**Camstream Camera** app menu remain available while the icon is hidden.
+[Apple’s menu-bar rearrangement guide](https://support.apple.com/en-gb/guide/mac-help/mchlp1446/26/mac/26).
+
 **Only this Mac** binds loopback for local testing. For a server on another
 computer, choose **Private network** and enter this Mac’s reachable private IP or
 hostname. The listener uses all IPv4 interfaces, with authenticated readers; use
@@ -33,7 +40,9 @@ live in `~/Library/Application Support/camstream-camera-app`, separate from the
 CLI and proof. Replacing the app preserves this directory and credentials;
 there is no automatic import of prototype settings. Permission is independent of
 Camstream Camera Proof. If denied, enable **Camstream Camera** in Privacy &
-Security → Camera, return to the app, refresh devices and retry explicitly.
+Security → Camera. Follow any macOS **Quit & Reopen** prompt; if the app still
+shows the old permission state, quit and reopen it before refreshing devices
+and choosing Start explicitly. Changing permission never starts capture.
 Errors remain visible until an explicit successful action; polling cannot hide
 capture failures. Unexpected helper exit requires quitting/reopening the app.
 
@@ -53,6 +62,28 @@ xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/
 "$app_check_dir/camera-app-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
 rm -rf "$app_check_dir"
 ```
+
+## Minimum macOS validation
+
+The runtime targets Apple Silicon/macOS 26.0. Testing on 26.7.1 does not certify
+26.0. Use an Apple Silicon Mac capable of booting **26.0**, preferably a MacBook
+with its built-in camera, and an operator who can answer macOS camera prompts.
+A spare Mac or an independently bootable test volume avoids replacing the
+working system. Confirm the exact OS version/build before testing; installer
+availability and hardware compatibility must be checked first. Apple documents
+[separate macOS volumes](https://support.apple.com/en-us/118282) and
+[external startup disks](https://support.apple.com/en-gb/111336).
+
+Test the exact signed candidate DMG and record its checksum. Cover normal browser
+download/copy/Finder launch and Gatekeeper, stopped launch, permission denial and
+recovery, real preview, authenticated local/private-network playback and invalid
+reader rejection, status-menu controls, Stop/Quit and app/helper-loss cleanup.
+Verify offline bundled-runtime use and settings/permission preservation across
+replacement/rollback. Use a second LAN client to certify remote reachability;
+connecting to the Mac's own LAN address proves only its local network path.
+Record technical results and OS/artifact identifiers, not images or credentials.
+A VM without a verified camera/permission path supplies only supplemental launch
+coverage. Keep the release unpublished until the required hardware checks pass.
 
 ## Versioned releases
 
@@ -136,7 +167,7 @@ References: [Apple certificate creation](https://developer.apple.com/help/accoun
 
 ### Shared camera/server CI
 
-The release repository is `goliatone/go-cam-stream`. The manual
+The release repository is `goliatone/go-cam-stream`. The versioned
 `.github/workflows/release-artifacts.yml` runs on GitHub-hosted `macos-26` and
 `ubuntu-24.04-arm`. The runtime URL defaults to `macos/runtime.lock.json`; an
 optional HTTPS mirror override must still match its pinned SHA-256. Runtime
@@ -149,19 +180,42 @@ never substitute runtime-1 for it.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
 
-Development builds run from `main` using the `camera-build` environment and need
-no signing secrets. Signed builds run from an existing `vVERSION` tag that matches
-HEAD, using the protected `camera-release` environment. The maintainer must
-review and push source/workflow changes before dispatch; the workflow creates no
-tags or commits. Both jobs use the same checkout/version; neither starts a camera.
+Push a new `vMAJOR.MINOR.PATCH` tag at a reviewed commit to start the release
+workflow automatically. The version comes from the tag; runtime-only tags such as
+`camera-runtime-2` do not trigger it. The workflow runs tests, builds the signed and
+notarized camera DMG plus Linux server, and creates an unpublished draft. It then
+waits at **release-publish** for one approval from `goliatone`.
 
-Configure `camera-release` with required reviewer `goliatone`, allow only tags
-matching `v*`, and allow that maintainer to approve their own manual run. Set
-`CAMERA_SIGN_IDENTITY`, `CAMERA_TEAM_ID` and `CAMERA_NOTARY_PROFILE` as environment
-variables. The hosted runner imports the certificate into a private temporary
-Keychain and creates the notarization profile there; it does not reuse the local
-Mac's Keychain. An always-run cleanup step removes the temporary Keychain and
-certificate. Signing secrets are scoped to the credential setup step.
+Before approving, download and validate the draft, including camera permission,
+preview and cleanup on the supported macOS targets. Approving **release-publish**
+publishes that draft publicly. It rechecks the tag's commit and the draft's asset
+IDs, sizes and digests; changed assets or a moved tag fail publication. Reject or
+leave the approval pending to keep the release unpublished. The workflow never
+creates tags or replaces existing releases/assets.
+
+Environment configuration:
+
+| Environment | Allowed refs | Required reviewer |
+| --- | --- | --- |
+| `camera-build` | `main` branch | None |
+| `camera-release` | `v*` tags only | None |
+| `release-draft` | `v*` tags only | None |
+| `release-publish` | `v*` tags only | `goliatone` (self-review allowed) |
+
+Tag pushes now authorize use of the signing credentials. Limit who can push
+release tags accordingly. Keep `CAMERA_SIGN_IDENTITY`, `CAMERA_TEAM_ID` and
+`CAMERA_NOTARY_PROFILE` as `camera-release` environment variables. The hosted
+runner imports the certificate into a private temporary Keychain and creates the
+notarization profile there; it does not reuse the local Mac's Keychain. An
+always-run cleanup removes the temporary Keychain and certificate. Signing
+secrets are scoped to the credential setup step.
+
+Manual dispatch remains available for development builds from `main`, with
+`distribution=false` and `create_draft=false`. A manual signed dispatch requires
+an existing matching version tag and can create a draft, but never selects the
+publication job. Neither build starts a camera. Commit/push these workflow changes
+before creating the first tag that should use this flow; existing tags/runs are
+not upgraded retroactively.
 
 #### Provision hosted signing secrets once
 
@@ -180,7 +234,7 @@ certificate. Signing secrets are scoped to the credential setup step.
    python3 macos/provision-release-secrets.py --certificate "$HOME/Desktop/camstream-signing.p12"
    ```
 
-   The helper checks the protected environment, securely prompts for the export
+   The helper checks signing tag restrictions and the publication review gate, securely prompts for the export
    password and Apple app-specific password, and sends values through stdin to
    `gh secret set`. It creates `CAMERA_CERTIFICATE_P12_BASE64`,
    `CAMERA_CERTIFICATE_PASSWORD`, `CAMERA_APPLE_ID`, and `CAMERA_APP_PASSWORD` in
@@ -192,22 +246,22 @@ certificate. Signing secrets are scoped to the credential setup step.
    gh secret list --repo goliatone/go-cam-stream --env camera-release
    ```
 
-For a reviewed, committed, pushed and explicitly authorized release tag:
+For a manual signed draft of an existing version tag (substitute its version):
 
 ```sh
 gh workflow run release-artifacts.yml --repo goliatone/go-cam-stream \
-  --ref v0.1.2 -f version=0.1.2 -F distribution=true -F create_draft=true
+  --ref vMAJOR.MINOR.PATCH -f version=MAJOR.MINOR.PATCH -F distribution=true -F create_draft=true
 ```
 
-The `v0.1.2` candidate at `8b39391` failed native helper-exit checks before
-signing; it has no app release. Keep that tag unchanged. A corrected candidate
-needs a reviewed source commit and separately authorized version tag.
-Approve the `camera-release` job in GitHub after checking its ref/commit. The separate
-`release-draft` environment also requires maintainer approval and permits only
-`v*` tags. With `create_draft=true`, both jobs must succeed before checksum-verified
-camera/server assets enter an unpublished draft. No public publication or asset
-replacement occurs automatically. Download the draft while signed into GitHub
-for the install test; public download requires separate publication approval.
+Normal new releases need only the tag push, followed by **release-publish** review
+in GitHub Actions. Do not also manually dispatch the same version: draft creation
+refuses an existing release instead of overwriting assets. Both build jobs must
+pass before a draft is created; a failed build never reaches publication review.
+Download drafts while signed into GitHub.
+
+Migration: `v0.1.2` remains the historical failed candidate and `v0.1.3` retains its
+original draft-only workflow. This setup change does not approve or publish either
+release. Existing release validation and minimum-OS requirements still apply.
 
 References: [GitHub macOS certificate setup](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications),
 [environment protection](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).

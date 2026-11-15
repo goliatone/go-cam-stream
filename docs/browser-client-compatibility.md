@@ -18,10 +18,11 @@ statistics, and playing state comes from the media element.
 | Keyboard shortcuts | Single keys without Ctrl, Alt or Meta; held keys do not repeat. Ignored while a form field has focus or a dialog is open, and Space still activates a focused button. R starts a stopped view and otherwise says when there is nothing to retry. Layouts that need AltGr or Option for `[` and `]` cannot use those two; the rail and the camera sheet still switch cameras. |
 | Phone layouts | Portrait pins the player under the top bar. Landscape on touch screens at 500 px height or less fills the screen, pads for safe areas (`viewport-fit=cover`), scrolls a long message above the controls and opens cameras and the stream choice in a modal sheet. The camera name stays the page heading for screen readers. A zoomed or short desktop window keeps the regular layout, which scrolls instead of clipping. |
 | Selection change | Detach/pause old video, close peer/stop tracks, confirm server release, then negotiate the latest selection. |
-| Brief transport loss | A compact Reconnecting badge over the last frame counts down the 15 s recovery window while native ICE recovers; a media stall without a peer disconnection shows no countdown. Sustained disconnection/failed media releases the viewer and offers explicit retry. |
-| Status freshness | Timed on this device from when each status answer with an observation arrives, never by comparing the server's observation time with the device clock. After 10 s of asking without one, the stream details warn "No update for N s". |
-| Failure details | A safe error code, camera, stream and the time first shown; never the server's message. Choose another camera opens the camera sheet when the failure belongs to this camera and another camera can play; failures every camera shares do not offer it. |
-| Hidden page/PiP | No lease renewal or mandatory foreground polling. Hiding pauses observations, not the peer, and pauses the freshness warning. Browser/OS suspension policy still applies. |
+| Brief transport loss | A compact Reconnecting badge over the last frame counts down the 15 s recovery window while native ICE recovers; a media stall without a peer disconnection shows no countdown. The seconds are visual only; a status region that is always in the page announces the reconnect and any automatic retry. A sustained disconnection or failed peer releases the viewer. Video that played is then tried again on its own, up to twice, 3 s and then 10 s after each loss, while the page is visible; Try again starts at once and Stop ends the wait. Other failures offer explicit retry. |
+| Status freshness | Timed on this device, with page-local time, from when each status answer with a newer observation of a known state arrives. The server's observation time is only compared with its earlier values, never with the device clock, so a stale server observation counts as no update. After 10 s of asking without an update, the stream details warn "No update for N s". |
+| Camera status | Rows other than the selected one show the server's status of that camera (Live, Connecting, Reconnecting, Offline or Unavailable) and dim an offline or failed camera, which stays a link; an idle camera shows none. In the collapsed rail a dimmed icon keeps 3:1 contrast and the tooltip adds the status to the camera name. The statuses refresh every 10 s while the page is visible and at once when it is shown again; until that refresh answers, at most 20 s, the rows keep their last statuses. A failed refresh shows no status rather than an old one, and a reload overrides an older refresh. |
+| Failure details | A safe error code, camera, stream and the time first shown; never the server's message. Choose another camera opens the camera sheet when the server reports a failure of this camera or stream and another camera can play. Lost connections and timeouts, which this device's network may cause, offer Try again only, as do failures every camera shares. |
+| Hidden page/PiP | No lease renewal or mandatory foreground polling. Hiding pauses observations and the camera status refresh, not the peer, and pauses the freshness warning; a page opened in a background tab starts without observation. An automatic retry that comes due while the page is hidden waits until it is shown. Browser/OS suspension policy still applies. |
 | Controller restart / lost session ownership | Denied cleanup preserves the old session locally and offers Reload page, which reopens the same camera and stream. A fresh page rechecks catalog/access and readiness; denial is never treated as successful cleanup. |
 | Source failure | Safe source error; viewer retry never performs operator reconnect or clears a source latch. |
 | Page exit | Best-effort keepalive release plus immediate peer close; backend peer-loss handling provides bounded cleanup when delivery is unavailable. |
@@ -60,6 +61,14 @@ T22's reconnect countdown, stale-status warning, failure details and Choose
 another camera sheet were checked the same way at 1440×900 and 375×812, and with
 touch emulation at 667×330 and 640×260. Live disconnection timing, status outages
 against a real server and screen-reader announcements were not exercised.
+T23's automatic retry countdown was checked the same way at 1440×900 and 375×812,
+and with touch emulation at 667×330; controller tests cover its delays, limit,
+visibility wait and cancellation. A real lost connection was not exercised.
+T24's camera row statuses, dimming and collapsed-rail tooltips were checked in
+the synthetic preview; interaction tests cover the refresh, its schedule across
+visibility changes, failed refreshes, closing the page and a reload overtaking a
+refresh, and Go tests cover the server's summary. Statuses from a live server were
+not exercised in a browser.
 Firefox Developer Edition fails
 ICE in both the TCP-only and TCP+UDP local fixtures (owner-reported). Its exact
 version and cause are unverified; Firefox support is not established. The generic

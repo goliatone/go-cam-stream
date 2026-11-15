@@ -26,6 +26,9 @@ function showAddress(link: string) {
   }
 }
 
+/** Camera rows show the server's availability, refreshed this often while visible. */
+export const AVAILABILITY_MS = 10000;
+
 export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
   const [catalog, setCatalog] = useState<CameraList>({ cameras: [] });
   const [loading, setLoading] = useState(true);
@@ -202,6 +205,42 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
       void controller.dispose().catch(() => {});
     };
   }, [controller, reload]);
+  // Refresh only each camera's availability, at once when the page is shown
+  // again. The camera list and the selection change only on reload, and a
+  // camera the refresh leaves out, or a failed refresh, shows no status. A
+  // reload started after a refresh carries newer availability than its answer.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let request = new AbortController();
+    const refresh = () => {
+      clearTimeout(timer);
+      request.abort();
+      if (document.visibilityState === "hidden") return;
+      const { signal } = (request = new AbortController()),
+        load = refreshAbort.current;
+      const show = ({ cameras }: CameraList) => {
+        if (signal.aborted) return;
+        if (load === refreshAbort.current)
+          setCatalog((old) => ({
+            cameras: old.cameras.map((camera) => ({
+              ...camera,
+              availability:
+                cameras.find((item) => item.id === camera.id)?.availability ??
+                "unknown",
+            })),
+          }));
+        timer = setTimeout(refresh, AVAILABILITY_MS);
+      };
+      api.list(signal).then(show, () => show({ cameras: [] }));
+    };
+    timer = setTimeout(refresh, AVAILABILITY_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearTimeout(timer);
+      request.abort();
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [api]);
   let viewer: ViewerInput | undefined;
   if (snapshot)
     viewer = {
@@ -218,6 +257,7 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
         ...(snapshot.recoverBy !== undefined
           ? { recoverBy: snapshot.recoverBy }
           : {}),
+        ...(snapshot.retryAt !== undefined ? { retryAt: snapshot.retryAt } : {}),
         ...(snapshot.error ? { error: snapshot.error } : {}),
         ...(snapshot.transport ? { transport: snapshot.transport } : {}),
         needsPlay,

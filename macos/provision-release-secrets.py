@@ -17,6 +17,17 @@ def gh(*args, value=None):
     return result.stdout
 
 
+def check_environments(signing, branches, publication):
+    policy = signing.get('deployment_branch_policy') or {}
+    rules = branches.get('branch_policies', [])
+    if (policy.get('custom_branch_policies') is not True or policy.get('protected_branches') is not False
+            or len(rules) != 1 or rules[0].get('type') != 'tag' or rules[0].get('name') != 'v*'):
+        raise ValueError('camera-release must permit only v* tags before uploading signing secrets')
+    if not any(rule.get('type') == 'required_reviewers' and rule.get('reviewers')
+               for rule in publication.get('protection_rules', [])):
+        raise ValueError('configure required reviewers on release-publish before uploading signing secrets')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--certificate', required=True, type=Path, help='exported Developer ID Application certificate AND private key (.p12)')
@@ -28,9 +39,9 @@ def main():
     if not cert or len(cert) > 32000:
         parser.error('expected a single .p12 signing identity (1–32000 bytes)')
     environment = json.loads(gh('api', f'repos/{args.repo}/environments/camera-release'))
-    if not any(rule.get('type') == 'required_reviewers' and rule.get('reviewers')
-               for rule in environment.get('protection_rules', [])):
-        parser.error('configure required reviewers on camera-release before uploading signing secrets')
+    branches = json.loads(gh('api', f'repos/{args.repo}/environments/camera-release/deployment-branch-policies'))
+    publication = json.loads(gh('api', f'repos/{args.repo}/environments/release-publish'))
+    check_environments(environment, branches, publication)
     print(f'Provisioning four encrypted secrets in {args.repo} / camera-release.')
     print('Use the exported .p12 password and an Apple app-specific password, not your Apple account password.')
     password = getpass.getpass('Exported .p12 password: ')

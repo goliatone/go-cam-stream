@@ -54,10 +54,11 @@ type memoryBackend struct {
 	closeFailure, sourceUnknown, sessionUnknown, stale bool
 	failedSource                                       cs.SourceKey
 	creates, closes, resets                            int
+	statuses                                           map[cs.SourceKey]int // StreamStatus calls
 }
 
 func newMemoryBackend() *memoryBackend {
-	return &memoryBackend{sources: map[cs.SourceKey]cs.StreamSpec{}, sessions: map[cs.SessionID]cs.SessionState{}, faults: map[cs.SourceKey]cs.ErrorCode{}}
+	return &memoryBackend{sources: map[cs.SourceKey]cs.StreamSpec{}, sessions: map[cs.SessionID]cs.SessionState{}, faults: map[cs.SourceKey]cs.ErrorCode{}, statuses: map[cs.SourceKey]int{}}
 }
 func (b *memoryBackend) EnsureStream(ctx context.Context, spec cs.StreamSpec) (cs.StreamState, error) {
 	if err := ctx.Err(); err != nil {
@@ -96,6 +97,7 @@ func (b *memoryBackend) StreamStatus(ctx context.Context, key cs.SourceKey) (cs.
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.statuses[key]++
 	if _, ok := b.sources[key]; !ok {
 		return cs.StreamState{}, cs.NewError(cs.CodeNotFound, nil)
 	}
@@ -415,6 +417,23 @@ func TestServiceFaultLatchRequiresOperatorReset(t *testing.T) {
 	if creates != 2 || resets != 0 {
 		t.Fatal("viewer retry reached media/reset", creates, resets)
 	}
+	// The latch holds through fresh observations once the backend stops
+	// reporting the fault. Observations of one source are serialized, so the
+	// first one after the change is applied before a second one starts.
+	b.mu.Lock()
+	delete(b.faults, v.SourceKey)
+	observed := b.statuses[v.SourceKey]
+	b.mu.Unlock()
+	eventuallyService(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.statuses[v.SourceKey] >= observed+2
+	})
+	_, err = s.CreateSession(context.Background(), testCamera("hall", "one"), "main", cs.Offer{SDP: "offer"})
+	code(t, err, cs.CodeSourceUnavailable)
+	if state, snapErr := s.StreamSnapshot(context.Background(), testCamera("hall", "one"), "main"); snapErr != nil || state.Fault != cs.CodeSourceUnavailable {
+		t.Fatal("fault latch cleared without an operator reset", state, snapErr)
+	}
 	if _, err = s.ResetSource(context.Background(), v.SourceKey); err != nil {
 		t.Fatal(err)
 	}
@@ -422,5 +441,128 @@ func TestServiceFaultLatchRequiresOperatorReset(t *testing.T) {
 	state, err := s.SessionStatus(context.Background(), other.ID)
 	if err != nil || state.Resources != cs.PresencePresent {
 		t.Fatal("reset affected another device", state, err)
+	}
+}
+
+func TestServiceStreamSnapshotDoesNoBackendIO(t *testing.T) {
+	b := newMemoryBackend()
+	// No background observation runs during the test and none ages out.
+	s := testService(t, b, cs.ServiceOptions{PollInterval: time.Hour, ObservationMaxAge: time.Hour})
+	room := testCamera("room", "one")
+	v := openViewer(t, s, "room", "one", "main")
+	statuses := func() int {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.statuses[v.SourceKey]
+	}
+	observed := statuses()
+	for range 3 {
+		for _, stream := range []cs.StreamID{"main", "sub"} {
+			if _, err := s.StreamSnapshot(context.Background(), room, stream); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got := statuses(); got != observed {
+		t.Fatal("snapshot observed the backend", observed, got)
+	}
+	// The status route observes the backend, so the count is live.
+	if _, err := s.StreamStatus(context.Background(), room, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if got := statuses(); got != observed+1 {
+		t.Fatal("status did not observe the backend", observed, got)
+	}
+}
+
+func TestServiceStreamSnapshotReadsWithoutWaiting(t *testing.T) {
+	b := newMemoryBackend()
+	s := testService(t, b, cs.ServiceOptions{NegotiationTimeout: 2 * time.Second, ObservationMaxAge: 100 * time.Millisecond})
+	room := testCamera("room", "one")
+	snapshot := func(stream cs.StreamID) cs.StreamState {
+		t.Helper()
+		type result struct {
+			state cs.StreamState
+			err   error
+		}
+		got := make(chan result, 1)
+		go func() {
+			state, err := s.StreamSnapshot(context.Background(), room, stream)
+			got <- result{state, err}
+		}()
+		select {
+		case r := <-got:
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			return r.state
+		case <-time.After(time.Second):
+			t.Fatal("snapshot waited for its source")
+			return cs.StreamState{}
+		}
+	}
+	if state := snapshot("main"); state.State != cs.StateIdle || state.ActiveSessions == nil || *state.ActiveSessions != 0 {
+		t.Fatal("undemanded profile", state)
+	}
+	v := openViewer(t, s, "room", "one", "main")
+	// The service's own observations keep the snapshot current.
+	eventuallyService(t, func() bool {
+		state := snapshot("main")
+		return state.Upstream == cs.PresencePresent && state.ActiveSessions != nil && *state.ActiveSessions == 1
+	})
+
+	// A busy source is skipped by the observer; its last observation ages out.
+	entered, release := make(chan struct{}), make(chan struct{})
+	b.mu.Lock()
+	b.create = func(ctx context.Context, _ cs.SessionSpec) error {
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	b.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CreateSession(context.Background(), room, "main", cs.Offer{SDP: "offer"})
+		done <- err
+	}()
+	<-entered
+	eventuallyService(t, func() bool { return snapshot("main").State == cs.StateUnknown })
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	b.create = nil
+	b.mu.Unlock()
+	eventuallyService(t, func() bool { return snapshot("main").State != cs.StateUnknown })
+
+	// A latched fault is reported, also once observations are no longer fresh,
+	// until an operator reset; the camera's other profile is unaffected.
+	b.mu.Lock()
+	b.faults[v.SourceKey] = cs.CodeSourceUnavailable
+	b.mu.Unlock()
+	eventuallyService(t, func() bool { return snapshot("main").Fault == cs.CodeSourceUnavailable })
+	b.mu.Lock()
+	b.stale = true
+	b.mu.Unlock()
+	eventuallyService(t, func() bool {
+		state := snapshot("main")
+		return state.State == cs.StateUnknown && state.Fault == cs.CodeSourceUnavailable
+	})
+	if state := snapshot("sub"); state.State != cs.StateIdle || state.Fault != "" {
+		t.Fatal("fault reached another profile", state)
+	}
+	b.mu.Lock()
+	b.stale = false
+	b.mu.Unlock()
+	if _, err := s.ResetSource(context.Background(), v.SourceKey); err != nil {
+		t.Fatal(err)
+	}
+	if state := snapshot("main"); state.Fault != "" {
+		t.Fatal("reset left the fault", state)
 	}
 }

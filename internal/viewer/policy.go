@@ -101,37 +101,92 @@ func (s *CameraService) loadCatalog(catalog config.Catalog) error {
 
 func (s *CameraService) List(ctx context.Context) (api.CameraList, error) {
 	out := api.CameraList{Cameras: []api.CameraSummary{}}
-	if err := ctx.Err(); err != nil {
+	if err := s.admit(ctx); err != nil {
 		return out, err
 	}
-	if _, ok := s.access[principal(ctx)]; !ok {
-		return out, denied()
-	}
 	for _, id := range s.order {
-		camera := s.cameras[id]
-		summary := api.CameraSummary{ID: id, Name: camera.Camera.Name, Availability: cs.StateUnknown, Streams: []api.StreamSummary{}}
-		for _, stream := range camera.Streams {
-			if s.allowed(ctx, id, stream.ID, view) {
-				summary.Streams = append(summary.Streams, streamSummary(stream))
-			}
-		}
-		if len(summary.Streams) > 0 {
+		if summary, ok := s.summary(ctx, id); ok {
 			out.Cameras = append(out.Cameras, summary)
 		}
 	}
 	return out, nil
 }
-func (s *CameraService) Camera(ctx context.Context, id cs.CameraID) (api.CameraDetail, error) {
-	list, err := s.List(ctx)
-	if err != nil {
-		return api.CameraDetail{}, err
+
+// admit accepts a principal that the catalog grants any access.
+func (s *CameraService) admit(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	for _, item := range list.Cameras {
-		if item.ID == id {
-			return item, nil
+	if _, ok := s.access[principal(ctx)]; !ok {
+		return denied()
+	}
+	return nil
+}
+
+// summary describes a camera with the profiles this viewer may watch. A camera
+// without one is not listed.
+func (s *CameraService) summary(ctx context.Context, id cs.CameraID) (api.CameraSummary, bool) {
+	camera, ok := s.cameras[id]
+	if !ok {
+		return api.CameraSummary{}, false
+	}
+	summary := api.CameraSummary{ID: id, Name: camera.Camera.Name, Streams: []api.StreamSummary{}}
+	for _, stream := range camera.Streams {
+		if s.allowed(ctx, id, stream.ID, view) {
+			summary.Streams = append(summary.Streams, streamSummary(stream))
 		}
 	}
-	return api.CameraDetail{}, denied()
+	if len(summary.Streams) == 0 {
+		return api.CameraSummary{}, false
+	}
+	summary.Availability = s.availability(ctx, camera.Camera, summary.Streams)
+	return summary, true
+}
+
+// Precedence of a camera's availability over its profiles' states.
+var availabilityOrder = []cs.State{cs.StatePlaying, cs.StateFailed, cs.StateOffline, cs.StateReconnecting, cs.StateConnecting}
+
+// availability summarizes the profiles this viewer may watch, whose status the
+// viewer may already read, from the core's latest observations: no backend
+// I/O and no waiting for a busy source. A latched fault counts as failed. The
+// camera is playing when any profile plays, then failed, offline, reconnecting
+// or connecting when any profile is; idle when all are idle; otherwise unknown.
+func (s *CameraService) availability(ctx context.Context, camera cs.Camera, streams []api.StreamSummary) cs.State {
+	seen := map[cs.State]bool{}
+	for _, stream := range streams {
+		state, err := s.core.StreamSnapshot(ctx, camera, stream.ID)
+		if err == nil && state.Fault != "" {
+			seen[cs.StateFailed] = true
+		} else {
+			seen[publicStatus(stream.ID, state, err).State] = true
+		}
+	}
+	return summarize(seen)
+}
+
+// summarize applies availabilityOrder to the set of a camera's profile states.
+func summarize(seen map[cs.State]bool) cs.State {
+	for _, state := range availabilityOrder {
+		if seen[state] {
+			return state
+		}
+	}
+	if len(seen) == 1 && seen[cs.StateIdle] {
+		return cs.StateIdle
+	}
+	return cs.StateUnknown
+}
+
+// Camera summarizes only the requested camera, as List would list it.
+func (s *CameraService) Camera(ctx context.Context, id cs.CameraID) (api.CameraDetail, error) {
+	if err := s.admit(ctx); err != nil {
+		return api.CameraDetail{}, err
+	}
+	summary, ok := s.summary(ctx, id)
+	if !ok {
+		return api.CameraDetail{}, denied()
+	}
+	return summary, nil
 }
 func (s *CameraService) Status(ctx context.Context, id cs.CameraID, stream cs.StreamID) (api.StreamStatus, error) {
 	item, err := s.require(ctx, id, stream, view)

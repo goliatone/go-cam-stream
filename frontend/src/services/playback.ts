@@ -18,6 +18,8 @@ export interface PlaybackSnapshot {
   // Page-local times from performance.now(), which a clock change cannot move.
   /** While a dropped connection may recover: when it fails. */
   recoverBy?: number | undefined;
+  /** After a lost connection: when it is tried again on its own. */
+  retryAt?: number;
   /** When this page last received a newer observation of a known state. */
   statusAt?: number;
   /** Since when this page has asked for status; unset while it does not. */
@@ -25,6 +27,10 @@ export interface PlaybackSnapshot {
 }
 /** A dropped connection fails unless it recovers within this window. */
 export const RECOVERY_MS = 15000;
+/** Delays before each automatic retry after a lost connection; then Try again. */
+export const RETRY_MS = [3000, 10000];
+/** Video that played this long before its connection was lost earns new retries. */
+export const STABLE_MS = 60000;
 interface Attempt {
   generation: number;
   selection: StreamRef;
@@ -38,6 +44,12 @@ interface Attempt {
   observed?: boolean;
   /** The observation time of the last answer counted as an update. */
   counted?: string | null;
+  /** Started by an automatic retry, not by the viewer. */
+  auto: boolean;
+  /** When the current stretch of video began; unset while disconnected. */
+  since?: number;
+  /** Set once a stretch of video ends: the longest without a disconnection. */
+  steady?: number;
 }
 export function gather(
   peer: RTCPeerConnection,
@@ -67,8 +79,10 @@ export function gather(
   });
 }
 
-// A page owns one peer and a serialized create/cleanup chain. No source reset,
-// lease renewal or automatic POST retry exists here. Browser ICE owns recovery.
+// A page owns one peer and a serialized create/cleanup chain. No source reset
+// or lease renewal exists here. Browser ICE owns recovery of a dropped
+// connection; only a lost connection of video that played is tried again on
+// its own, a bounded number of times, never an uncertain create.
 export class PlaybackController {
   private generation = 0;
   private active: Attempt | undefined;
@@ -82,6 +96,11 @@ export class PlaybackController {
   private disposed = false;
   private keepalive = false;
   private reloadRequired = false;
+  /** Automatic retries used since the viewer last acted or video played steadily. */
+  private retries = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A retry came due; it starts once the page is visible. */
+  private due = false;
   constructor(
     private readonly api: ViewerAPI,
     private readonly changed: (snapshot: PlaybackSnapshot | undefined) => void,
@@ -116,6 +135,8 @@ export class PlaybackController {
     return timer;
   }
   private cancel() {
+    clearTimeout(this.retryTimer);
+    this.due = false;
     const attempt = this.active;
     this.active = undefined;
     if (!attempt) return;
@@ -145,12 +166,15 @@ export class PlaybackController {
     this.tail = this.tail.then(work, work);
     return this.tail;
   }
+  /** `auto` marks an automatic retry, which keeps the count of retries used. */
   select(
     ref: StreamRef | undefined,
     capabilities?: MediaCapabilities,
+    auto = false,
   ): Promise<void> {
     const generation = ++this.generation;
     this.cancel();
+    if (!auto) this.retries = 0;
     this.selected = ref && capabilities ? { ref, capabilities } : undefined;
     this.snapshot = ref
       ? { selection: ref, state: "connecting", media: null }
@@ -166,7 +190,7 @@ export class PlaybackController {
           this.disposed
         )
           return;
-        await this.start(generation, ref, capabilities);
+        await this.start(generation, ref, capabilities, auto);
       } catch (error) {
         if (generation !== this.generation || this.disposed || !ref) return;
         this.cancel();
@@ -228,6 +252,7 @@ export class PlaybackController {
   observe(enabled: boolean) {
     if (enabled === this.observing) return;
     this.observing = enabled;
+    this.resume();
     // Freshness counts only while the page asks for status.
     const attempt = this.active;
     if (attempt?.observed)
@@ -237,8 +262,26 @@ export class PlaybackController {
   }
   playing() {
     const attempt = this.active;
-    if (attempt && attempt.peer.connectionState === "connected")
+    if (attempt && attempt.peer.connectionState === "connected") {
+      attempt.since ??= performance.now();
       this.publish(attempt, { state: "playing" });
+    }
+  }
+  // Ends the current stretch of video and keeps the longest. An outage is not
+  // video, so a link that keeps dropping never earns new retries.
+  private still(attempt: Attempt) {
+    if (attempt.since !== undefined)
+      attempt.steady = Math.max(
+        attempt.steady ?? 0,
+        performance.now() - attempt.since,
+      );
+    delete attempt.since;
+  }
+  // A due retry waits while the page is hidden, so a page nobody sees does not
+  // take a viewer slot again.
+  private resume() {
+    if (this.due && this.observing && this.selected)
+      void this.select(this.selected.ref, this.selected.capabilities, true);
   }
   mediaError() {
     if (this.active)
@@ -252,20 +295,35 @@ export class PlaybackController {
     if (attempt && this.snapshot?.state === "playing")
       this.publish(attempt, { state: "reconnecting" });
   }
-  private async failure(attempt: Attempt, error: ErrorBody) {
+  /** `lost`: the peer failed, or stayed disconnected past its window. */
+  private async failure(attempt: Attempt, error: ErrorBody, lost = false) {
     if (!this.current(attempt)) return;
     this.cancel();
+    this.still(attempt);
+    if ((attempt.steady ?? 0) >= STABLE_MS) this.retries = 0;
+    // Only video that played (a stretch ended above), or an automatic retry
+    // of it, is tried again.
+    const delay =
+      lost && (attempt.steady !== undefined || attempt.auto)
+        ? RETRY_MS[this.retries]
+        : undefined;
     this.snapshot = {
       selection: attempt.selection,
       state: "failed",
       media: null,
       error,
     };
+    if (delay !== undefined) {
+      this.retries++;
+      this.snapshot.retryAt = performance.now() + delay;
+    }
+    const { retryAt } = this.snapshot;
     this.changed(this.snapshot);
     await this.enqueue(async () => {
       try {
         await this.release();
       } catch {
+        // Cleanup that failed is not repeated on its own, and nor is the view.
         if (attempt.generation === this.generation && !this.disposed) {
           this.snapshot = {
             selection: attempt.selection,
@@ -278,13 +336,26 @@ export class PlaybackController {
           };
           this.changed(this.snapshot);
         }
+        return;
       }
+      // The retry waits for the server to confirm the old session's release,
+      // however long that takes; a viewer action meanwhile supersedes it.
+      if (
+        retryAt !== undefined &&
+        attempt.generation === this.generation &&
+        !this.disposed
+      )
+        this.retryTimer = setTimeout(() => {
+          this.due = true;
+          this.resume();
+        }, retryAt - performance.now());
     });
   }
   private async start(
     generation: number,
     ref: StreamRef,
     capabilities: MediaCapabilities,
+    auto: boolean,
   ) {
     if (!capabilities.video && !capabilities.audio)
       throw new PlaybackError("unsupported_capability", false);
@@ -301,8 +372,15 @@ export class PlaybackController {
       peer,
       media: new MediaStream(),
       timers: new Set(),
+      auto,
     };
     this.active = attempt;
+    const lost = (really = true) =>
+      void this.failure(
+        attempt,
+        safeError(new PlaybackError("media_connection_failed")),
+        really,
+      );
     peer.ontrack = (event) => {
       if (!this.current(attempt)) {
         event.track.stop();
@@ -335,23 +413,18 @@ export class PlaybackController {
         peer.connectionState === "failed" ||
         peer.connectionState === "closed"
       ) {
-        void this.failure(
-          attempt,
-          safeError(new PlaybackError("media_connection_failed")),
-        );
+        // Only this page closes its peers, after detaching this handler.
+        lost(peer.connectionState === "failed");
       } else if (peer.connectionState === "disconnected") {
         if (attempt.disconnectTimer !== undefined) {
           this.publish(attempt, { state: "reconnecting" });
           return;
         }
+        this.still(attempt);
         attempt.disconnectTimer = this.timer(
           attempt,
           () => {
-            if (peer.connectionState === "disconnected")
-              void this.failure(
-                attempt,
-                safeError(new PlaybackError("media_connection_failed")),
-              );
+            if (peer.connectionState === "disconnected") lost();
           },
           RECOVERY_MS,
         );
@@ -390,11 +463,7 @@ export class PlaybackController {
         attempt.connectTimer = this.timer(
           attempt,
           () => {
-            if (attempt.peer.connectionState !== "connected")
-              void this.failure(
-                attempt,
-                safeError(new PlaybackError("media_connection_failed")),
-              );
+            if (peer.connectionState !== "connected") lost();
           },
           20000,
         );

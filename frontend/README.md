@@ -22,12 +22,21 @@ Press <kbd>?</kbd> for keyboard shortcuts. Loading shows a skeleton of the same
 layout.
 
 When the connection drops, the last frame stays in view under a compact
-**Reconnecting** badge that counts down its 15-second recovery window. The stream
+**Reconnecting** badge that counts down its 15-second recovery window. If it does
+not recover, the player says **Connection lost** and tries again on its own, up
+to twice, counting down each wait; **Try again** starts at once and **Stop** ends
+the wait. The stream
 details say how fresh the status is ("Updated 4 s ago") and warn when updates stop
 while the page is visible. Each failure names its error code, camera, stream and
-time, and where the failure belongs to this camera, **Choose another camera**
-opens the camera list. Camera rows show a status only when it is known; the
-selected row shows this page's own state.
+time. Where the server reports a failure of this camera or stream and another
+camera can play, **Choose another camera** opens the camera list; a lost
+connection or a timeout offers **Try again** only, because this device's network
+may be the cause. The selected camera row shows this page's own state. Other rows
+show the server's status of that camera when it says something: **Live**,
+**Connecting**, **Reconnecting**, **Offline** or **Unavailable**. An offline or
+failed camera is dimmed but stays a link. An idle camera shows no status, because
+idle does not establish that it can play. In the collapsed rail, each camera's
+tooltip adds that status to its name.
 
 Each view has an address: `?camera=<id>&stream=<id>`, with the stream omitted for a
 camera's first stream. Opening it selects that view when the catalog lists it.
@@ -65,7 +74,8 @@ then open `http://127.0.0.1:5173/prototype.html`. Use **Prototype controls** to
 simulate catalog errors, connection failures, source reconnects, themes and
 operator controls. `?camera=livingroom&stream=compact` selects a synthetic stream.
 It makes no camera/API requests, opens no capture device and persists no settings.
-Automatic retries and richer camera status are proposals, not production behavior.
+Its broader automatic retries and richer camera status are proposals; the viewer
+itself retries only a lost connection, as described under Ownership and recovery.
 The prototype is type-checked and tested but excluded from production build/embed
 output; it does not establish live playback or browser/hardware compatibility.
 
@@ -96,17 +106,35 @@ confirms release. **Stop** releases the session through the same chain and keeps
 the selection, so Play negotiates again; a failed release shows the cleanup error
 instead of reporting the slot free. The stopped state is not stored: a reload, or
 a return through the browser's back-forward cache, starts the view again as a
-fresh page does. No automatic mutation replay, upstream
-reconnect, credential storage, session lease renewal or foreground heartbeat
-exists in the viewer.
+fresh page does. The viewer never replays a request whose outcome is uncertain,
+and has no upstream reconnect, credential storage, session lease renewal or
+foreground heartbeat.
 
-Status observations are read-only and pause when hidden. Their freshness is
-timed with this device's clock from when each answer arrives, not from the
-server's observation time, and a page shown again does not warn while its first
-new request runs. Native ICE may recover brief interruptions; a failed peer
-exposes **Try again**. Each new disconnection receives its own 15-second recovery
-window, which the player counts down; the initial connection deadline is cleared
-on connection. Nothing retries on its own.
+Status observations are read-only and pause when hidden, including in a page
+opened in a background tab. Camera statuses refresh every 10 seconds while the
+page is visible, and at once when it is shown again. A refresh changes only each
+camera's status; the cameras listed and the selection change only on reload. A
+camera the refresh leaves out, or a failed refresh, shows no status rather than an
+old one. A page shown again keeps its last statuses until that refresh answers,
+at most 20 seconds, and a reload overrides an older refresh. Freshness is timed on this device from when each
+newer observation of a known state arrives; the server's observation time is
+only compared with its earlier values, never with the device clock. A page shown
+again does not warn while its first new request runs. Native ICE may recover
+brief interruptions. Each new disconnection receives its own 15-second recovery
+window, which the player counts down on screen; the initial connection deadline
+is cleared on connection.
+
+A peer that fails, or stays disconnected past its window, is a lost connection.
+If its video played, the controller releases the session and, once the release
+is confirmed, tries again on its own up to twice, 3 and then 10 seconds after
+each loss. An automatic retry that cannot connect within its 20-second deadline
+counts as lost too. A retry that comes due while the page is hidden waits until
+the page is shown, so a page nobody sees does not take a viewer slot again.
+**Try again**, another selection, **Stop** and failed cleanup cancel a pending
+retry. A minute of video without a disconnection earns a new pair; an outage does
+not count as video, so a link that keeps dropping stays bounded. Every other
+failure, a create whose outcome is uncertain and video that never played wait for
+**Try again**.
 If session cleanup is denied after a controller restart or ownership change, the
 page retains the old session and offers **Reload page**, a link to the same camera
 and stream, instead of endlessly retrying that ID. Reloading checks the current

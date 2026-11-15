@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PlaybackController,
   RECOVERY_MS,
+  RETRY_MS,
+  STABLE_MS,
   gather,
   type PlaybackSnapshot,
 } from "./playback";
@@ -236,7 +238,7 @@ describe("owned viewer lifecycle", () => {
     expect(last()!.state).toBe("playing");
     await controller.dispose();
   });
-  it("allows native ICE recovery, but requires explicit retry after failure", async () => {
+  it("allows native ICE recovery, then releases a connection that failed", async () => {
     const { controller, api, peers, last } = setup();
     await controller.select(one, capabilities);
     peers[0]!.connect("connected");
@@ -451,6 +453,296 @@ describe("owned viewer lifecycle", () => {
     expect(last()!.error!.code).toBe("access_denied");
     expect(api.close).toHaveBeenCalledOnce();
     expect(api.create).toHaveBeenCalledOnce();
+    await controller.dispose();
+  });
+});
+describe("automatic retry of lost connections", () => {
+  // Plays the newest peer's video, then loses its connection.
+  async function lose(peers: Peer[], controller: PlaybackController) {
+    const peer = peers.at(-1)!;
+    peer.connect("connected");
+    controller.playing();
+    peer.connect("failed");
+    await flush();
+  }
+  it("tries a lost connection again on its own, twice, then leaves it to Try again", async () => {
+    // The policy: 3 s, then 10 s; a minute of steady video earns a new pair.
+    expect(RETRY_MS).toEqual([3000, 10000]);
+    expect(STABLE_MS).toBe(60000);
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    await lose(peers, controller);
+    // The lost session is released at once; the retry waits its delay.
+    expect(api.close).toHaveBeenCalledWith("one", false);
+    expect(last()).toMatchObject({
+      state: "failed",
+      error: { code: "media_connection_failed" },
+      retryAt: performance.now() + RETRY_MS[0]!,
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]! - 1);
+    expect(api.create).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(last()!.state).toBe("connecting");
+    expect(last()!.retryAt).toBeUndefined();
+    // The retry plays, then stays disconnected past its recovery window.
+    peers[1]!.connect("connected");
+    controller.playing();
+    peers[1]!.connect("disconnected");
+    await vi.advanceTimersByTimeAsync(RECOVERY_MS);
+    expect(last()!.retryAt).toBe(performance.now() + RETRY_MS[1]!);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+    expect(api.create).toHaveBeenCalledTimes(3);
+    // A retry that never connects is lost too, and no retries remain.
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(last()!.retryAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(api.create).toHaveBeenCalledTimes(3);
+    expect(api.close).toHaveBeenCalledTimes(3);
+    // Try again is the viewer's own and earns new retries.
+    await controller.retry();
+    await lose(peers, controller);
+    expect(last()!.retryAt).toBe(performance.now() + RETRY_MS[0]!);
+    // Try again during the countdown starts at once, and only once.
+    await controller.retry();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.create).toHaveBeenCalledTimes(5);
+    await controller.dispose();
+  });
+  it("counts an automatic retry that cannot connect as lost", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    await lose(peers, controller);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+    expect(api.create).toHaveBeenCalledTimes(2);
+    // The retry never connects; its 20 s deadline is a lost connection.
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(last()).toMatchObject({
+      error: { code: "media_connection_failed" },
+      retryAt: performance.now() + RETRY_MS[1]!,
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+    expect(api.create).toHaveBeenCalledTimes(3);
+    // The second retry's peer fails before it plays: lost, but none remain.
+    peers[2]!.connect("failed");
+    await flush();
+    expect(last()!.retryAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(api.create).toHaveBeenCalledTimes(3);
+    await controller.dispose();
+  });
+  it("starts a retry only once the old session's release is confirmed", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    // A release slower than the delay, which then fails.
+    const slow = deferred<void>();
+    api.close.mockImplementationOnce(() => slow.promise);
+    await lose(peers, controller);
+    expect(last()!.retryAt).toBe(performance.now() + RETRY_MS[0]!);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]! + 2000);
+    expect(api.create).toHaveBeenCalledOnce();
+    slow.reject(new PlaybackError("cleanup_incomplete"));
+    await flush();
+    expect(last()!.error!.code).toBe("cleanup_incomplete");
+    expect(last()!.retryAt).toBeUndefined();
+    // Neither the cleanup nor the view is repeated without the viewer.
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.close).toHaveBeenCalledOnce();
+    expect(api.create).toHaveBeenCalledOnce();
+    await controller.retry();
+    expect(api.close).toHaveBeenCalledTimes(2);
+    expect(api.create).toHaveBeenCalledTimes(2);
+    // A slow release that succeeds starts the overdue retry at once, unless
+    // the page was hidden meanwhile; then it waits to be shown.
+    const late = deferred<void>();
+    api.close.mockImplementationOnce(() => late.promise);
+    await lose(peers, controller);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]! + 2000);
+    controller.observe(false);
+    late.resolve();
+    await flush();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.create).toHaveBeenCalledTimes(2);
+    controller.observe(true);
+    await flush();
+    expect(api.create).toHaveBeenCalledTimes(3);
+    const slower = deferred<void>();
+    api.close.mockImplementationOnce(() => slower.promise);
+    await lose(peers, controller);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[1]! + 2000);
+    slower.resolve();
+    await flush();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.create).toHaveBeenCalledTimes(4);
+    // Try again during a slow release supersedes a pending retry: it runs
+    // once the release is confirmed, and no automatic one follows.
+    await controller.retry();
+    const slowest = deferred<void>();
+    api.close.mockImplementationOnce(() => slowest.promise);
+    await lose(peers, controller);
+    expect(last()!.retryAt).toBe(performance.now() + RETRY_MS[0]!);
+    const again = controller.retry();
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]! + 2000);
+    expect(api.create).toHaveBeenCalledTimes(5);
+    slowest.resolve();
+    await again;
+    expect(api.create).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.create).toHaveBeenCalledTimes(6);
+    await controller.dispose();
+  });
+  it("leaves video that never played, and other failures, to Try again", async () => {
+    const { controller, api, peers, last } = setup();
+    // Connected but never played, as when a page waits for an autoplay tap.
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    peers[0]!.connect("failed");
+    await flush();
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(last()!.retryAt).toBeUndefined();
+    // A media element error is not a lost connection.
+    await controller.retry();
+    peers[1]!.connect("connected");
+    controller.playing();
+    controller.mediaError();
+    await flush();
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(last()!.retryAt).toBeUndefined();
+    // Nor is a peer that reports closed: only this page closes its peers.
+    await controller.retry();
+    peers.at(-1)!.connect("connected");
+    controller.playing();
+    peers.at(-1)!.connect("closed");
+    await flush();
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(last()!.retryAt).toBeUndefined();
+    // Nor is a fault the server reports.
+    await controller.retry();
+    peers.at(-1)!.connect("connected");
+    controller.playing();
+    api.status.mockResolvedValueOnce({
+      stream_id: "default",
+      state: "failed",
+      viewers: null,
+      observed_at: null,
+      error: { code: "source_unavailable", message: "", retryable: false },
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(last()!.error!.code).toBe("source_unavailable");
+    expect(last()!.retryAt).toBeUndefined();
+    // An automatic retry whose create fails, even one that may have reached
+    // the server, ends the retries.
+    await controller.retry();
+    await lose(peers, controller);
+    api.create.mockRejectedValueOnce(new PlaybackError("deadline_exceeded"));
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+    expect(last()!.error!.code).toBe("deadline_exceeded");
+    expect(last()!.retryAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(api.create).toHaveBeenCalledTimes(6);
+    await controller.dispose();
+  });
+  it("waits for a visible page and yields to Stop, a new selection and failed cleanup", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    await lose(peers, controller);
+    // A hidden page does not take a viewer slot again; shown, it tries at once.
+    controller.observe(false);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.create).toHaveBeenCalledOnce();
+    expect(last()!.state).toBe("failed");
+    controller.observe(true);
+    await flush();
+    expect(api.create).toHaveBeenCalledTimes(2);
+    // Once it has started, showing the page again starts nothing more.
+    peers[1]!.connect("connected");
+    controller.playing();
+    controller.observe(false);
+    controller.observe(true);
+    await flush();
+    expect(api.create).toHaveBeenCalledTimes(2);
+    // Stop ends a pending retry.
+    await lose(peers, controller);
+    await controller.stop();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(last()!.state).toBe("closed");
+    expect(api.create).toHaveBeenCalledTimes(2);
+    // So does choosing another camera.
+    await controller.retry();
+    await lose(peers, controller);
+    await controller.select(two, capabilities);
+    const peer = peers.at(-1)!;
+    peer.connect("connected");
+    controller.playing();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.create).toHaveBeenCalledTimes(4);
+    expect(last()).toMatchObject({ selection: two, state: "playing" });
+    // Cleanup that failed is reported, and nothing is tried on its own.
+    api.close.mockRejectedValueOnce(new PlaybackError("cleanup_incomplete"));
+    peer.connect("failed");
+    await flush();
+    expect(last()!.error!.code).toBe("cleanup_incomplete");
+    expect(last()!.retryAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.create).toHaveBeenCalledTimes(4);
+    // Closing the page leaves nothing to start.
+    await controller.retry();
+    await lose(peers, controller);
+    await controller.dispose();
+    controller.observe(false);
+    controller.observe(true);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.create).toHaveBeenCalledTimes(5);
+  });
+  it("earns new retries after a minute of steady video", async () => {
+    const { controller, peers, last } = setup();
+    // Plays the newest peer's video for `ms`, calling playing() again at the
+    // end as the element's timeupdate events do.
+    const play = async (ms: number) => {
+      peers.at(-1)!.connect("connected");
+      controller.playing();
+      await vi.advanceTimersByTimeAsync(ms);
+      controller.playing();
+    };
+    // A drop that recovers, and one that does not.
+    const blip = async () => {
+      peers.at(-1)!.connect("disconnected");
+      await vi.advanceTimersByTimeAsync(5000);
+    };
+    const fail = async () => {
+      peers.at(-1)!.connect("failed");
+      await flush();
+    };
+    await controller.select(one, capabilities);
+    // Two quick losses use both retries.
+    for (const delay of RETRY_MS) {
+      await play(0);
+      await fail();
+      expect(last()!.retryAt).toBe(performance.now() + delay);
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    // The longest stretch counts: a minute, a recovered drop, then 10 s.
+    await play(STABLE_MS);
+    await blip();
+    await play(10000);
+    await fail();
+    expect(last()!.retryAt).toBe(performance.now() + RETRY_MS[0]!);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+    // Stretches split by a drop do not add up, and the outage before a loss
+    // is not video.
+    await play(40000);
+    await blip();
+    await play(40000);
+    peers.at(-1)!.connect("disconnected");
+    await vi.advanceTimersByTimeAsync(RECOVERY_MS);
+    expect(last()!.retryAt).toBe(performance.now() + RETRY_MS[1]!);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+    // Just under a minute is not enough, and no retries remain.
+    await play(STABLE_MS - 1);
+    await fail();
+    expect(last()!.retryAt).toBeUndefined();
     await controller.dispose();
   });
 });

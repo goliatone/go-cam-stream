@@ -57,9 +57,14 @@ export function describeView(view: {
   paused?: boolean | undefined;
   needsPlay?: boolean | undefined;
   reloadRequired?: boolean | undefined;
+  /** A lost connection that is tried again on its own is still recovering. */
+  retryAt?: number | undefined;
 }): ViewState {
   if (view.reloadRequired) return { label: "Reload needed", tone: "danger" };
-  if (view.error) return { label: stateLabels.failed, tone: "danger" };
+  if (view.error)
+    return view.retryAt === undefined
+      ? { label: stateLabels.failed, tone: "danger" }
+      : { label: stateLabels.reconnecting, tone: "busy" };
   if (view.needsPlay) return { label: "Ready to play", tone: "idle" };
   if (resumable(view)) return { label: "Paused", tone: "idle" };
   return { label: stateLabels[view.state], tone: stateTones[view.state] };
