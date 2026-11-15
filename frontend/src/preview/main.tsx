@@ -1,5 +1,5 @@
 import { render } from "preact";
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { App, type ViewerInput } from "../app";
 import type {
   CameraList,
@@ -64,6 +64,7 @@ const scenarios = [
   "playing",
   "paused",
   "reconnecting",
+  "stale",
   "stopping",
   "stopped",
   "idle",
@@ -90,20 +91,51 @@ const failures: Partial<Record<Scenario, ErrorBody>> = {
   capacity: { code: "capacity_exceeded", message: "", retryable: true },
 };
 
+/** Scenarios whose synthetic status keeps arriving every 2 s. */
+const observed: readonly Scenario[] = [
+  "playing",
+  "paused",
+  "unsupported",
+  "reconnecting",
+];
+
 function Preview() {
   const [scenario, setScenario] = useState<Scenario>("connecting");
+  // When the scenario began and when its synthetic status last arrived.
+  const [since, setSince] = useState(() => Date.now());
+  const [polled, setPolled] = useState(() => Date.now());
   const [selection, setSelection] = useState<StreamRef>({
     camera_id: "room1",
     stream_id: "default",
   });
   const [event, setEvent] = useState("No action yet");
   const [attempt, setAttempt] = useState(0);
+  function show(next: Scenario) {
+    setScenario(next);
+    setSince(Date.now());
+    setPolled(Date.now());
+  }
+  const live = observed.includes(scenario);
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(() => setPolled(Date.now()), 2000);
+    return () => clearInterval(timer);
+  }, [live]);
+  // As a real connection that stays down, the recovery window ends in failure.
+  useEffect(() => {
+    if (scenario !== "reconnecting") return;
+    const timer = setTimeout(() => {
+      show("media");
+      setEvent("Recovery window ended; preview only");
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [scenario]);
   const error =
     failures[scenario] ??
     (selection.camera_id === "hall" ? failures.offline : undefined);
   const state: State = error
     ? "failed"
-    : ["playing", "paused", "unsupported"].includes(scenario)
+    : ["playing", "paused", "unsupported", "stale"].includes(scenario)
       ? "playing"
       : scenario === "stopping"
         ? "closing"
@@ -131,27 +163,35 @@ function Preview() {
       viewers: state === "playing" ? 2 : null,
       observed_at: state === "playing" ? "2026-11-14T14:30:00Z" : null,
     },
+    // Synthetic times: live scenarios answer every 2 s; "stale" stopped 25 s
+    // before it was chosen.
+    ...(live
+      ? { statusAt: polled, observingSince: since }
+      : scenario === "stale"
+        ? { statusAt: since - 25000, observingSince: since - 40000 }
+        : {}),
     presentation: {
       state,
       paused: scenario === "paused",
+      ...(scenario === "reconnecting" ? { recoverBy: since + 15000 } : {}),
       ...(error ? { error } : {}),
       controls,
       actions: {
         onRetry: () => {
           setAttempt(attempt + 1);
           setEvent(`Viewer retry callback ${attempt + 1}; no network request`);
-          if (scenario === "stopped") setScenario("connecting");
+          if (scenario === "stopped") show("connecting");
         },
         onPlay: () => {
-          setScenario("playing");
+          show("playing");
           setEvent("Play callback; preview only");
         },
         onPause: () => {
-          setScenario("paused");
+          show("paused");
           setEvent("Pause callback; preview only");
         },
         onStop: () => {
-          setScenario("stopped");
+          show("stopped");
           setEvent("Stop callback; no network request");
         },
         onMute: (muted) =>
@@ -171,7 +211,7 @@ function Preview() {
           id="scenario"
           value={scenario}
           onChange={(e) => {
-            setScenario(e.currentTarget.value as Scenario);
+            show(e.currentTarget.value as Scenario);
             setEvent("No action yet");
           }}
         >

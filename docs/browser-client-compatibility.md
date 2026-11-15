@@ -18,8 +18,10 @@ statistics, and playing state comes from the media element.
 | Keyboard shortcuts | Single keys without Ctrl, Alt or Meta; held keys do not repeat. Ignored while a form field has focus or a dialog is open, and Space still activates a focused button. R starts a stopped view and otherwise says when there is nothing to retry. Layouts that need AltGr or Option for `[` and `]` cannot use those two; the rail and the camera sheet still switch cameras. |
 | Phone layouts | Portrait pins the player under the top bar. Landscape on touch screens at 500 px height or less fills the screen, pads for safe areas (`viewport-fit=cover`), scrolls a long message above the controls and opens cameras and the stream choice in a modal sheet. The camera name stays the page heading for screen readers. A zoomed or short desktop window keeps the regular layout, which scrolls instead of clipping. |
 | Selection change | Detach/pause old video, close peer/stop tracks, confirm server release, then negotiate the latest selection. |
-| Brief transport loss | Show reconnecting while native ICE recovers; sustained disconnection/failed media releases the viewer and offers explicit retry. |
-| Hidden page/PiP | No lease renewal or mandatory foreground polling. Hiding pauses observations, not the peer. Browser/OS suspension policy still applies. |
+| Brief transport loss | A compact Reconnecting badge over the last frame counts down the 15 s recovery window while native ICE recovers; a media stall without a peer disconnection shows no countdown. Sustained disconnection/failed media releases the viewer and offers explicit retry. |
+| Status freshness | Timed on this device from when each status answer with an observation arrives, never by comparing the server's observation time with the device clock. After 10 s of asking without one, the stream details warn "No update for N s". |
+| Failure details | A safe error code, camera, stream and the time first shown; never the server's message. Choose another camera opens the camera sheet when the failure belongs to this camera and another camera can play; failures every camera shares do not offer it. |
+| Hidden page/PiP | No lease renewal or mandatory foreground polling. Hiding pauses observations, not the peer, and pauses the freshness warning. Browser/OS suspension policy still applies. |
 | Controller restart / lost session ownership | Denied cleanup preserves the old session locally and offers Reload page, which reopens the same camera and stream. A fresh page rechecks catalog/access and readiness; denial is never treated as successful cleanup. |
 | Source failure | Safe source error; viewer retry never performs operator reconnect or clears a source latch. |
 | Page exit | Best-effort keepalive release plus immediate peer close; backend peer-loss handling provides bounded cleanup when delivery is unavailable. |
@@ -54,6 +56,10 @@ and 375×812, and with touch emulation at 667×330 and 640×260. Overlay fade, S
 the camera sheet and its stream choice, scrolling messages, focus after switching
 and the shortcuts dialog behaved as specified. No live media, real phone, notch
 safe area or touch hardware was exercised.
+T22's reconnect countdown, stale-status warning, failure details and Choose
+another camera sheet were checked the same way at 1440×900 and 375×812, and with
+touch emulation at 667×330 and 640×260. Live disconnection timing, status outages
+against a real server and screen-reader announcements were not exercised.
 Firefox Developer Edition fails
 ICE in both the TCP-only and TCP+UDP local fixtures (owner-reported). Its exact
 version and cause are unverified; Firefox support is not established. The generic

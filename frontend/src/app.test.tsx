@@ -246,9 +246,21 @@ describe("states and controls", () => {
       viewers: 0,
       observed_at: "2026-11-14T14:30:00Z",
     };
+    viewer.statusAt = Date.now();
     rerender(<App catalog={catalog} viewer={{ ...viewer }} />);
     expect(screen.getByText("0")).toBeTruthy();
-    expect(screen.queryByText("No update yet")).toBeNull();
+    expect(screen.getByText("Updated just now")).toBeTruthy();
+    // An answer for another stream is not this stream's update.
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={{
+          ...viewer,
+          status: { ...viewer.status, stream_id: "compact" },
+        }}
+      />,
+    );
+    expect(screen.getByText("No update yet")).toBeTruthy();
   });
 
   it("explains unsupported controls and invokes only supported callbacks", async () => {
@@ -358,6 +370,13 @@ it("offers a fresh page after lost session ownership, without retrying cleanup f
   expect(screen.getByRole("link", { name: "Reload page" }).getAttribute("href")).toBe("?camera=room1");
   expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   expect(screen.getByText("This view needs a reload")).toBeTruthy();
+  // Another camera would meet the same unreleased session.
+  expect(
+    screen.queryByRole("button", { name: "Choose another camera" }),
+  ).toBeNull();
+  expect(document.querySelector(".error-details code")!.textContent).toBe(
+    "cleanup_incomplete",
+  );
 });
 
 describe("addressable views and tab state", () => {
@@ -963,5 +982,227 @@ describe("controls while a view connects", () => {
     (document.activeElement as HTMLElement).blur();
     fireEvent(sheet, new Event("close"));
     expect(document.activeElement).toBe(document.querySelector("main"));
+  });
+});
+
+describe("live status and recovery", () => {
+  const T0 = Date.parse("2026-11-15T10:04:05Z");
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const tick = (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  const failed = (error: ErrorBody): ViewerInput => {
+    const viewer = input("failed");
+    viewer.presentation.error = error;
+    return viewer;
+  };
+  const choose = () =>
+    screen.queryByRole("button", { name: "Choose another camera" });
+
+  it("counts down the recovery window over the last frame", () => {
+    vi.useFakeTimers({ now: T0 });
+    const viewer = input("reconnecting");
+    viewer.presentation.recoverBy = T0 + 15000;
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    const notice = document.querySelector(".player-notice")!;
+    const seconds = () => notice.querySelector(".countdown")?.textContent;
+    expect(notice.getAttribute("role")).toBe("status");
+    expect(notice.textContent).toContain("Reconnecting…");
+    // The seconds are visual only, so the status is announced once.
+    expect(seconds()).toBe("15 s");
+    expect(
+      notice.querySelector(".countdown")!.getAttribute("aria-hidden"),
+    ).toBe("true");
+    // No full message or scrim covers the frame.
+    expect(
+      document.querySelector(".video-stage")!.classList.contains("has-message"),
+    ).toBe(false);
+    expect(screen.queryByRole("heading", { name: /Reconnecting/ })).toBeNull();
+    expect(document.querySelector("video")!.getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    tick(4000);
+    expect(seconds()).toBe("11 s");
+    // Past the deadline the failure is due; no zero or negative count shows.
+    tick(11000);
+    expect(seconds()).toBeUndefined();
+    expect(notice.textContent).toContain("Reconnecting…");
+    // A stall with no deadline shows no seconds.
+    const stalled = input("reconnecting");
+    rerender(<App catalog={catalog} viewer={stalled} />);
+    expect(document.querySelector(".countdown")).toBeNull();
+  });
+
+  it("shows how fresh the status is and warns when updates stop", () => {
+    vi.useFakeTimers({ now: T0 });
+    const viewer = input();
+    viewer.statusAt = T0;
+    viewer.observingSince = T0 - 2000;
+    render(<App catalog={catalog} viewer={viewer} />);
+    expect(screen.getByText("Updated just now")).toBeTruthy();
+    tick(5000);
+    expect(screen.getByText("Updated 5 s ago")).toBeTruthy();
+    expect(document.querySelector(".stale")).toBeNull();
+    tick(5000);
+    expect(screen.getByText("No update for 10 s").className).toBe("stale");
+    tick(110000);
+    expect(screen.getByText("No update for 2 min")).toBeTruthy();
+  });
+
+  it("warns only after the page has asked for a whole window", () => {
+    vi.useFakeTimers({ now: T0 });
+    const viewer = input();
+    // A hidden page does not ask, so an old update is only old.
+    viewer.statusAt = T0 - 600000;
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    expect(screen.getByText("Updated 10 min ago")).toBeTruthy();
+    expect(document.querySelector(".stale")).toBeNull();
+    // Shown again, its first request gets a whole window before a warning.
+    rerender(
+      <App catalog={catalog} viewer={{ ...viewer, observingSince: T0 }} />,
+    );
+    tick(9000);
+    expect(document.querySelector(".stale")).toBeNull();
+    tick(1000);
+    expect(screen.getByText("No update for 10 min").className).toBe("stale");
+    // No answer at all since the page started asking.
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={{ ...input(), observingSince: Date.now() - 12000 }}
+      />,
+    );
+    expect(screen.getByText("No update for 12 s").className).toBe("stale");
+  });
+
+  it("names the safe code, camera, stream and time of a failure", () => {
+    vi.useFakeTimers({ now: T0 });
+    const viewer = failed({
+      code: "media_connection_failed",
+      message: "ice failed at 10.0.0.7",
+      retryable: true,
+    });
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    const details = document.querySelector(".error-details")!;
+    const time = new Date(T0).toLocaleTimeString();
+    expect(details.textContent).toBe(
+      `media_connection_failed · Room 1 · Default · ${time}`,
+    );
+    expect(details.querySelector("time")!.getAttribute("datetime")).toBe(
+      "2026-11-15T10:04:05.000Z",
+    );
+    expect(document.body.textContent).not.toContain("10.0.0.7");
+    // The time stays that of the first report.
+    tick(60000);
+    rerender(<App catalog={catalog} viewer={{ ...viewer }} />);
+    expect(details.querySelector("time")!.textContent).toBe(time);
+    // A different failure is a new report.
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={failed({ code: "camera_busy", message: "", retryable: true })}
+      />,
+    );
+    expect(document.querySelector(".error-details")!.textContent).toBe(
+      `camera_busy · Room 1 · Default · ${new Date(T0 + 60000).toLocaleTimeString()}`,
+    );
+    // Without a failure there are no details.
+    rerender(<App catalog={catalog} viewer={input("connecting")} />);
+    expect(document.querySelector(".error-details")).toBeNull();
+  });
+
+  it("names the code and time of a catalog failure", () => {
+    vi.useFakeTimers({ now: T0 });
+    render(<App catalog={catalog} error={samples.denied.error as ErrorBody} />);
+    expect(document.querySelector(".error-details")!.textContent).toBe(
+      `access_denied · ${new Date(T0).toLocaleTimeString()}`,
+    );
+    expect(document.body.textContent).not.toContain("Access denied.");
+  });
+
+  it("offers another camera where this camera fails", () => {
+    const { rerender } = render(
+      <App
+        catalog={catalog}
+        viewer={failed({ code: "camera_busy", message: "", retryable: true })}
+      />,
+    );
+    // Try again stays the first step while it may still work.
+    expect(choose()!.className).toBe("secondary-button");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    fireEvent.click(choose()!);
+    const sheet = document.querySelector<HTMLElement>(".camera-sheet")!;
+    expect(sheet.hasAttribute("open")).toBe(true);
+    expect(within(sheet).getByRole("link", { name: /Room 2/ })).toBeTruthy();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Close" }));
+    expect(sheet.hasAttribute("open")).toBe(false);
+    // Failures every camera shares get no such step.
+    for (const code of [
+      "capacity_exceeded",
+      "backend_unavailable",
+      "server_unavailable",
+    ] as const) {
+      rerender(
+        <App
+          catalog={catalog}
+          viewer={failed({ code, message: "", retryable: true })}
+        />,
+      );
+      expect(choose()).toBeNull();
+    }
+    // Where trying again won't help, it becomes the main step.
+    const source = failed({
+      code: "source_unavailable",
+      message: "",
+      retryable: false,
+    });
+    rerender(<App catalog={catalog} viewer={source} />);
+    expect(choose()!.className).toBe("primary-button");
+    // With no other camera there is nothing to choose.
+    rerender(
+      <App catalog={{ cameras: [catalog.cameras[0]!] }} viewer={source} />,
+    );
+    expect(choose()).toBeNull();
+    // A view that needs a reload offers only the reload.
+    const lost = failed({ code: "camera_busy", message: "", retryable: true });
+    lost.presentation.reloadRequired = true;
+    rerender(<App catalog={catalog} viewer={lost} />);
+    expect(choose()).toBeNull();
+    // Waiting, playing and paused views are not dead ends.
+    rerender(<App catalog={catalog} viewer={input("connecting")} />);
+    expect(choose()).toBeNull();
+  });
+
+  it("shows real status or none in the camera list", () => {
+    const unknown: CameraList = {
+      cameras: catalog.cameras.map((item) => ({
+        ...item,
+        availability: "unknown" as const,
+      })),
+    };
+    const { rerender } = render(
+      <App catalog={unknown} viewer={input("connecting")} />,
+    );
+    const rail = document.querySelector<HTMLElement>("#camera-rail")!;
+    const badge = (name: string) =>
+      within(rail)
+        .getByRole("link", { name: new RegExp(name) })
+        .querySelector(".status-badge")?.textContent;
+    expect(within(rail).queryByText("Status unknown")).toBeNull();
+    // The selected row shows this page's own player state.
+    expect(badge("Room 1")).toBe("Connecting");
+    expect(badge("Room 2")).toBeUndefined();
+    rerender(<App catalog={unknown} viewer={input("playing")} />);
+    expect(badge("Room 1")).toBe("Live");
+    // Availability the catalog does report still shows.
+    rerender(<App catalog={catalog} viewer={input("playing")} />);
+    expect(badge("Room 2")).toBe("Live");
+    // Before the player reports, the selected row shows nothing.
+    rerender(<App catalog={unknown} />);
+    expect(badge("Room 1")).toBeUndefined();
+    expect(within(rail).queryByText("Status unknown")).toBeNull();
   });
 });

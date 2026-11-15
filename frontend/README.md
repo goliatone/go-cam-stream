@@ -21,6 +21,14 @@ Play starts a new one.
 Press <kbd>?</kbd> for keyboard shortcuts. Loading shows a skeleton of the same
 layout.
 
+When the connection drops, the last frame stays in view under a compact
+**Reconnecting** badge that counts down its 15-second recovery window. The stream
+details say how fresh the status is ("Updated 4 s ago") and warn when updates stop
+while the page is visible. Each failure names its error code, camera, stream and
+time, and where the failure belongs to this camera, **Choose another camera**
+opens the camera list. Camera rows show a status only when it is known; the
+selected row shows this page's own state.
+
 Each view has an address: `?camera=<id>&stream=<id>`, with the stream omitted for a
 camera's first stream. Opening it selects that view when the catalog lists it.
 Otherwise an unknown stream falls back to the camera's first stream, and an
@@ -92,10 +100,13 @@ fresh page does. No automatic mutation replay, upstream
 reconnect, credential storage, session lease renewal or foreground heartbeat
 exists in the viewer.
 
-Status observations are read-only and pause when hidden. Native ICE may recover
-brief interruptions; a failed peer exposes **Try again**. Each new disconnection
-receives its own 15-second recovery window; the initial connection deadline is
-cleared on connection.
+Status observations are read-only and pause when hidden. Their freshness is
+timed with this device's clock from when each answer arrives, not from the
+server's observation time, and a page shown again does not warn while its first
+new request runs. Native ICE may recover brief interruptions; a failed peer
+exposes **Try again**. Each new disconnection receives its own 15-second recovery
+window, which the player counts down; the initial connection deadline is cleared
+on connection. Nothing retries on its own.
 If session cleanup is denied after a controller restart or ownership change, the
 page retains the old session and offers **Reload page**, a link to the same camera
 and stream, instead of endlessly retrying that ID. Reloading checks the current
@@ -107,7 +118,9 @@ or an expired token prevents confirmation. Back-forward cache entry releases the
 viewer; restoration reloads authorized scope.
 
 The UI uses fixed error copy and projected public fields. It never displays raw
-server messages, SDP, candidates, private source URLs or secret references. The
+server messages, SDP, candidates, private source URLs or secret references; a
+failure's details line shows only its safe error code, the camera and stream
+names and the time it was first shown. The
 optional transport badge shows only the selected WebRTC protocol (`TCP`/`UDP`).
 
 [Controlled browser evidence](../.ctx/specs/camera-streaming/support/evidence/t12-playback.md)

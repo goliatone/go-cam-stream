@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PlaybackController, gather, type PlaybackSnapshot } from "./playback";
+import {
+  PlaybackController,
+  RECOVERY_MS,
+  gather,
+  type PlaybackSnapshot,
+} from "./playback";
 import { PlaybackError, type ViewerAPI } from "./api";
-import type { Session, StreamRef } from "./contracts";
+import type { Session, StreamRef, StreamStatus } from "./contracts";
 class Stream {
   tracks: MediaStreamTrack[] = [];
   getTracks() {
@@ -71,12 +76,14 @@ function setup() {
     list: vi.fn(async () => ({ cameras: [] })),
     create: vi.fn(async (ref: StreamRef) => answer(ref)),
     close: vi.fn(async () => {}),
-    status: vi.fn(async (ref: StreamRef) => ({
-      stream_id: ref.stream_id,
-      state: "playing" as const,
-      viewers: 1,
-      observed_at: "2026-11-14T12:00:00Z",
-    })),
+    status: vi.fn(
+      async (ref: StreamRef): Promise<StreamStatus> => ({
+        stream_id: ref.stream_id,
+        state: "playing",
+        viewers: 1,
+        observed_at: "2026-11-14T12:00:00Z",
+      }),
+    ),
   } satisfies ViewerAPI;
   const controller = new PlaybackController(
     api,
@@ -263,6 +270,91 @@ describe("owned viewer lifecycle", () => {
     expect(last()!.state).toBe("reconnecting");
     await vi.advanceTimersByTimeAsync(1000);
     expect(last()!.error!.code).toBe("media_connection_failed");
+    await controller.dispose();
+  });
+  it("publishes when each disconnection fails unless it recovers", async () => {
+    const { controller, peers, last } = setup();
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    controller.playing();
+    expect(last()!.recoverBy).toBeUndefined();
+    peers[0]!.connect("disconnected");
+    expect(last()!.state).toBe("reconnecting");
+    expect(last()!.recoverBy).toBe(Date.now() + RECOVERY_MS);
+    await vi.advanceTimersByTimeAsync(5000);
+    // Recovered: no window is open, so no deadline remains to show.
+    peers[0]!.connect("connected");
+    expect(last()!.recoverBy).toBeUndefined();
+    controller.playing();
+    expect(last()!.state).toBe("playing");
+    // A stalled element has no deadline; only a dropped peer does.
+    controller.waiting();
+    expect(last()!.state).toBe("reconnecting");
+    expect(last()!.recoverBy).toBeUndefined();
+    controller.playing();
+    peers[0]!.connect("disconnected");
+    const deadline = Date.now() + RECOVERY_MS;
+    expect(last()!.recoverBy).toBe(deadline);
+    // A repeated disconnected event keeps the same window.
+    await vi.advanceTimersByTimeAsync(3000);
+    peers[0]!.connect("disconnected");
+    expect(last()!.recoverBy).toBe(deadline);
+    await vi.advanceTimersByTimeAsync(RECOVERY_MS - 3000);
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(last()!.recoverBy).toBeUndefined();
+    await controller.dispose();
+  });
+  it("tells when status last arrived and since when the page asks", async () => {
+    const { controller, api, peers, last } = setup();
+    const start = Date.now();
+    await controller.select(one, capabilities);
+    await flush();
+    peers[0]!.connect("connected");
+    expect(last()!.observingSince).toBe(start);
+    expect(last()!.statusAt).toBe(start);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(last()!.statusAt).toBe(start + 2000);
+    // A failed request keeps the time of the last answer, so the page can
+    // tell how long updates have stopped.
+    api.status.mockRejectedValue(new PlaybackError("server_unavailable"));
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(last()!.status!.state).toBe("unknown");
+    expect(last()!.statusAt).toBe(start + 2000);
+    // An answer without an observation is not an update.
+    api.status.mockResolvedValue({
+      stream_id: "default",
+      state: "unknown",
+      viewers: null,
+      observed_at: null,
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(last()!.status!.observed_at).toBeNull();
+    expect(last()!.statusAt).toBe(start + 2000);
+    // A hidden page does not ask; shown again, its window starts afresh.
+    controller.observe(false);
+    expect(last()!.observingSince).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(30000);
+    controller.observe(true);
+    expect(last()!.observingSince).toBe(Date.now());
+    // Stopping ends observation and its times.
+    await controller.stop();
+    expect(last()!.state).toBe("closed");
+    expect(last()!.observingSince).toBeUndefined();
+    expect(last()!.statusAt).toBeUndefined();
+    await controller.dispose();
+  });
+  it("starts the window only once the page asks for status", async () => {
+    const { controller, api, last } = setup();
+    controller.observe(false);
+    await controller.select(one, capabilities);
+    await flush();
+    expect(api.status).not.toHaveBeenCalled();
+    expect(last()!.observingSince).toBeUndefined();
+    controller.observe(true);
+    expect(last()!.observingSince).toBe(Date.now());
     await controller.dispose();
   });
   it("retains healthy playback during a read-only control-plane outage", async () => {

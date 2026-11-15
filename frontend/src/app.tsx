@@ -467,9 +467,9 @@ function StreamDetails({
   );
 }
 
-// How current the status is, on this device's clock: server observation
-// times may be skewed. It warns only while the page asks for updates, so a
-// page that was hidden does not warn while its first new request runs.
+// How current the status is, timed on this device: server observation times
+// may be skewed. It warns only once the page has asked for a whole window
+// without an answer, so a page shown again does not warn while it asks.
 function Freshness({
   at,
   since,
@@ -479,11 +479,10 @@ function Freshness({
 }) {
   useTick(Boolean(at ?? since));
   const now = Date.now();
+  const age = at ? now - at : undefined;
   const quiet = since ? now - Math.max(at ?? 0, since) : 0;
   if (quiet >= STALE_MS)
-    return <span class="stale">No update for {duration(quiet)}</span>;
-  if (!at) return <>No update yet</>;
-  return (
-    <>Updated {now - at < 3000 ? "just now" : `${duration(now - at)} ago`}</>
-  );
+    return <span class="stale">No update for {duration(age ?? quiet)}</span>;
+  if (age === undefined) return <>No update yet</>;
+  return <>Updated {age < 3000 ? "just now" : `${duration(age)} ago`}</>;
 }

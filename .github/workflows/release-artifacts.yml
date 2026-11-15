@@ -185,6 +185,7 @@ jobs:
       - name: Build embedded web and pinned Linux package
         run: |
           ./scripts/build-web.sh
+          npm --prefix frontend test
           curl --fail --location --retry 3 --max-time 180 \
             https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_linux_arm64 -o "$RUNNER_TEMP/go2rtc"
           # package.sh verifies the pinned digest before copying/building.

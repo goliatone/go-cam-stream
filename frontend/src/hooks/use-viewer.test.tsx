@@ -127,6 +127,32 @@ describe("live media binding", () => {
     expect(video.srcObject).toBeNull();
     expect(control.dispose).toHaveBeenCalled();
   });
+  it("passes the recovery deadline and status times to the view", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    const now = Date.now();
+    act(() =>
+      control.changed!({
+        ...snapshot("reconnecting"),
+        recoverBy: now + 9000,
+        statusAt: now,
+        observingSince: now - 1000,
+        status: {
+          stream_id: "default",
+          state: "playing",
+          viewers: 1,
+          observed_at: "2026-11-15T10:00:00Z",
+        },
+      }),
+    );
+    expect(await screen.findByText("Updated just now")).toBeTruthy();
+    expect(document.querySelector(".countdown")!.textContent).toBe("9 s");
+    // Without them, no countdown and no update yet.
+    act(() => control.changed!(snapshot("reconnecting")));
+    expect(await screen.findByText("No update yet")).toBeTruthy();
+    expect(document.querySelector(".countdown")).toBeNull();
+  });
   it("pauses only observation when hidden and uses keepalive cleanup on exit", async () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     render(<Live />);

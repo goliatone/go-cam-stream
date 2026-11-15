@@ -326,6 +326,45 @@ main:-webkit-full-screen {
   font-size: 12px;
   color: #bbccca;
 }
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.message-actions:empty {
+  display: none;
+}
+/* The safe code, camera, stream and time, for a report. */
+.player-message .error-details,
+.catalog-message .error-details {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.error-details code {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.error-details time {
+  white-space: nowrap;
+}
+/* Reconnecting: a compact badge that leaves the last frame in view. */
+.player-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgb(8 15 18 / 0.82);
+  font-size: 13px;
+  font-weight: 500;
+}
+.player-notice .status-dot {
+  background: #e0b04a;
+}
+.countdown {
+  color: #b1c0c4;
+  font-variant-numeric: tabular-nums;
+}
 .primary-button {
   display: inline-flex;
   align-items: center;
@@ -348,6 +387,19 @@ main:-webkit-full-screen {
   color: #aebdbb;
   background: #273a3f;
   border-color: #475a60;
+}
+.secondary-button {
+  min-height: 44px;
+  padding: 9px 17px;
+  border: 1px solid #6b8086;
+  border-radius: 6px;
+  background: rgb(16 28 33 / 0.6);
+  color: #eef5f3;
+  font-size: 13px;
+  font-weight: 600;
+}
+.secondary-button:hover {
+  background: #273a3f;
 }
 .primary-button svg {
   flex: none;
@@ -539,6 +591,11 @@ select {
 }
 .stream-facts dd {
   font-weight: 500;
+}
+/* Status updates stopped while the page asked for them. */
+.stale {
+  color: #8a4b00;
+  font-weight: 600;
 }
 
 /* Camera rail */
