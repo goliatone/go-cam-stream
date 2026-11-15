@@ -229,6 +229,25 @@ describe("addresses and paused video", () => {
     await waitFor(() => expect(control.retry).toHaveBeenCalledOnce());
   });
 
+  it("lets Stop end a stopped view's Play while it connects", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    act(() => control.changed!({ selection: ref, state: "closed", media: null }));
+    // Negotiation can take seconds; the retry settles only when it ends.
+    control.retry.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(await screen.findByRole("button", { name: "Play video" }));
+    expect(control.retry).toHaveBeenCalledOnce();
+    act(() =>
+      control.changed!({ selection: ref, state: "connecting", media: null }),
+    );
+    await waitFor(() =>
+      expect(document.querySelector(".player-hint")!.textContent).toBe(""),
+    );
+    fireEvent.keyDown(document.body, { key: "s" });
+    await waitFor(() => expect(control.stop).toHaveBeenCalledOnce());
+  });
+
   it("keeps the new view's Play prompt when an old Play request finishes", async () => {
     let finishOld!: () => void;
     const pending = new Promise<void>((resolve) => {

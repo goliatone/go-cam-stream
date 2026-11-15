@@ -83,16 +83,22 @@ main:focus,
 /* Shell: a 56 px top bar, a camera rail and a stage sized to the viewport. */
 .app {
   --rail-w: var(--rail);
+  /* The 1 px spare keeps rounding from overflowing an exact fit. */
   --stage-w: min(
     100%,
-    calc((var(--vh) - var(--topbar) - var(--info) - 2 * var(--gutter)) * 16 / 9)
+    calc(
+      (var(--vh) - var(--topbar) - var(--info) - 2 * var(--gutter) - 1px) * 16 /
+        9
+    )
   );
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr);
   grid-template-rows: var(--topbar) auto auto minmax(0, 1fr);
   grid-template-areas: "top top" "rail main" "rail info" "rail rest";
   height: var(--vh);
-  overflow: hidden;
+  /* Fits without scrolling; a zoomed or short window scrolls instead of
+     clipping the stream details. */
+  overflow: auto;
 }
 .app[data-rail="collapsed"] {
   --rail-w: var(--rail-min);
@@ -280,8 +286,11 @@ main:-webkit-full-screen {
 }
 .stage-center {
   display: grid;
-  place-items: center;
   min-width: 0;
+}
+/* Auto margins centre a message and keep its top reachable when it scrolls. */
+.stage-center > * {
+  margin: auto;
 }
 .player-message {
   display: flex;
@@ -443,6 +452,17 @@ main:-webkit-full-screen {
   height: 100%;
   aspect-ratio: auto;
   border-radius: 0;
+}
+/* A stage of fixed height scrolls a long message instead of pushing the
+   controls out of view. */
+.player[data-fullscreen] .stage-center {
+  min-height: 0;
+  overflow-y: auto;
+}
+@media (max-height: 420px) {
+  .message-icon {
+    display: none;
+  }
 }
 @container (max-width: 560px) {
   .message-icon {
@@ -792,6 +812,12 @@ kbd {
 .camera-sheet .camera-list {
   margin: 0 -8px;
 }
+.sheet-stream {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
 .skip-link {
   position: fixed;
   top: 10px;
@@ -882,14 +908,27 @@ kbd {
   }
 }
 
-/* Phones, landscape: the stage fills the screen; cameras open as a sheet. */
-@media (orientation: landscape) and (max-height: 500px) {
+/* Phones, landscape: the stage fills the screen; cameras and the stream
+   choice open as a sheet. Touch screens only, so a zoomed or short desktop
+   window keeps every control in the regular layout. */
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
   .app {
     display: block;
     height: var(--vh);
     overflow: hidden;
   }
-  .topbar,
+  /* The camera name stays the page heading for screen readers. */
+  .app:not([data-norail]) .topbar {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .app:not([data-norail]) .topbar :is(a, button) {
+    display: none;
+  }
   .stream-bar,
   .rail {
     display: none;
@@ -911,6 +950,10 @@ kbd {
     aspect-ratio: auto;
     border-radius: 0;
   }
+  .stage-center {
+    min-height: 0;
+    overflow-y: auto;
+  }
   .overlay-cameras {
     display: inline-flex;
   }
@@ -927,9 +970,6 @@ kbd {
   }
   .app[data-norail] {
     overflow: auto;
-  }
-  .app[data-norail] .topbar {
-    display: flex;
   }
   .app[data-norail] main {
     position: static;

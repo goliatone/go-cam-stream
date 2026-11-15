@@ -11,12 +11,12 @@ statistics, and playing state comes from the media element.
 | Initial playback | Muted, inline video; a rejected `play()` promise exposes Play video. |
 | Paused live video | Pause (Space or K), or a pause from picture-in-picture controls, media keys or the OS, shows Paused and offers Play video, also while a brief transport loss recovers. A paused element reports no playback, so Play is what restores the Live state. The peer keeps receiving media; the viewer does not resume on its own. |
 | Unmute | User gesture changes mute and resumes playback; rejection restores muted state and safe feedback. |
-| Stop | Releases this page's session through the controller's serialized cleanup and keeps the selection; the stopped view offers Play video, which negotiates a new session. A failed release shows the cleanup error and keeps the session for an explicit retry. Nothing restarts on its own. |
+| Stop | Releases this page's session through the controller's serialized cleanup and keeps the selection, also while a Play or Try again is still connecting; the stopped view offers Play video, which negotiates a new session. A failed release shows the cleanup error and keeps the session for an explicit retry. Nothing restarts on its own within the page; a reload or a back-forward cache restore starts the view again, as a fresh page load does. |
 | Fullscreen | The viewer root (video, controls and overlays) through the standard element API, then the WebKit-prefixed one, so fullscreen persists when cameras switch; otherwise Safari video fullscreen once metadata has loaded, disabled again when the media is removed. Exit uses the matching API. Standard API rejections remain visible; the older WebKit-prefixed request reports failure only by event, which the viewer does not surface. |
 | Picture in picture | Standard API or supported Safari presentation mode, only after live video arrives. Unsupported cases explain why. |
-| Overlay controls | Fade after 3 s of playback without pointer, touch or keyboard activity, and stay while paused, connecting, failed, a hint shows or the toolbar is hovered or focused. Hidden controls take no pointer events, so the first tap or pointer move reveals them. Unavailable controls stay focusable and say why when pressed. |
-| Keyboard shortcuts | Single keys without Ctrl, Alt or Meta; ignored while a form field has focus or a dialog is open, and Space still activates a focused button. Layouts that need AltGr or Option for `[` and `]` cannot use those two; the rail and the camera sheet still switch cameras. |
-| Phone layouts | Portrait pins the player under the top bar. Landscape at 500 px height or less fills the screen, pads for safe areas (`viewport-fit=cover`) and opens cameras in a modal sheet. |
+| Overlay controls | Fade after 3 s of playback without pointer, touch or keyboard activity, and stay while paused, connecting, failed, a hint shows, a mouse or pen rests on the toolbar or it holds keyboard focus. Touch leaves `:hover` behind and does not hold them. Hidden controls take no pointer events, so the first tap or pointer move reveals them. Unavailable controls stay focusable and say why when pressed. |
+| Keyboard shortcuts | Single keys without Ctrl, Alt or Meta; held keys do not repeat. Ignored while a form field has focus or a dialog is open, and Space still activates a focused button. R starts a stopped view and otherwise says when there is nothing to retry. Layouts that need AltGr or Option for `[` and `]` cannot use those two; the rail and the camera sheet still switch cameras. |
+| Phone layouts | Portrait pins the player under the top bar. Landscape on touch screens at 500 px height or less fills the screen, pads for safe areas (`viewport-fit=cover`), scrolls a long message above the controls and opens cameras and the stream choice in a modal sheet. The camera name stays the page heading for screen readers. A zoomed or short desktop window keeps the regular layout, which scrolls instead of clipping. |
 | Selection change | Detach/pause old video, close peer/stop tracks, confirm server release, then negotiate the latest selection. |
 | Brief transport loss | Show reconnecting while native ICE recovers; sustained disconnection/failed media releases the viewer and offers explicit retry. |
 | Hidden page/PiP | No lease renewal or mandatory foreground polling. Hiding pauses observations, not the peer. Browser/OS suspension policy still applies. |
@@ -49,10 +49,11 @@ foreground tab passed. This does not establish Safari/iPhone behavior or every
 OS/media-key pause source. The automation extension replaces the favicon, so its
 state colors retain unit-test coverage rather than a visual browser claim.
 T21's video-first layouts were checked in the presentation preview, with synthetic
-inputs and viewport emulation in a desktop browser, at 1440×900, 900×700, 375×812
-and 844×390. Overlay fade, Stop, the camera sheet, focus after switching and the
-shortcuts dialog behaved as specified. No live media, real phone, notch safe area
-or touch hardware was exercised.
+inputs and viewport emulation in a desktop browser, at 1440×900, 960×450, 900×700
+and 375×812, and with touch emulation at 667×330 and 640×260. Overlay fade, Stop,
+the camera sheet and its stream choice, scrolling messages, focus after switching
+and the shortcuts dialog behaved as specified. No live media, real phone, notch
+safe area or touch hardware was exercised.
 Firefox Developer Edition fails
 ICE in both the TCP-only and TCP+UDP local fixtures (owner-reported). Its exact
 version and cause are unverified; Firefox support is not established. The generic

@@ -8,6 +8,8 @@ export function shortcutKey(event: KeyboardEvent): string | undefined {
   if (
     event.defaultPrevented ||
     event.isComposing ||
+    // A held key would toggle playback or step through cameras repeatedly.
+    event.repeat ||
     event.metaKey ||
     event.ctrlKey ||
     event.altKey
@@ -32,10 +34,14 @@ export function openDialog(dialog: HTMLDialogElement | null) {
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
 }
+/** Closes a dialog; without close(), still fires its close event. */
 export function closeDialog(dialog: HTMLDialogElement | null) {
-  if (!dialog) return;
+  if (!dialog?.hasAttribute("open")) return;
   if (typeof dialog.close === "function") dialog.close();
-  else dialog.removeAttribute("open");
+  else {
+    dialog.removeAttribute("open");
+    dialog.dispatchEvent(new Event("close"));
+  }
 }
 
 /**

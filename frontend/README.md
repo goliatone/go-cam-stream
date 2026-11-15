@@ -11,10 +11,13 @@ The page puts the video first. A 56 px top bar names the camera, and the camera
 rail collapses to icons, starting that way below 1024 px. The 16:9 stage takes
 the largest size that fits the window, so desktop views do not scroll. On a phone
 in portrait the player stays pinned while the stream details and camera list
-scroll beneath it; in landscape it fills the screen and its **Cameras** button
-opens the list as a sheet. Controls sit over the video and fade after 3 seconds of
-playback; moving the pointer, a tap or keyboard focus brings them back. **Stop**
-ends this page's session and frees its viewer slot, and Play starts a new one.
+scroll beneath it. On a touch screen in landscape it fills the screen, and its
+**Cameras** button opens a sheet with the camera list and the stream choice; a
+zoomed or short desktop window keeps the regular layout and scrolls instead.
+Controls sit over the video and fade after 3 seconds of playback; moving the
+pointer, a tap or keyboard focus brings them back. **Stop** ends this page's
+session and frees its viewer slot, also while a view is still connecting, and
+Play starts a new one.
 Press <kbd>?</kbd> for keyboard shortcuts. Loading shows a skeleton of the same
 layout.
 
@@ -83,7 +86,9 @@ releases a late session response before admitting the newest selection. Failed
 cleanup retains its session ID and withholds allocation until an explicit retry
 confirms release. **Stop** releases the session through the same chain and keeps
 the selection, so Play negotiates again; a failed release shows the cleanup error
-instead of reporting the slot free. No automatic mutation replay, upstream
+instead of reporting the slot free. The stopped state is not stored: a reload, or
+a return through the browser's back-forward cache, starts the view again as a
+fresh page does. No automatic mutation replay, upstream
 reconnect, credential storage, session lease renewal or foreground heartbeat
 exists in the viewer.
 

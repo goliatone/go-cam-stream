@@ -5,6 +5,7 @@ import type {
   ErrorBody,
   StreamRef,
   StreamStatus,
+  StreamSummary,
 } from "./services/contracts";
 import { CameraLinks } from "./components/camera-selector";
 import {
@@ -14,7 +15,14 @@ import {
   SidebarIcon,
 } from "./components/icon";
 import { Player, type PlayerPresentation } from "./components/player";
-import { describeView, errorCopy, stateLabels } from "./components/status";
+import {
+  describeView,
+  duration,
+  ErrorDetails,
+  errorCopy,
+  stateLabels,
+  useTick,
+} from "./components/status";
 import { linkFor, resolveSelection } from "./services/links";
 import { pageTitle, showPageState } from "./services/page-meta";
 import { closeDialog, openDialog, useShortcuts } from "./services/shortcuts";
@@ -22,6 +30,10 @@ import { closeDialog, openDialog, useShortcuts } from "./services/shortcuts";
 export interface ViewerInput {
   selection: StreamRef;
   status?: StreamStatus;
+  /** When this page last received a status carrying an observation. */
+  statusAt?: number;
+  /** Since when this page has asked for status; unset while it does not. */
+  observingSince?: number;
   presentation: PlayerPresentation;
 }
 export interface AppProps {
@@ -34,6 +46,8 @@ export interface AppProps {
   onReload?: () => void;
   onSelect?: (selection: StreamRef | undefined) => void;
 }
+/** Status updates that stop for this long, while the page asks, warn. */
+const STALE_MS = 10000;
 const sameStream = (a: StreamRef, b: StreamRef) =>
   a.camera_id === b.camera_id && a.stream_id === b.stream_id;
 // Below 1024 px the rail starts as icons, leaving the width to the video.
@@ -79,11 +93,16 @@ export function App({
       : undefined;
   const status =
     current?.status?.stream_id === stream?.id ? current?.status : undefined;
+  const statusAt = status && current?.statusAt;
+  const observingSince = current?.observingSince;
   const presentation = current?.presentation ?? { state: "unknown" as const };
   const view = describeView(presentation);
   // "Status unknown" adds nothing to a tab title.
   const word = view.label === stateLabels.unknown ? undefined : view.label;
   const noRail = Boolean(error) || (!loading && !cameras.length);
+  const others = cameras.some(
+    (item) => item.id !== camera?.id && item.streams.length > 0,
+  );
 
   // Notify the integration owner of the effective selection, including initial
   // selection and catalog revocation. This callback performs no transport work here.
@@ -123,6 +142,16 @@ export function App({
     closeDialog(sheet.current);
     setSheetOpen(false);
   }
+  // A closed dialog returns focus to the control that opened it. A camera or
+  // stream switch may have replaced that control along with the player; keep
+  // focus in the viewer rather than on the page.
+  function dialogClosed() {
+    const active = document.activeElement;
+    if (!active || active === document.body)
+      viewerRoot.current?.focus({ preventScroll: true });
+  }
+  const chooseStream = (stream_id: string) =>
+    camera && select({ camera_id: camera.id, stream_id });
 
   // Camera shortcuts: [ and ] step through playable cameras and 1–9 pick a
   // row. The player owns its own keys.
@@ -202,6 +231,7 @@ export function App({
                 Try again
               </button>
             )}
+            <ErrorDetails code={error.code} where={[]} />
           </div>
         ) : loading ? (
           // The same layout as the player, so nothing jumps when cameras arrive.
@@ -223,10 +253,12 @@ export function App({
         ) : camera && stream ? (
           <Player
             key={JSON.stringify([camera.id, stream.id])}
+            cameraName={camera.name}
             stream={stream}
             presentation={presentation}
             reloadHref={linkFor(camera, stream.id)}
             onCameras={showCameras}
+            {...(others ? { onChooseCamera: showCameras } : {})}
           />
         ) : (
           <div class="catalog-message" role="status">
@@ -238,47 +270,15 @@ export function App({
       {camera && stream ? (
         <section class="stream-bar" aria-label="Stream details">
           <div class="stream-bar-inner">
-            <div class="stream-select">
-              <label for="stream-select">Stream</label>
-              <select
-                id="stream-select"
-                value={stream.id}
-                onChange={(event) =>
-                  select({
-                    camera_id: camera.id,
-                    stream_id: event.currentTarget.value,
-                  })
-                }
-              >
-                {camera.streams.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <dl class="stream-facts">
-              <div>
-                <dt>Media</dt>
-                <dd>
-                  {stream.capabilities.video
-                    ? stream.capabilities.audio
-                      ? "Video + audio"
-                      : "Video only"
-                    : stream.capabilities.audio
-                      ? "Audio only"
-                      : "No media"}
-                </dd>
-              </div>
-              <div>
-                <dt>Viewers</dt>
-                <dd>{status?.viewers == null ? "Unknown" : status.viewers}</dd>
-              </div>
-              <div>
-                <dt>Last update</dt>
-                <dd>{formatObserved(status?.observed_at)}</dd>
-              </div>
-            </dl>
+            <StreamDetails
+              id="stream-select"
+              camera={camera}
+              stream={stream}
+              status={status}
+              statusAt={statusAt}
+              observingSince={observingSince}
+              onChange={chooseStream}
+            />
           </div>
         </section>
       ) : loading ? (
@@ -307,6 +307,7 @@ export function App({
             <CameraLinks
               cameras={cameras}
               selected={selected}
+              view={view}
               onSelect={choose}
               titles={!railOpen}
             />
@@ -318,7 +319,10 @@ export function App({
         ref={sheet}
         class="dialog camera-sheet"
         aria-labelledby="sheet-title"
-        onClose={() => setSheetOpen(false)}
+        onClose={() => {
+          setSheetOpen(false);
+          dialogClosed();
+        }}
         onClick={(event) => {
           if (event.target === event.currentTarget) hideCameras();
         }}
@@ -335,10 +339,26 @@ export function App({
               <CloseIcon />
             </button>
           </div>
+          {/* Where the page shows only the player, the stream choice and
+              its details live here too. */}
+          {sheetOpen && camera && stream && (
+            <div class="sheet-stream">
+              <StreamDetails
+                id="sheet-stream-select"
+                camera={camera}
+                stream={stream}
+                status={status}
+                statusAt={statusAt}
+                observingSince={observingSince}
+                onChange={chooseStream}
+              />
+            </div>
+          )}
           {sheetOpen && (
             <CameraLinks
               cameras={cameras}
               selected={selected}
+              view={view}
               onSelect={choose}
             />
           )}
@@ -348,6 +368,7 @@ export function App({
         ref={shortcuts}
         class="dialog"
         aria-labelledby="shortcuts-title"
+        onClose={dialogClosed}
         onClick={(event) => {
           if (event.target === event.currentTarget)
             closeDialog(shortcuts.current);
@@ -384,13 +405,85 @@ export function App({
   );
 }
 
-function formatObserved(value: string | null | undefined) {
-  if (!value) return "No update yet";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "No update yet"
-    : date.toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      });
+function StreamDetails({
+  id,
+  camera,
+  stream,
+  status,
+  statusAt,
+  observingSince,
+  onChange,
+}: {
+  id: string;
+  camera: CameraSummary;
+  stream: StreamSummary;
+  status: StreamStatus | undefined;
+  statusAt: number | undefined;
+  observingSince: number | undefined;
+  onChange: (stream_id: string) => void;
+}) {
+  const { audio, video } = stream.capabilities;
+  return (
+    <>
+      <div class="stream-select">
+        <label for={id}>Stream</label>
+        <select
+          id={id}
+          value={stream.id}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        >
+          {camera.streams.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <dl class="stream-facts">
+        <div>
+          <dt>Media</dt>
+          <dd>
+            {video
+              ? audio
+                ? "Video + audio"
+                : "Video only"
+              : audio
+                ? "Audio only"
+                : "No media"}
+          </dd>
+        </div>
+        <div>
+          <dt>Viewers</dt>
+          <dd>{status?.viewers == null ? "Unknown" : status.viewers}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>
+            <Freshness at={statusAt} since={observingSince} />
+          </dd>
+        </div>
+      </dl>
+    </>
+  );
+}
+
+// How current the status is, on this device's clock: server observation
+// times may be skewed. It warns only while the page asks for updates, so a
+// page that was hidden does not warn while its first new request runs.
+function Freshness({
+  at,
+  since,
+}: {
+  at: number | undefined;
+  since: number | undefined;
+}) {
+  useTick(Boolean(at ?? since));
+  const now = Date.now();
+  const quiet = since ? now - Math.max(at ?? 0, since) : 0;
+  if (quiet >= STALE_MS)
+    return <span class="stale">No update for {duration(quiet)}</span>;
+  if (!at) return <>No update yet</>;
+  return (
+    <>Updated {now - at < 3000 ? "just now" : `${duration(now - at)} ago`}</>
+  );
 }

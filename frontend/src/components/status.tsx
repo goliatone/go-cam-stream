@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { ErrorBody, ErrorCode, State } from "../services/contracts";
 
 export type Tone = "live" | "busy" | "danger" | "idle";
@@ -169,5 +170,44 @@ export function StatusBadge({ view }: { view: ViewState }) {
       <span class="status-dot" />
       {view.label}
     </span>
+  );
+}
+
+/** Renders again every second while `active`, for ages and countdowns. */
+export function useTick(active: boolean) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
+}
+
+/** "4 s" or "2 min". */
+export function duration(ms: number) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`;
+}
+
+/**
+ * The safe code, where it happened and when it was first shown, so a report
+ * names what an operator needs. Never the server's message.
+ */
+export function ErrorDetails({
+  code,
+  where,
+}: {
+  code: ErrorCode;
+  where: readonly string[];
+}) {
+  const seen = useRef<{ code: ErrorCode; at: Date } | undefined>(undefined);
+  if (seen.current?.code !== code) seen.current = { code, at: new Date() };
+  const { at } = seen.current;
+  return (
+    <p class="error-details">
+      <code>{code}</code>
+      {where.map((part) => ` · ${part}`).join("")} ·{" "}
+      <time dateTime={at.toISOString()}>{at.toLocaleTimeString()}</time>
+    </p>
   );
 }

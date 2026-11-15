@@ -1,6 +1,17 @@
 import type { ComponentChildren, Ref } from "preact";
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import type { ErrorBody, State, StreamSummary } from "../services/contracts";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "preact/hooks";
+import type {
+  ErrorBody,
+  ErrorCode,
+  State,
+  StreamSummary,
+} from "../services/contracts";
 import { fullscreenElement } from "../services/browser-media";
 import { useShortcuts } from "../services/shortcuts";
 import {
@@ -14,7 +25,14 @@ import {
   StopIcon,
   VolumeIcon,
 } from "./icon";
-import { describeView, errorCopy, resumable, StatusBadge } from "./status";
+import {
+  describeView,
+  ErrorDetails,
+  errorCopy,
+  resumable,
+  StatusBadge,
+  useTick,
+} from "./status";
 
 export type Control = { enabled: true } | { enabled: false; reason: string };
 export interface PlayerControls {
@@ -39,6 +57,8 @@ export interface PlayerPresentation {
   /** The video element is paused while media keeps arriving. */
   paused?: boolean;
   reloadRequired?: boolean;
+  /** While a dropped connection may recover: when it fails (Date.now() ms). */
+  recoverBy?: number;
   state: State;
   error?: ErrorBody;
   controls?: PlayerControls;
@@ -55,8 +75,9 @@ const defaultControls: PlayerControls = {
   fullscreen: unavailable,
   pip: unavailable,
 };
+// Reconnecting shows a compact badge instead, over the last frame.
 const stateCopy: Record<
-  Exclude<State, "playing">,
+  Exclude<State, "playing" | "reconnecting">,
   { title: string; detail: string }
 > = {
   unknown: {
@@ -70,10 +91,6 @@ const stateCopy: Record<
   connecting: {
     title: "Connecting…",
     detail: "Video will appear in a moment.",
-  },
-  reconnecting: {
-    title: "Reconnecting…",
-    detail: "The connection dropped. Trying to restore it.",
   },
   closing: {
     title: "Stopping…",
@@ -92,6 +109,18 @@ const stateCopy: Record<
     detail: "This view couldn't connect. Other cameras may still work.",
   },
 };
+// Failures of this camera or stream, where another camera may still play.
+const cameraFaults = new Set<ErrorCode>([
+  "not_found",
+  "authentication_failed",
+  "camera_unreachable",
+  "stream_unavailable",
+  "source_unavailable",
+  "unsupported_capability",
+  "camera_busy",
+  "media_connection_failed",
+  "deadline_exceeded",
+]);
 /** Controls fade after this long without pointer, touch or keyboard activity. */
 const IDLE_MS = 3000;
 const HINT_MS = 4000;
@@ -112,17 +141,22 @@ function keyboardFocusIn(node: HTMLElement | null) {
 }
 
 export function Player({
+  cameraName,
   stream,
   presentation,
   reloadHref,
   onCameras,
+  onChooseCamera,
 }: {
+  cameraName: string;
   stream: StreamSummary;
   presentation: PlayerPresentation;
   /** Address of this view, so a reload reopens the same camera and stream. */
   reloadHref: string;
   /** Opens the camera list where the page shows only the player. */
   onCameras?: () => void;
+  /** Offered where this camera fails; set only when another camera can play. */
+  onChooseCamera?: () => void;
 }) {
   const {
     state,
@@ -133,6 +167,7 @@ export function Player({
     needsPlay = false,
     paused = false,
     reloadRequired = false,
+    recoverBy,
     transport,
   } = presentation;
   const [muted, setMuted] = useState(true);
@@ -145,6 +180,11 @@ export function Player({
   const idleTimer = useRef<Timer | undefined>(undefined);
   const hintTimer = useRef<Timer | undefined>(undefined);
   const running = useRef<string | null>(null);
+  const runs = useRef(0);
+  // The control that last held focus in the player, and whether a mouse or
+  // pen rests on the toolbar. Touch leaves :hover behind, so it does not count.
+  const lastFocus = useRef<Element | null>(null);
+  const overToolbar = useRef(false);
   useEffect(() => {
     if (state === "connecting") {
       setMuted(true);
@@ -180,22 +220,42 @@ export function Player({
       }, HINT_MS);
   }
   // One action at a time. A ref, not render state, so a key pressed before
-  // the next render still sees the action in flight.
-  async function run(label: string, action: () => void | Promise<void>) {
-    if (running.current) return;
+  // the next render still sees the action in flight. Stop may preempt, so it
+  // can end a Play or Try again that is still connecting; an action that was
+  // preempted neither clears the newer one nor reports its own outcome.
+  async function run(
+    label: string,
+    action: () => void | Promise<void>,
+    preempt = false,
+  ) {
+    if (running.current && !preempt) return;
+    const turn = ++runs.current;
     running.current = label;
     setPending(label);
     say("");
     try {
       await action();
     } catch {
-      if (mounted.current)
+      if (mounted.current && turn === runs.current)
         say(`${label} could not be completed. Please try again.`);
     } finally {
-      running.current = null;
-      if (mounted.current) setPending(null);
+      if (turn === runs.current) {
+        running.current = null;
+        if (mounted.current) setPending(null);
+      }
     }
   }
+  // A control that goes away once its action works, such as Play video or Try
+  // again, would drop focus to the page: keep it in the player. Focus that
+  // moved elsewhere in the meantime stays where it is.
+  useLayoutEffect(() => {
+    const last = lastFocus.current;
+    const active = document.activeElement;
+    if (last && !last.isConnected && (!active || active === document.body)) {
+      lastFocus.current = null;
+      section.current?.focus({ preventScroll: true });
+    }
+  });
 
   const live = state === "playing" && !error;
   const canResume = resumable({ state, error, paused, reloadRequired });
@@ -216,7 +276,7 @@ export function Player({
       }
     : error
       ? errorCopy[error.code]
-      : state === "playing"
+      : state === "playing" || state === "reconnecting"
         ? undefined
         : stateCopy[state];
   // These wait on the viewer, not the connection; Play answers each of them.
@@ -234,6 +294,8 @@ export function Player({
           }
         : undefined;
   const message = prompt ?? copy;
+  // The connection dropped; the last frame stays visible while it recovers.
+  const recovering = !message && state === "reconnecting";
   const busy =
     !prompt &&
     (state === "connecting" || state === "reconnecting" || state === "closing");
@@ -244,6 +306,18 @@ export function Player({
       ? error.retryable
       : ["idle", "closed", "offline", "failed"].includes(state));
   const retryEnabled = mayRetry && Boolean(actions.onRetry) && !pending;
+  // A dead end of this camera offers the others.
+  const switchHelps =
+    !prompt &&
+    !reloadRequired &&
+    (error
+      ? cameraFaults.has(error.code)
+      : state === "offline" || state === "failed");
+  const retryReason = !mayRetry
+    ? "Nothing to try again."
+    : !actions.onRetry
+      ? "Trying again is available when the viewer is connected."
+      : undefined;
   // A stopped view starts again; a waiting or paused video resumes.
   const toggle = stopped
     ? actions.onRetry
@@ -299,8 +373,7 @@ export function Player({
     const arm = () => {
       idleTimer.current = setTimeout(() => {
         const node = section.current;
-        if (node?.querySelector(".player-toolbar:hover") || keyboardFocusIn(node))
-          arm();
+        if (overToolbar.current || keyboardFocusIn(node)) arm();
         else if (mounted.current) setIdle(true);
       }, IDLE_MS);
     };
@@ -319,7 +392,7 @@ export function Player({
     },
     stop() {
       if (stopReason || !actions.onStop) say(stopReason ?? "");
-      else void run("Stop", actions.onStop);
+      else if (running.current !== "Stop") void run("Stop", actions.onStop, true);
     },
     mute() {
       if (audioReason) return say(audioReason);
@@ -343,7 +416,10 @@ export function Player({
       else void run("Picture in picture", actions.onPictureInPicture);
     },
     retry() {
-      if (retryEnabled && actions.onRetry) void run("Retry", actions.onRetry);
+      // A stopped view starts again, as its Play does.
+      if (stopped) commands.play();
+      else if (retryEnabled && actions.onRetry) void run("Retry", actions.onRetry);
+      else if (retryReason) say(retryReason);
     },
   };
   const keys = new Map<string, () => void>([
@@ -387,14 +463,19 @@ export function Player({
       onDblClick={(event) => {
         if (!isControl(event.target)) commands.fullscreen();
       }}
-      onFocusCapture={wake}
+      onFocusCapture={(event) => {
+        if (event.target instanceof Element) lastFocus.current = event.target;
+        wake();
+      }}
     >
       <div
         class={`video-stage${message ? " has-message" : ""}${prompt ? " has-prompt" : ""}`}
-        aria-busy={busy}
       >
+        {/* Busy marks only the video, so status messages and hints inside
+            the stage are still announced while it connects. */}
         <video
           key={stream.id}
+          aria-busy={busy}
           {...(videoRef ? { ref: videoRef } : {})}
           muted={muted}
           playsInline
@@ -418,6 +499,17 @@ export function Player({
           )}
         </div>
         <div class="stage-center">
+          {recovering && (
+            <p class="player-notice" role="status">
+              <span class="status-dot is-connecting" />
+              Reconnecting…
+              <span class="sr-only">
+                {" "}
+                The connection dropped. Trying to restore it.
+              </span>
+              {recoverBy && <Countdown until={recoverBy} />}
+            </p>
+          )}
           {message && (
             <div class="player-message" role="status" aria-live="polite">
               <span class={`message-icon ${busy ? "is-connecting" : ""}`}>
@@ -425,45 +517,49 @@ export function Player({
               </span>
               <h2>{message.title}</h2>
               <p>{message.detail}</p>
-              {prompt && (
-                <button
-                  type="button"
-                  class="primary-button"
-                  disabled={Boolean(pending)}
-                  onClick={() => {
-                    const play = toggle;
-                    if (!play) return;
-                    void run("Play", async () => {
-                      await play();
-                      // The prompt and its focused button go away; keep
-                      // keyboard and screen reader focus in the player.
-                      if (mounted.current)
-                        section.current?.focus({ preventScroll: true });
-                    });
-                  }}
-                >
-                  <PlayIcon />
-                  Play video
-                </button>
-              )}
-              {reloadRequired && (
-                <a class="primary-button" href={reloadHref}>
-                  Reload page
-                </a>
-              )}
-              {mayRetry && (
-                <button
-                  type="button"
-                  class="primary-button"
-                  disabled={!retryEnabled}
-                  {...(!actions.onRetry
-                    ? { "aria-describedby": "retry-help" }
-                    : {})}
-                  onClick={commands.retry}
-                >
-                  {pending === "Retry" ? "Trying again…" : "Try again"}
-                </button>
-              )}
+              <div class="message-actions">
+                {prompt && (
+                  <button
+                    type="button"
+                    class="primary-button"
+                    disabled={Boolean(pending)}
+                    onClick={() => {
+                      if (toggle) void run("Play", toggle);
+                    }}
+                  >
+                    <PlayIcon />
+                    Play video
+                  </button>
+                )}
+                {reloadRequired && (
+                  <a class="primary-button" href={reloadHref}>
+                    Reload page
+                  </a>
+                )}
+                {mayRetry && (
+                  <button
+                    type="button"
+                    class="primary-button"
+                    disabled={!retryEnabled}
+                    {...(!actions.onRetry
+                      ? { "aria-describedby": "retry-help" }
+                      : {})}
+                    onClick={commands.retry}
+                  >
+                    {pending === "Retry" ? "Trying again…" : "Try again"}
+                  </button>
+                )}
+                {switchHelps && onChooseCamera && (
+                  <button
+                    type="button"
+                    class={mayRetry ? "secondary-button" : "primary-button"}
+                    aria-haspopup="dialog"
+                    onClick={onChooseCamera}
+                  >
+                    Choose another camera
+                  </button>
+                )}
+              </div>
               {mayRetry && !actions.onRetry && (
                 <p class="retry-help" id="retry-help">
                   Trying again is available when the viewer is connected.
@@ -473,6 +569,12 @@ export function Player({
                 <p class="retry-help">
                   Trying again from this page won't fix this.
                 </p>
+              )}
+              {error && (
+                <ErrorDetails
+                  code={error.code}
+                  where={[cameraName, stream.name]}
+                />
               )}
             </div>
           )}
@@ -489,7 +591,17 @@ export function Player({
         <p class="player-hint" role="status" aria-live="polite">
           {status}
         </p>
-        <div class="player-toolbar" role="group" aria-label="Player controls">
+        <div
+          class="player-toolbar"
+          role="group"
+          aria-label="Player controls"
+          onPointerEnter={(event) => {
+            overToolbar.current = event.pointerType !== "touch";
+          }}
+          onPointerLeave={() => {
+            overToolbar.current = false;
+          }}
+        >
           <Control
             id="play"
             label={playing ? "Pause" : "Play"}
@@ -540,6 +652,18 @@ export function Player({
       </div>
     </section>
   );
+}
+
+// Seconds left in the recovery window. Visual only: a live region that
+// changed every second would interrupt a screen reader.
+function Countdown({ until }: { until: number }) {
+  useTick(true);
+  const left = Math.ceil((until - Date.now()) / 1000);
+  return left > 0 ? (
+    <span class="countdown" aria-hidden="true">
+      {left} s
+    </span>
+  ) : null;
 }
 
 // Unavailable controls stay focusable and explain why when pressed, by

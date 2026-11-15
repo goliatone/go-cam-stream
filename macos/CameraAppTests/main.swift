@@ -72,16 +72,20 @@ model.working = false
 check(model.canStart, "idle controls recover")
 
 let fixture = URL(fileURLWithPath: CommandLine.arguments[1])
-for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof"] {
+for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof", "exit-before-eof"] {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let directory = root.appendingPathComponent(mode)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let client = HelperClient()
-    var failures = 0, replies: [Int] = [], exited = false
-    client.onFailure = { failures += 1 }
-    client.onExit = { exited = true }
+    var failures = 0, replies: [Int] = [], exits = 0
+    client.onFailure = {
+        failures += 1
+        // UI failure handling may synchronously cancel/reconcile another action.
+        if failures == 1 { client.request("status") { _ in replies.append(99) } }
+    }
+    client.onExit = { exits += 1 }
     client.onReady = {
-        if mode == "eof" { return }
+        if mode == "eof" || mode == "exit-before-eof" { return }
         for index in 0..<3 {
             client.request("status") { _ in
                 replies.append(index)
@@ -91,8 +95,13 @@ for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof"] {
     }
     client.launch(executable: fixture, directory: directory)
     let deadline = Date().addingTimeInterval(8)
-    while !exited && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
-    check(exited, "\(mode) helper exits within deadline")
+    while exits == 0 && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(exits == 1, "\(mode) helper exits within deadline exactly once")
+    // A queued UI action after helper death must not revive the transport or
+    // report failure/exit again, regardless of EOF/termination callback order.
+    client.request("status") { _ in replies.append(99) }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    check(exits == 1 && !client.idle, "\(mode) remains closed after exit and late request")
     if mode == "normal" {
         check(replies == [0, 1, 2] && failures == 0, "serialized correlated replies")
         check(FileManager.default.fileExists(atPath: directory.appendingPathComponent("cleaned").path), "Quit drains stdout until helper cleanup")
@@ -119,6 +128,11 @@ let header = PreviewHeader(headerBytes, generation: generation, after: 0)
 check(header?.width == 2 && header?.height == 1 && header?.size == 8, "Go wire fixture decodes")
 check(header?.image(fromHex(wire["payload_hex"]!)) != nil, "BGRA fixture renders")
 check(header?.image(Data([0])) == nil, "partial pixels cannot render")
+let frameTime = Double(header!.timestamp) / 1000
+check(header!.isFresh(at: Date(timeIntervalSince1970: frameTime + 4.999)), "frame remains fresh inside age limit")
+check(!header!.isFresh(at: Date(timeIntervalSince1970: frameTime + 5)), "frame expires at age limit")
+check(header!.isFresh(at: Date(timeIntervalSince1970: frameTime - 5)), "bounded clock skew accepted")
+check(!header!.isFresh(at: Date(timeIntervalSince1970: frameTime - 5.001)), "excessive future timestamp rejected")
 check(PreviewHeader(headerBytes.prefix(47), generation: generation, after: 0) == nil, "partial header rejected")
 check(PreviewHeader(headerBytes, generation: generation + 1, after: 0) == nil, "stale generation rejected")
 check(PreviewHeader(headerBytes, generation: generation, after: 42) == nil, "replayed sequence rejected")
@@ -152,7 +166,7 @@ requests.removeFirst().2(["error": ["code": "transport"]])
 check(preview.image == nil && preview.phase == .idle, "helper loss clears preview")
 
 // Real Unix socket reads fragment both header and payload. No camera involved.
-for mode in ["fragmented", "malformed", "partial", "cancel"] {
+for mode in ["fragmented", "malformed", "partial", "cancel", "aged-payload", "queued-stale"] {
     let folder = URL(fileURLWithPath: "/tmp/camstream-camera-\(getuid())-test\(UUID().uuidString.prefix(6))")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     let socket = folder.appendingPathComponent("preview-0123456789abcdef.sock")
@@ -165,6 +179,11 @@ for mode in ["fragmented", "malformed", "partial", "cancel"] {
     let reader = PreviewReader(onFrame: { image in frames += 1; check(image.width == 2 && image.height == 1, "fragmented payload dimensions") }, onFailure: { failures += 1 })
     reader.start(PreviewEndpoint(version: 1, socket: socket.path, generation: "0123456789abcdef"))
     if mode == "cancel" { reader.stop() }
+    // Let a valid frame expire while its delivery is queued on the main thread.
+    if mode == "queued-stale" {
+        _ = output.fileHandleForReading.availableData
+        Thread.sleep(forTimeInterval: 1.2)
+    }
     let deadline = Date().addingTimeInterval(7)
     while failures == 0 && process.isRunning && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
     RunLoop.current.run(until: Date().addingTimeInterval(0.1))

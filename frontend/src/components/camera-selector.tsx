@@ -1,7 +1,12 @@
 import type { CameraSummary, StreamRef } from "../services/contracts";
 import { linkFor } from "../services/links";
 import { CameraIcon } from "./icon";
-import { describeView, StatusBadge } from "./status";
+import {
+  describeView,
+  StatusBadge,
+  stateLabels,
+  type ViewState,
+} from "./status";
 
 // Rows are real links to each camera's view. A plain click switches in place;
 // modified and middle clicks keep the browser's behavior and open a new tab,
@@ -16,11 +21,14 @@ const opensElsewhere = (event: MouseEvent) =>
 export function CameraLinks({
   cameras,
   selected,
+  view,
   onSelect,
   titles = false,
 }: {
   cameras: readonly CameraSummary[];
   selected: StreamRef | undefined;
+  /** This page's player state, shown on the selected row. */
+  view?: ViewState;
   onSelect: (selection: StreamRef) => void;
   /** Name each row in a tooltip, for the collapsed rail that hides names. */
   titles?: boolean;
@@ -30,6 +38,10 @@ export function CameraLinks({
       {cameras.map((camera) => {
         const first = camera.streams[0];
         const current = selected?.camera_id === camera.id;
+        // Real status or none: the catalog reports availability only as a
+        // snapshot, often unknown, and no row should say "Status unknown".
+        const badge =
+          current && view ? view : describeView({ state: camera.availability });
         const content = (
           <>
             <span class="camera-icon">
@@ -37,12 +49,12 @@ export function CameraLinks({
             </span>
             <span class="camera-label">
               <strong>{camera.name}</strong>
-              {first ? (
-                <StatusBadge
-                  view={describeView({ state: camera.availability })}
-                />
-              ) : (
+              {!first ? (
                 <span class="small">No supported streams</span>
+              ) : (
+                badge.label !== stateLabels.unknown && (
+                  <StatusBadge view={badge} />
+                )
               )}
             </span>
           </>

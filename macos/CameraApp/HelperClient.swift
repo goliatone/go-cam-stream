@@ -46,6 +46,9 @@ final class HelperClient {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let unexpected = !self.closing
+                // Process exit can precede the queued stdout EOF callback.
+                // Seal the transport before callbacks can issue another request.
+                self.closing = true
                 self.closePipes()
                 self.process = nil
                 if unexpected { self.onFailure?() }
@@ -121,8 +124,8 @@ final class HelperClient {
     private func eof() { if !closing { fail() } }
     private func fail() {
         guard !closing else { return }
-        onFailure?()
         shutdown()
+        onFailure?()
     }
     private func closePipes() {
         deadline?.invalidate()

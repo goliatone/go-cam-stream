@@ -41,6 +41,10 @@ struct PreviewHeader {
                        bitmapInfo: CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)),
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
+    func isFresh(at now: Date = Date()) -> Bool {
+        let age = now.timeIntervalSince1970 - Double(timestamp) / 1000
+        return age >= -5 && age < 5
+    }
 }
 
 // One background reader, one pending image and at most one main-queue delivery.
@@ -49,7 +53,7 @@ final class PreviewReader {
     private let lock = NSLock()
     private var descriptor: Int32 = -1
     private var running = true
-    private var pending: CGImage?
+    private var pending: (image: CGImage, header: PreviewHeader)?
     private var scheduled = false
     private let onFrame: (CGImage) -> Void
     private let onFailure: () -> Void
@@ -103,13 +107,12 @@ final class PreviewReader {
         var sequence: UInt64 = 0
         while isRunning, let bytes = readExactly(fd, count: 48),
               let header = PreviewHeader(bytes, generation: generation, after: sequence) {
-            let age = Date().timeIntervalSince1970 - Double(header.timestamp) / 1000
-            guard age >= -5, age < 5, let pixels = readExactly(fd, count: header.size),
+            guard header.isFresh(), let pixels = readExactly(fd, count: header.size), header.isFresh(),
                   let image = header.image(pixels) else { return }
             sequence = header.sequence
             timeout.tv_sec = 5
             guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else { return }
-            deliver(image)
+            deliver(image, header: header)
         }
     }
     private func readExactly(_ fd: Int32, count: Int) -> Data? {
@@ -127,18 +130,24 @@ final class PreviewReader {
         }
         return bytes
     }
-    private func deliver(_ image: CGImage) {
+    private func deliver(_ image: CGImage, header: PreviewHeader) {
         lock.lock()
         guard running else { lock.unlock(); return }
-        pending = image
+        pending = (image, header)
         if scheduled { lock.unlock(); return }
         scheduled = true; lock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.lock.lock()
-            let image = self.running ? self.pending : nil
+            let frame = self.running ? self.pending : nil
             self.pending = nil; self.scheduled = false; self.lock.unlock()
-            if let image = image { self.onFrame(image) }
+            guard let frame = frame else { return }
+            // Socket reads and a busy UI can consume the remaining frame lifetime.
+            // Never reset the controller's live watchdog with an expired image.
+            guard frame.header.isFresh() else {
+                self.stop(); self.onFailure(); return
+            }
+            self.onFrame(frame.image)
         }
     }
 }

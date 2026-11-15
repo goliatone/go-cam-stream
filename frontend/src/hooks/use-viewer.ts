@@ -205,8 +205,13 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
     viewer = {
       selection: snapshot.selection,
       ...(snapshot.status ? { status: snapshot.status } : {}),
+      ...(snapshot.statusAt ? { statusAt: snapshot.statusAt } : {}),
+      ...(snapshot.observingSince
+        ? { observingSince: snapshot.observingSince }
+        : {}),
       presentation: {
         state: snapshot.state,
+        ...(snapshot.recoverBy ? { recoverBy: snapshot.recoverBy } : {}),
         ...(snapshot.error ? { error: snapshot.error } : {}),
         ...(snapshot.transport ? { transport: snapshot.transport } : {}),
         needsPlay,
@@ -215,7 +220,12 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
         controls,
         videoRef: bindVideo,
         actions: {
-          onRetry: () => controller.retry(),
+          // The controller reports progress through snapshots and publishes
+          // connecting at once, so the player's pending action ends here
+          // rather than holding every control until media arrives.
+          onRetry: () => {
+            void controller.retry();
+          },
           // Ends this page's session; the stopped view offers Play (retry).
           onStop: () => controller.stop(),
           // Media keeps arriving while paused; the pause event shows Play.

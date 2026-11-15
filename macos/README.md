@@ -143,8 +143,9 @@ optional HTTPS mirror override must still match its pinned SHA-256. Runtime
 versions are hosted separately from app versions.
 [Runtime-1](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-1)
 is published for the historical signed 0.1.0/0.1.1 builds; its anonymous download
-passes the pinned hash and inventory checks. Preview work uses runtime-2, which
-must receive its own reviewed hosting URL; never substitute runtime-1 for it.
+passes the pinned hash and inventory checks. [Runtime-2](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-2)
+is published for preview-enabled builds and is selected by the current lock;
+never substitute runtime-1 for it.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
 
@@ -198,8 +199,10 @@ gh workflow run release-artifacts.yml --repo goliatone/go-cam-stream \
   --ref v0.1.2 -f version=0.1.2 -F distribution=true -F create_draft=true
 ```
 
-`0.1.2` is an example, not an authorized tag/version decision. Approve the
-`camera-release` job in GitHub after checking its ref/commit. The separate
+The `v0.1.2` candidate at `8b39391` failed native helper-exit checks before
+signing; it has no app release. Keep that tag unchanged. A corrected candidate
+needs a reviewed source commit and separately authorized version tag.
+Approve the `camera-release` job in GitHub after checking its ref/commit. The separate
 `release-draft` environment also requires maintainer approval and permits only
 `v*` tags. With `create_draft=true`, both jobs must succeed before checksum-verified
 camera/server assets enter an unpublished draft. No public publication or asset
@@ -269,7 +272,7 @@ Ordinary app builds are offline by default and never rebuild dependencies. The
 cache is `.cache/camera-runtime/packs`; `--cache DIR` or `--runtime-pack FILE`
 supports preseeded storage. `--download` permits fetching only a URL recorded in
 the reviewed lock. The current lock controls the exact pack and any approved download URL.
-Runtime-1 is publicly hosted; the preview runtime-2 URL remains unconfigured.
+Runtime-1 and runtime-2 are publicly hosted as separately pinned prereleases.
 A supplied matching local pack remains usable offline; public runtime-1 cannot
 satisfy a runtime-2 lock.
 

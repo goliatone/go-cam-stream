@@ -457,16 +457,23 @@ describe("addressable views and tab state", () => {
     const onPlay = vi.fn();
     viewer.presentation.paused = true;
     viewer.presentation.actions!.onPlay = onPlay;
-    render(<App catalog={catalog} viewer={viewer} />);
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
     expect(document.querySelector(".stage-badge")!.textContent).toBe("Paused");
     expect(screen.getByRole("heading", { name: "Paused" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Play video" }));
     expect(onPlay).toHaveBeenCalledOnce();
-    // The prompt is about to go away; focus stays in the player.
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        document.querySelector("section.player"),
-      ),
+    // Video resumes and the prompt goes away; focus stays in the player.
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={{
+          ...viewer,
+          presentation: { ...viewer.presentation, paused: false },
+        }}
+      />,
+    );
+    expect(document.activeElement).toBe(
+      document.querySelector("section.player"),
     );
   });
 
@@ -479,9 +486,9 @@ describe("addressable views and tab state", () => {
     expect(screen.getByRole("heading", { name: "Paused" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reconnecting…" })).toBeNull();
     expect(screen.getByRole("button", { name: "Play video" })).toBeTruthy();
-    expect(
-      document.querySelector(".video-stage")!.getAttribute("aria-busy"),
-    ).toBe("false");
+    expect(document.querySelector("video")!.getAttribute("aria-busy")).toBe(
+      "false",
+    );
     expect(document.title).toBe("Room 1 · Paused · camstream");
   });
 
@@ -782,5 +789,179 @@ describe("video-first shell", () => {
     expect(document.querySelectorAll(".row-skeleton").length).toBeGreaterThan(0);
     expect(screen.queryByRole("link", { name: /Room/ })).toBeNull();
     expect(document.querySelector("video")).toBeNull();
+  });
+});
+
+describe("controls while a view connects", () => {
+  const connecting = (viewer: ViewerInput): ViewerInput => ({
+    ...viewer,
+    presentation: { ...viewer.presentation, state: "connecting" },
+  });
+
+  it("lets Stop end a Play that is still connecting", async () => {
+    const user = userEvent.setup();
+    const viewer = input("closed");
+    const actions = viewer.presentation.actions!;
+    let fail!: (reason: unknown) => void;
+    actions.onRetry = vi.fn(
+      () =>
+        new Promise<void>((_, reject) => {
+          fail = reject;
+        }),
+    );
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    await user.click(screen.getByRole("button", { name: "Play video" }));
+    expect(actions.onRetry).toHaveBeenCalledOnce();
+    // The controller publishes connecting while the retry is still pending.
+    rerender(<App catalog={catalog} viewer={connecting(viewer)} />);
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop.getAttribute("aria-disabled")).toBeNull();
+    await user.click(stop);
+    expect(actions.onStop).toHaveBeenCalledOnce();
+    // The superseded Play reports nothing and leaves nothing pending.
+    await act(async () => fail(new Error("superseded")));
+    expect(document.querySelector(".player-hint")!.textContent).toBe("");
+  });
+
+  it("moves focus to the player when its control goes away, and not later", async () => {
+    const user = userEvent.setup();
+    const viewer = input("closed");
+    let finish!: () => void;
+    viewer.presentation.actions!.onRetry = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    await user.click(screen.getByRole("button", { name: "Play video" }));
+    rerender(<App catalog={catalog} viewer={connecting(viewer)} />);
+    expect(document.activeElement).toBe(
+      document.querySelector("section.player"),
+    );
+    // Focus moved elsewhere stays there when the slow Play completes.
+    const streamSelect = screen.getByLabelText("Stream");
+    streamSelect.focus();
+    await act(async () => finish());
+    expect(document.activeElement).toBe(streamSelect);
+  });
+
+  it("keeps focus in the player when Try again starts connecting", async () => {
+    const user = userEvent.setup();
+    const viewer = input("failed");
+    viewer.presentation.error = {
+      code: "media_connection_failed",
+      message: "",
+      retryable: true,
+    };
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    rerender(<App catalog={catalog} viewer={input("connecting")} />);
+    expect(document.activeElement).toBe(
+      document.querySelector("section.player"),
+    );
+  });
+
+  it("marks only the video busy, so messages and hints are announced", () => {
+    render(<App catalog={catalog} viewer={input("connecting")} />);
+    expect(document.querySelector("video")!.getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    expect(document.querySelectorAll("[role='status']").length).toBeGreaterThan(
+      1,
+    );
+    expect(
+      document.querySelector("[aria-busy='true'] [role='status']"),
+    ).toBeNull();
+  });
+
+  it("ignores held keys", async () => {
+    const viewer = input();
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={viewer} onSelect={onSelect} />);
+    await waitFor(() => expect(onSelect).toHaveBeenCalled());
+    onSelect.mockClear();
+    fireEvent.keyDown(document.body, { key: " ", repeat: true });
+    fireEvent.keyDown(document.body, { key: "]", repeat: true });
+    await act(async () => {});
+    expect(viewer.presentation.actions!.onPause).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("starts a stopped view with R and says when there is nothing to retry", async () => {
+    const viewer = input();
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    fireEvent.keyDown(document.body, { key: "r" });
+    await act(async () => {});
+    expect(document.querySelector(".player-hint")!.textContent).toBe(
+      "Nothing to try again.",
+    );
+    expect(viewer.presentation.actions!.onRetry).not.toHaveBeenCalled();
+    const stopped = input("closed");
+    rerender(<App catalog={catalog} viewer={stopped} />);
+    fireEvent.keyDown(document.body, { key: "r" });
+    await act(async () => {});
+    expect(stopped.presentation.actions!.onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the controls under a resting mouse, but not after a tap", () => {
+    vi.useFakeTimers();
+    try {
+      render(<App catalog={catalog} viewer={input()} />);
+      const player = document.querySelector<HTMLElement>("section.player")!;
+      const toolbar = player.querySelector(".player-toolbar")!;
+      const idle = () => player.hasAttribute("data-idle");
+      fireEvent.pointerEnter(toolbar, { pointerType: "mouse" });
+      act(() => {
+        vi.advanceTimersByTime(6000);
+      });
+      expect(idle()).toBe(false);
+      fireEvent.pointerLeave(toolbar, { pointerType: "mouse" });
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      expect(idle()).toBe(true);
+      // Touch leaves :hover on the tapped control; it must not pin them.
+      fireEvent.pointerUp(player.querySelector("video")!, {
+        pointerType: "touch",
+      });
+      expect(idle()).toBe(false);
+      fireEvent.pointerEnter(toolbar, { pointerType: "touch" });
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      expect(idle()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers the stream choice in the camera sheet", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    await user.click(screen.getByRole("button", { name: "Cameras" }));
+    const sheet = document.querySelector<HTMLElement>(".camera-sheet")!;
+    await user.selectOptions(within(sheet).getByLabelText("Stream"), "compact");
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenLastCalledWith({
+        camera_id: "room1",
+        stream_id: "compact",
+      }),
+    );
+    expect(sheet.hasAttribute("open")).toBe(true);
+    expect(document.querySelectorAll("#stream-select")).toHaveLength(1);
+  });
+
+  it("returns focus to the viewer when a dialog's opener is gone", async () => {
+    const user = userEvent.setup();
+    render(<App catalog={catalog} viewer={input()} />);
+    await user.click(screen.getByRole("button", { name: "Cameras" }));
+    const sheet = document.querySelector<HTMLElement>(".camera-sheet")!;
+    // A switch replaced the player and its Cameras button, so closing the
+    // dialog leaves focus on the page.
+    (document.activeElement as HTMLElement).blur();
+    fireEvent(sheet, new Event("close"));
+    expect(document.activeElement).toBe(document.querySelector("main"));
   });
 });

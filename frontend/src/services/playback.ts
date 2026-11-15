@@ -15,7 +15,15 @@ export interface PlaybackSnapshot {
   status?: StreamStatus;
   transport?: "tcp" | "udp";
   reloadRequired?: boolean;
+  /** While a dropped connection may recover: when it fails (Date.now() ms). */
+  recoverBy?: number | undefined;
+  /** When this page last received a status carrying an observation. */
+  statusAt?: number;
+  /** Since when this page has asked for status; unset while it does not. */
+  observingSince?: number | undefined;
 }
+/** A dropped connection fails unless it recovers within this window. */
+export const RECOVERY_MS = 15000;
 interface Attempt {
   generation: number;
   selection: StreamRef;
@@ -25,6 +33,8 @@ interface Attempt {
   timers: Set<ReturnType<typeof setTimeout>>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
   connectTimer?: ReturnType<typeof setTimeout>;
+  /** The status loop has started. */
+  observed?: boolean;
 }
 export function gather(
   peer: RTCPeerConnection,
@@ -213,7 +223,14 @@ export class PlaybackController {
     await this.enqueue(() => this.release(keepalive));
   }
   observe(enabled: boolean) {
+    if (enabled === this.observing) return;
     this.observing = enabled;
+    // Freshness counts only while the page asks for status.
+    const attempt = this.active;
+    if (attempt?.observed)
+      this.publish(attempt, {
+        observingSince: enabled ? Date.now() : undefined,
+      });
   }
   playing() {
     const attempt = this.active;
@@ -309,6 +326,7 @@ export class PlaybackController {
         clearTimeout(attempt.disconnectTimer);
         attempt.timers.delete(attempt.disconnectTimer);
         delete attempt.disconnectTimer;
+        this.publish(attempt, { recoverBy: undefined });
       }
       if (
         peer.connectionState === "failed" ||
@@ -319,8 +337,10 @@ export class PlaybackController {
           safeError(new PlaybackError("media_connection_failed")),
         );
       } else if (peer.connectionState === "disconnected") {
-        this.publish(attempt, { state: "reconnecting" });
-        if (attempt.disconnectTimer !== undefined) return;
+        if (attempt.disconnectTimer !== undefined) {
+          this.publish(attempt, { state: "reconnecting" });
+          return;
+        }
         attempt.disconnectTimer = this.timer(
           attempt,
           () => {
@@ -330,8 +350,12 @@ export class PlaybackController {
                 safeError(new PlaybackError("media_connection_failed")),
               );
           },
-          15000,
+          RECOVERY_MS,
         );
+        this.publish(attempt, {
+          state: "reconnecting",
+          recoverBy: Date.now() + RECOVERY_MS,
+        });
       }
     };
     try {
@@ -354,7 +378,11 @@ export class PlaybackController {
       }
       await peer.setRemoteDescription(session.playback.answer);
       if (!this.current(attempt)) return;
-      this.publish(attempt, { media: attempt.media });
+      attempt.observed = true;
+      this.publish(attempt, {
+        media: attempt.media,
+        observingSince: this.observing ? Date.now() : undefined,
+      });
       if (peer.connectionState !== "connected") {
         attempt.connectTimer = this.timer(
           attempt,
@@ -385,7 +413,10 @@ export class PlaybackController {
           attempt.abort.signal,
         );
         if (!this.current(attempt)) return;
-        this.publish(attempt, { status });
+        this.publish(
+          attempt,
+          status.observed_at ? { status, statusAt: Date.now() } : { status },
+        );
         if (status.error) {
           void this.failure(attempt, status.error);
           return;
@@ -410,7 +441,8 @@ export class PlaybackController {
         return;
       }
       // A status request does not keep media alive. Preserve a working peer
-      // during a control-plane outage; unknown observations remain unknown.
+      // during a control-plane outage; unknown observations remain unknown,
+      // and the last statusAt keeps counting how long updates have stopped.
       this.publish(attempt, {
         status: {
           stream_id: attempt.selection.stream_id,

@@ -16,18 +16,25 @@ print('ready', flush=True)
 try:
     client, _ = server.accept()
     with client:
+        age = 4.5 if mode in ('aged-payload', 'queued-stale') else 0
         frame = struct.pack('>4sHHQQQIIII', b'CSPR', 1, 48, 0x0123456789abcdef, 1,
-                            int(time.time() * 1000), 2, 1, 8, 8) + bytes.fromhex('0000ffff00ff00ff')
+                            int((time.time() - age) * 1000), 2, 1, 8, 8) + bytes.fromhex('0000ffff00ff00ff')
         if mode == 'malformed':
             frame = frame[:44] + struct.pack('>I', 0xffffffff) + frame[48:]
         if mode == 'partial':
             frame = frame[:51]
         if mode == 'cancel':
             client.recv(1)
+        elif mode == 'aged-payload':
+            client.sendall(frame[:48])
+            time.sleep(.8)
+            client.sendall(frame[48:])
         else:
             for offset in range(0, len(frame), 3):
                 client.sendall(frame[offset:offset + 3])
                 time.sleep(.001)
+            if mode == 'queued-stale':
+                print('sent', flush=True)
 except (BrokenPipeError, ConnectionResetError, socket.timeout):
     pass
 finally:
