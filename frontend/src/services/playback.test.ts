@@ -277,6 +277,61 @@ describe("owned viewer lifecycle", () => {
     expect(api.close).not.toHaveBeenCalled();
     await controller.dispose();
   });
+  it("stops a view, frees its session and starts it again only on request", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    controller.playing();
+    const track = { stop: vi.fn() } as unknown as MediaStreamTrack;
+    peers[0]!.ontrack!({ track } as RTCTrackEvent);
+    const stopping = controller.stop();
+    expect(last()).toMatchObject({ selection: one, state: "closing", media: null });
+    expect(peers[0]!.close).toHaveBeenCalledOnce();
+    expect(track.stop).toHaveBeenCalledOnce();
+    await stopping;
+    expect(api.close).toHaveBeenCalledWith("one", false);
+    expect(last()).toMatchObject({ selection: one, state: "closed", media: null });
+    // Stopped means stopped: no observation, no media events, no new session.
+    const reads = api.status.mock.calls.length;
+    controller.playing();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.status).toHaveBeenCalledTimes(reads);
+    expect(api.create).toHaveBeenCalledOnce();
+    expect(last()!.state).toBe("closed");
+    await controller.retry();
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(last()).toMatchObject({ selection: one, state: "connecting" });
+    await controller.dispose();
+  });
+  it("stops a view that is still connecting once its late create is released", async () => {
+    const { controller, api, peers, last } = setup();
+    const late = deferred<Session>();
+    api.create.mockImplementationOnce(() => late.promise);
+    const start = controller.select(one, capabilities);
+    await flush();
+    const stopping = controller.stop();
+    expect(last()!.state).toBe("closing");
+    late.resolve(answer(one));
+    await Promise.all([start, stopping]);
+    expect(api.close).toHaveBeenCalledOnce();
+    expect(peers[0]!.setRemoteDescription).not.toHaveBeenCalled();
+    expect(last()!.state).toBe("closed");
+    await controller.dispose();
+  });
+  it("reports a stop whose cleanup failed instead of claiming the slot is free", async () => {
+    const { controller, api, last } = setup();
+    await controller.select(one, capabilities);
+    api.close.mockRejectedValueOnce(new PlaybackError("cleanup_incomplete"));
+    await controller.stop();
+    expect(last()).toMatchObject({
+      state: "failed",
+      error: { code: "cleanup_incomplete", retryable: true },
+    });
+    await controller.retry();
+    expect(api.close).toHaveBeenCalledTimes(2);
+    expect(api.create).toHaveBeenCalledTimes(2);
+    await controller.dispose();
+  });
   it("stops the viewer after permission revocation without reconnecting upstream", async () => {
     const { controller, api, last } = setup();
     await controller.select(one, capabilities);

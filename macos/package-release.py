@@ -34,8 +34,9 @@ def options(version, development, identity, profile):
         raise ValueError('distribution requires --sign-identity and --notary-profile; use --development for local checks')
 
 
-def notarize(artifact, profile, result_path):
-    result = run('xcrun', 'notarytool', 'submit', artifact, '--keychain-profile', profile,
+def notarize(artifact, profile, result_path, keychain=None):
+    keychain_args = ['--keychain', keychain] if keychain else []
+    result = run('xcrun', 'notarytool', 'submit', artifact, '--keychain-profile', profile, *keychain_args,
                  '--wait', '--timeout', '30m', '--output-format', 'json', capture_output=True, text=True)
     report = json.loads(result.stdout)
     result_path.write_text(json.dumps(report, indent=2) + '\n')
@@ -138,7 +139,7 @@ def package(args):
         if not args.development:
             zipped = stage / 'notary-app.zip'
             run('ditto', '-c', '-k', '--keepParent', app, zipped)
-            tickets['app'] = notarize(zipped, args.notary_profile, result / 'notary-app.json')
+            tickets['app'] = notarize(zipped, args.notary_profile, result / 'notary-app.json', args.notary_keychain)
             run('xcrun', 'stapler', 'staple', app)
             run('xcrun', 'stapler', 'validate', app)
         payload = stage / 'image'
@@ -154,7 +155,7 @@ def package(args):
             '-srcfolder', payload, '-format', 'UDZO', dmg)
         if not args.development:
             run('codesign', '--force', '--sign', args.sign_identity, '--timestamp', dmg)
-            tickets['dmg'] = notarize(dmg, args.notary_profile, result / 'notary-dmg.json')
+            tickets['dmg'] = notarize(dmg, args.notary_profile, result / 'notary-dmg.json', args.notary_keychain)
             run('xcrun', 'stapler', 'staple', dmg)
         report = {'schema': 1, 'version': args.version, 'source': source, 'target': lock['target'],
                   'runtime_id': lock['runtime_id'], 'runtime_pack_sha256': sha(archive),
@@ -175,6 +176,7 @@ def main():
     parser.add_argument('--development', action='store_true')
     parser.add_argument('--sign-identity')
     parser.add_argument('--notary-profile', help='existing notarytool Keychain profile; never a password')
+    parser.add_argument('--notary-keychain', type=Path, help='optional Keychain containing the profile (CI uses a temporary Keychain)')
     parser.add_argument('--runtime-pack', type=Path)
     parser.add_argument('--lock', type=Path, default=DEFAULT_LOCK)
     parser.add_argument('--cache', type=Path, default=DEFAULT_CACHE)

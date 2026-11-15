@@ -13,81 +13,64 @@ const opensElsewhere = (event: MouseEvent) =>
   event.shiftKey ||
   event.altKey;
 
-export function CameraSelector({
+export function CameraLinks({
   cameras,
   selected,
   onSelect,
+  titles = false,
 }: {
   cameras: readonly CameraSummary[];
   selected: StreamRef | undefined;
   onSelect: (selection: StreamRef) => void;
+  /** Name each row in a tooltip, for the collapsed rail that hides names. */
+  titles?: boolean;
 }) {
   return (
-    <nav class="camera-panel" aria-labelledby="cameras-title">
-      <div class="panel-heading">
-        <h2 id="cameras-title">Cameras</h2>
-        <span class="count">{cameras.length}</span>
-      </div>
-      <p class="panel-intro">Choose a camera to view.</p>
-      <ul class="camera-list">
-        {cameras.map((camera) => {
-          const first = camera.streams[0];
-          const current = selected?.camera_id === camera.id;
-          const content = (
-            <>
-              <span class="camera-icon">
-                <CameraIcon />
-              </span>
-              <span class="camera-label">
-                <strong>{camera.name}</strong>
-                {first ? (
-                  <StatusBadge
-                    view={describeView({ state: camera.availability })}
-                  />
-                ) : (
-                  <span class="small">No supported streams</span>
-                )}
-              </span>
-              {current && (
-                <span class="selection-mark" aria-hidden="true">
-                  →
-                </span>
-              )}
-            </>
-          );
-          return (
-            <li key={camera.id}>
+    <ul class="camera-list">
+      {cameras.map((camera) => {
+        const first = camera.streams[0];
+        const current = selected?.camera_id === camera.id;
+        const content = (
+          <>
+            <span class="camera-icon">
+              <CameraIcon />
+            </span>
+            <span class="camera-label">
+              <strong>{camera.name}</strong>
               {first ? (
-                <a
-                  class="camera-choice"
-                  href={linkFor(camera)}
-                  {...(current ? { "aria-current": "page" as const } : {})}
-                  onClick={(event) => {
-                    if (opensElsewhere(event)) return;
-                    event.preventDefault();
-                    if (!current)
-                      onSelect({ camera_id: camera.id, stream_id: first.id });
-                  }}
-                >
-                  {content}
-                </a>
+                <StatusBadge
+                  view={describeView({ state: camera.availability })}
+                />
               ) : (
-                <div class="camera-choice" aria-disabled="true">
-                  {content}
-                </div>
+                <span class="small">No supported streams</span>
               )}
-            </li>
-          );
-        })}
-      </ul>
-      <div class="panel-note">
-        <span class="note-line" />
-        <p>
-          One camera per page.
-          <br />
-          Open a camera in a new tab to watch another.
-        </p>
-      </div>
-    </nav>
+            </span>
+          </>
+        );
+        return (
+          <li key={camera.id}>
+            {first ? (
+              <a
+                class="camera-choice"
+                href={linkFor(camera)}
+                {...(current ? { "aria-current": "page" as const } : {})}
+                {...(titles ? { title: camera.name } : {})}
+                onClick={(event) => {
+                  if (opensElsewhere(event)) return;
+                  event.preventDefault();
+                  onSelect({ camera_id: camera.id, stream_id: first.id });
+                }}
+              >
+                {content}
+              </a>
+            ) : (
+              <div class="camera-choice" aria-disabled="true">
+                {content}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

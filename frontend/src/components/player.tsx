@@ -1,14 +1,17 @@
-import type { Ref } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import type { ComponentChildren, Ref } from "preact";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { ErrorBody, State, StreamSummary } from "../services/contracts";
 import { fullscreenElement } from "../services/browser-media";
+import { useShortcuts } from "../services/shortcuts";
 import {
   CameraIcon,
   ExitFullscreenIcon,
   FullscreenIcon,
   MutedIcon,
+  PauseIcon,
   PipIcon,
   PlayIcon,
+  StopIcon,
   VolumeIcon,
 } from "./icon";
 import { describeView, errorCopy, resumable, StatusBadge } from "./status";
@@ -21,9 +24,12 @@ export interface PlayerControls {
 }
 export interface PlayerActions {
   onPlay?: () => void | Promise<void>;
+  onPause?: () => void | Promise<void>;
+  /** Releases this page's session; the view then offers Play. */
+  onStop?: () => void | Promise<void>;
   onRetry?: () => void | Promise<void>;
   onMute?: (muted: boolean) => void | Promise<void>;
-  /** Receives the player container, which is what goes fullscreen. */
+  /** Receives the element to show fullscreen: the player root, or the player. */
   onFullscreen?: (target: HTMLElement) => void | Promise<void>;
   onPictureInPicture?: () => void | Promise<void>;
 }
@@ -70,12 +76,12 @@ const stateCopy: Record<
     detail: "The connection dropped. Trying to restore it.",
   },
   closing: {
-    title: "Closing the previous view",
-    detail: "Waiting for it to finish.",
+    title: "Stopping…",
+    detail: "Freeing this page's viewer slot.",
   },
   closed: {
     title: "Video stopped",
-    detail: "Try again to watch this stream.",
+    detail: "Play to watch this stream again.",
   },
   offline: {
     title: "Camera offline",
@@ -86,16 +92,37 @@ const stateCopy: Record<
     detail: "This view couldn't connect. Other cameras may still work.",
   },
 };
+/** Controls fade after this long without pointer, touch or keyboard activity. */
+const IDLE_MS = 3000;
+const HINT_MS = 4000;
+type Timer = ReturnType<typeof setTimeout>;
+
+const isControl = (target: EventTarget | null) =>
+  target instanceof Element && Boolean(target.closest("button, a, select"));
+/** Keyboard focus, not a mouse click, rests on a control inside `node`. */
+function keyboardFocusIn(node: HTMLElement | null) {
+  const active = document.activeElement;
+  if (!node || !active || active === node || !node.contains(active))
+    return false;
+  try {
+    return active.matches(":focus-visible");
+  } catch {
+    return true;
+  }
+}
 
 export function Player({
   stream,
   presentation,
   reloadHref,
+  onCameras,
 }: {
   stream: StreamSummary;
   presentation: PlayerPresentation;
   /** Address of this view, so a reload reopens the same camera and stream. */
   reloadHref: string;
+  /** Opens the camera list where the page shows only the player. */
+  onCameras?: () => void;
 }) {
   const {
     state,
@@ -110,46 +137,70 @@ export function Player({
   } = presentation;
   const [muted, setMuted] = useState(true);
   const [pending, setPending] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState("");
+  const [hint, setHint] = useState("");
   const [isFullscreen, setFullscreen] = useState(false);
+  const [idle, setIdle] = useState(false);
   const section = useRef<HTMLElement>(null);
   const mounted = useRef(true);
+  const idleTimer = useRef<Timer | undefined>(undefined);
+  const hintTimer = useRef<Timer | undefined>(undefined);
+  const running = useRef<string | null>(null);
   useEffect(() => {
     if (state === "connecting") {
       setMuted(true);
-      setFeedback("");
+      say("");
     }
   }, [state]);
   useEffect(() => {
-    const changed = () =>
-      setFullscreen(
-        section.current !== null && fullscreenElement() === section.current,
-      );
+    // Fullscreen may show the player root, which outlives a camera switch.
+    const changed = () => {
+      const node = section.current;
+      const shown = fullscreenElement();
+      setFullscreen(Boolean(node && shown?.contains(node)));
+    };
+    changed();
     document.addEventListener("fullscreenchange", changed);
     document.addEventListener("webkitfullscreenchange", changed);
     return () => {
       mounted.current = false;
+      clearTimeout(idleTimer.current);
+      clearTimeout(hintTimer.current);
       document.removeEventListener("fullscreenchange", changed);
       document.removeEventListener("webkitfullscreenchange", changed);
     };
   }, []);
 
+  /** Shows a short status line over the video; an empty text clears it. */
+  function say(text: string) {
+    clearTimeout(hintTimer.current);
+    setHint(text);
+    if (text)
+      hintTimer.current = setTimeout(() => {
+        if (mounted.current) setHint("");
+      }, HINT_MS);
+  }
+  // One action at a time. A ref, not render state, so a key pressed before
+  // the next render still sees the action in flight.
   async function run(label: string, action: () => void | Promise<void>) {
-    if (pending) return;
+    if (running.current) return;
+    running.current = label;
     setPending(label);
-    setFeedback("");
+    say("");
     try {
       await action();
     } catch {
       if (mounted.current)
-        setFeedback(`${label} could not be completed. Please try again.`);
+        say(`${label} could not be completed. Please try again.`);
     } finally {
+      running.current = null;
       if (mounted.current) setPending(null);
     }
   }
 
   const live = state === "playing" && !error;
   const canResume = resumable({ state, error, paused, reloadRequired });
+  const stopped = state === "closed" && !error && !reloadRequired;
+  const playing = live && !paused && !needsPlay;
   const view = describeView({
     state,
     error,
@@ -168,7 +219,7 @@ export function Player({
       : state === "playing"
         ? undefined
         : stateCopy[state];
-  // A paused or blocked video still has live media; Play resumes it.
+  // These wait on the viewer, not the connection; Play answers each of them.
   const prompt = needsPlay
     ? {
         title: "Ready to play",
@@ -176,16 +227,41 @@ export function Player({
       }
     : canResume
       ? { title: "Paused", detail: "Play to return to live video." }
-      : undefined;
+      : stopped
+        ? {
+            title: "Video stopped",
+            detail: "Your viewer slot is free. Play to watch again.",
+          }
+        : undefined;
   const message = prompt ?? copy;
-  // A prompt waits on the viewer, not the connection.
-  const busy = !prompt && (state === "connecting" || state === "reconnecting");
+  const busy =
+    !prompt &&
+    (state === "connecting" || state === "reconnecting" || state === "closing");
   const mayRetry =
+    !prompt &&
     !reloadRequired &&
     (error
       ? error.retryable
       : ["idle", "closed", "offline", "failed"].includes(state));
   const retryEnabled = mayRetry && Boolean(actions.onRetry) && !pending;
+  // A stopped view starts again; a waiting or paused video resumes.
+  const toggle = stopped
+    ? actions.onRetry
+    : needsPlay || canResume
+      ? actions.onPlay
+      : playing
+        ? actions.onPause
+        : undefined;
+  const playReason = toggle
+    ? undefined
+    : "Available while video is connected.";
+  const stopReason = !actions.onStop
+    ? "Stop control is not connected."
+    : !error &&
+        !reloadRequired &&
+        ["connecting", "playing", "reconnecting"].includes(state)
+      ? undefined
+      : "Nothing is playing.";
   const audioReason = !stream.capabilities.audio
     ? "This stream has no audio."
     : !live
@@ -212,6 +288,82 @@ export function Player({
           ? "Picture in picture control is not connected."
           : undefined;
 
+  // Controls hide while video plays; pointer movement, a tap or focus brings
+  // them back. They stay while anything else needs the viewer's attention.
+  const watching =
+    playing && stream.capabilities.video && !hint && !pending && !message;
+  const wake = useCallback(() => {
+    setIdle(false);
+    clearTimeout(idleTimer.current);
+    if (!watching) return;
+    const arm = () => {
+      idleTimer.current = setTimeout(() => {
+        const node = section.current;
+        if (node?.querySelector(".player-toolbar:hover") || keyboardFocusIn(node))
+          arm();
+        else if (mounted.current) setIdle(true);
+      }, IDLE_MS);
+    };
+    arm();
+  }, [watching]);
+  useEffect(wake, [wake]);
+  const hide = () => {
+    clearTimeout(idleTimer.current);
+    setIdle(true);
+  };
+
+  const commands = {
+    play() {
+      if (toggle) void run(playing ? "Pause" : "Play", toggle);
+      else say(playReason ?? "");
+    },
+    stop() {
+      if (stopReason || !actions.onStop) say(stopReason ?? "");
+      else void run("Stop", actions.onStop);
+    },
+    mute() {
+      if (audioReason) return say(audioReason);
+      const next = !muted;
+      void run("Audio change", async () => {
+        await actions.onMute?.(next);
+        if (mounted.current) setMuted(next);
+      });
+    },
+    fullscreen() {
+      if (fullscreenReason) return say(fullscreenReason);
+      const enter = actions.onFullscreen;
+      const node = section.current;
+      // The player root outlives camera switches, so fullscreen does too.
+      const target =
+        node?.closest<HTMLElement>("[data-player-root]") ?? node;
+      if (enter && target) void run("Fullscreen", () => enter(target));
+    },
+    pip() {
+      if (pipReason || !actions.onPictureInPicture) say(pipReason ?? "");
+      else void run("Picture in picture", actions.onPictureInPicture);
+    },
+    retry() {
+      if (retryEnabled && actions.onRetry) void run("Retry", actions.onRetry);
+    },
+  };
+  const keys = new Map<string, () => void>([
+    [" ", commands.play],
+    ["k", commands.play],
+    ["s", commands.stop],
+    ["m", commands.mute],
+    ["f", commands.fullscreen],
+    ["p", commands.pip],
+    ["r", commands.retry],
+  ]);
+  useShortcuts((key) => {
+    const command = keys.get(key);
+    if (!command) return false;
+    wake();
+    command();
+    return true;
+  });
+
+  const status = hint || (pending ? `${pending} in progress…` : "");
   return (
     <section
       ref={section}
@@ -219,8 +371,28 @@ export function Player({
       tabIndex={-1}
       aria-label="Selected camera player"
       {...(isFullscreen ? { "data-fullscreen": "" } : {})}
+      {...(idle ? { "data-idle": "" } : {})}
+      onPointerMove={(event) => {
+        if (event.pointerType === "mouse") wake();
+      }}
+      onPointerLeave={(event) => {
+        if (event.pointerType === "mouse" && watching) hide();
+      }}
+      onPointerUp={(event) => {
+        if (event.pointerType === "mouse" || isControl(event.target)) return;
+        // A tap shows hidden controls, or hides visible ones during playback.
+        if (idle || !watching) wake();
+        else hide();
+      }}
+      onDblClick={(event) => {
+        if (!isControl(event.target)) commands.fullscreen();
+      }}
+      onFocusCapture={wake}
     >
-      <div class="video-stage" aria-busy={busy}>
+      <div
+        class={`video-stage${message ? " has-message" : ""}${prompt ? " has-prompt" : ""}`}
+        aria-busy={busy}
+      >
         <video
           key={stream.id}
           {...(videoRef ? { ref: videoRef } : {})}
@@ -228,154 +400,186 @@ export function Player({
           playsInline
           aria-label={`${stream.name} video`}
         />
-        <div class="stage-badge">
-          <StatusBadge view={view} />
-          {transport && (
-            <span class="media-transport">
-              {" "}
-              · WebRTC {transport.toUpperCase()}
-            </span>
+        <div class="stage-top">
+          <div class="stage-badge">
+            <StatusBadge view={view} />
+            {transport && (
+              <span class="media-transport">
+                {" "}
+                · WebRTC {transport.toUpperCase()}
+              </span>
+            )}
+          </div>
+          {onCameras && (
+            <button type="button" class="overlay-cameras" onClick={onCameras}>
+              <CameraIcon />
+              Cameras
+            </button>
           )}
         </div>
-        {message && (
-          <div
-            class={`player-message${prompt ? " is-prompt" : ""}`}
-            role="status"
-            aria-live="polite"
+        <div class="stage-center">
+          {message && (
+            <div class="player-message" role="status" aria-live="polite">
+              <span class={`message-icon ${busy ? "is-connecting" : ""}`}>
+                <CameraIcon />
+              </span>
+              <h2>{message.title}</h2>
+              <p>{message.detail}</p>
+              {prompt && (
+                <button
+                  type="button"
+                  class="primary-button"
+                  disabled={Boolean(pending)}
+                  onClick={() => {
+                    const play = toggle;
+                    if (!play) return;
+                    void run("Play", async () => {
+                      await play();
+                      // The prompt and its focused button go away; keep
+                      // keyboard and screen reader focus in the player.
+                      if (mounted.current)
+                        section.current?.focus({ preventScroll: true });
+                    });
+                  }}
+                >
+                  <PlayIcon />
+                  Play video
+                </button>
+              )}
+              {reloadRequired && (
+                <a class="primary-button" href={reloadHref}>
+                  Reload page
+                </a>
+              )}
+              {mayRetry && (
+                <button
+                  type="button"
+                  class="primary-button"
+                  disabled={!retryEnabled}
+                  {...(!actions.onRetry
+                    ? { "aria-describedby": "retry-help" }
+                    : {})}
+                  onClick={commands.retry}
+                >
+                  {pending === "Retry" ? "Trying again…" : "Try again"}
+                </button>
+              )}
+              {mayRetry && !actions.onRetry && (
+                <p class="retry-help" id="retry-help">
+                  Trying again is available when the viewer is connected.
+                </p>
+              )}
+              {error && !error.retryable && !reloadRequired && (
+                <p class="retry-help">
+                  Trying again from this page won't fix this.
+                </p>
+              )}
+            </div>
+          )}
+          {!stream.capabilities.video && live && !message && (
+            <div class="player-message">
+              <span class="message-icon">
+                <CameraIcon />
+              </span>
+              <h2>Audio only</h2>
+              <p>This stream has no video.</p>
+            </div>
+          )}
+        </div>
+        <p class="player-hint" role="status" aria-live="polite">
+          {status}
+        </p>
+        <div class="player-toolbar" role="group" aria-label="Player controls">
+          <Control
+            id="play"
+            label={playing ? "Pause" : "Play"}
+            keys="Space"
+            reason={playReason}
+            onPress={commands.play}
           >
-            <span class={`message-icon ${busy ? "is-connecting" : ""}`}>
-              <CameraIcon />
-            </span>
-            <h3>{message.title}</h3>
-            <p>{message.detail}</p>
-            {prompt && (
-              <button
-                type="button"
-                class="primary-button"
-                disabled={Boolean(pending)}
-                onClick={() => {
-                  const play = actions.onPlay;
-                  if (!play) return;
-                  void run("Play", async () => {
-                    await play();
-                    // The prompt and its focused button go away; keep keyboard
-                    // and screen reader focus in the player.
-                    if (mounted.current)
-                      section.current?.focus({ preventScroll: true });
-                  });
-                }}
-              >
-                <PlayIcon />
-                Play video
-              </button>
-            )}
-            {reloadRequired && (
-              <a class="primary-button" href={reloadHref}>
-                Reload page
-              </a>
-            )}
-            {mayRetry && (
-              <button
-                type="button"
-                class="primary-button"
-                disabled={!retryEnabled}
-                {...(!actions.onRetry
-                  ? { "aria-describedby": "retry-help" }
-                  : {})}
-                onClick={() =>
-                  actions.onRetry && void run("Retry", actions.onRetry)
-                }
-              >
-                {pending === "Retry" ? "Trying again…" : "Try again"}
-              </button>
-            )}
-            {mayRetry && !actions.onRetry && (
-              <p class="retry-help" id="retry-help">
-                Trying again is available when the viewer is connected.
-              </p>
-            )}
-            {error && !error.retryable && !reloadRequired && (
-              <p class="retry-help">Trying again from this page won't fix this.</p>
-            )}
-          </div>
-        )}
-        {!stream.capabilities.video && live && !message && (
-          <div class="player-message">
-            <span class="message-icon">
-              <CameraIcon />
-            </span>
-            <h3>Audio only</h3>
-            <p>This stream has no video.</p>
-          </div>
-        )}
-      </div>
-      <div class="player-toolbar" aria-label="Player controls">
-        <div class="control-item">
-          <button
-            type="button"
-            class="control-button"
-            disabled={Boolean(audioReason) || Boolean(pending)}
-            aria-pressed={!muted}
-            aria-describedby="audio-help"
-            onClick={() => {
-              const next = !muted;
-              void run("Audio change", async () => {
-                await actions.onMute?.(next);
-                if (mounted.current) setMuted(next);
-              });
-            }}
+            {playing ? <PauseIcon /> : <PlayIcon />}
+          </Control>
+          <Control
+            id="stop"
+            label="Stop"
+            keys="S"
+            reason={stopReason}
+            onPress={commands.stop}
+          >
+            <StopIcon />
+          </Control>
+          <Control
+            id="audio"
+            label={muted ? "Unmute" : "Mute"}
+            keys="M"
+            reason={audioReason}
+            onPress={commands.mute}
           >
             {muted ? <MutedIcon /> : <VolumeIcon />}
-            {muted ? "Unmute" : "Mute"}
-          </button>
-          <span id="audio-help" class="control-help">
-            {audioReason ?? (muted ? "Audio is muted." : "Audio is on.")}
-          </span>
-        </div>
-        <div class="control-item">
-          <button
-            type="button"
-            class="control-button"
-            disabled={Boolean(fullscreenReason) || Boolean(pending)}
-            aria-describedby="fullscreen-help"
-            onClick={() => {
-              const enter = actions.onFullscreen;
-              const target = section.current;
-              if (enter && target) void run("Fullscreen", () => enter(target));
-            }}
-          >
-            {isFullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
-            {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-          </button>
-          <span id="fullscreen-help" class="control-help">
-            {fullscreenReason ??
-              (isFullscreen
-                ? "Return to the page."
-                : "Fill the screen with the player.")}
-          </span>
-        </div>
-        <div class="control-item">
-          <button
-            type="button"
-            class="control-button"
-            disabled={Boolean(pipReason) || Boolean(pending)}
-            aria-describedby="pip-help"
-            onClick={() =>
-              actions.onPictureInPicture &&
-              void run("Picture in picture", actions.onPictureInPicture)
-            }
+          </Control>
+          <span class="toolbar-gap" />
+          <Control
+            id="pip"
+            label="Picture in picture"
+            keys="P"
+            reason={pipReason}
+            onPress={commands.pip}
           >
             <PipIcon />
-            Picture in picture
-          </button>
-          <span id="pip-help" class="control-help">
-            {pipReason ?? "Keep video in a floating window."}
-          </span>
+          </Control>
+          <Control
+            id="fullscreen"
+            label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            keys="F"
+            reason={fullscreenReason}
+            onPress={commands.fullscreen}
+          >
+            {isFullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
+          </Control>
         </div>
       </div>
-      <p class="control-feedback" role="status" aria-live="polite">
-        {feedback || (pending ? `${pending} in progress…` : "")}
-      </p>
     </section>
+  );
+}
+
+// Unavailable controls stay focusable and explain why when pressed, by
+// pointer, touch or keyboard, instead of silently doing nothing.
+function Control({
+  id,
+  label,
+  keys,
+  reason,
+  onPress,
+  children,
+}: {
+  id: string;
+  label: string;
+  keys: string;
+  reason: string | undefined;
+  onPress: () => void;
+  children: ComponentChildren;
+}) {
+  const help = `${id}-help`;
+  return (
+    <>
+      <button
+        type="button"
+        class="control-button"
+        aria-label={label}
+        aria-keyshortcuts={keys}
+        {...(reason
+          ? { "aria-disabled": "true" as const, "aria-describedby": help }
+          : {})}
+        data-tip={reason ?? `${label} (${keys})`}
+        onClick={onPress}
+      >
+        {children}
+      </button>
+      {reason && (
+        <span id={help} class="sr-only">
+          {reason}
+        </span>
+      )}
+    </>
   );
 }

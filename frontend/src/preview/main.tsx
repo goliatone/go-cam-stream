@@ -64,6 +64,8 @@ const scenarios = [
   "playing",
   "paused",
   "reconnecting",
+  "stopping",
+  "stopped",
   "idle",
   "unknown",
   "offline",
@@ -103,9 +105,13 @@ function Preview() {
     ? "failed"
     : ["playing", "paused", "unsupported"].includes(scenario)
       ? "playing"
-      : ["idle", "unknown", "reconnecting"].includes(scenario)
-        ? (scenario as State)
-        : "connecting";
+      : scenario === "stopping"
+        ? "closing"
+        : scenario === "stopped"
+          ? "closed"
+          : ["idle", "unknown", "reconnecting"].includes(scenario)
+            ? (scenario as State)
+            : "connecting";
   const controls: PlayerControls = {
     audio: { enabled: true },
     fullscreen: { enabled: true },
@@ -134,6 +140,19 @@ function Preview() {
         onRetry: () => {
           setAttempt(attempt + 1);
           setEvent(`Viewer retry callback ${attempt + 1}; no network request`);
+          if (scenario === "stopped") setScenario("connecting");
+        },
+        onPlay: () => {
+          setScenario("playing");
+          setEvent("Play callback; preview only");
+        },
+        onPause: () => {
+          setScenario("paused");
+          setEvent("Pause callback; preview only");
+        },
+        onStop: () => {
+          setScenario("stopped");
+          setEvent("Stop callback; no network request");
         },
         onMute: (muted) =>
           setEvent(muted ? "Mute callback" : "Unmute callback"),

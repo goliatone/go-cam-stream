@@ -13,10 +13,11 @@ import (
 // AppRequest/Reply are the version-one NDJSON contract used by the native shell.
 // All fields are bounded and no error embeds a raw process/configuration error.
 type AppRequest struct {
-	Version int     `json:"version"`
-	ID      string  `json:"id"`
-	Method  string  `json:"method"`
-	Config  *Config `json:"config,omitempty"`
+	Version           int     `json:"version"`
+	ID                string  `json:"id"`
+	Method            string  `json:"method"`
+	Config            *Config `json:"config,omitempty"`
+	PreviewGeneration string  `json:"preview_generation,omitempty"`
 }
 
 type AppError struct {
@@ -33,6 +34,7 @@ type AppReply struct {
 
 func appError(code string) *AppError {
 	messages := map[string]string{
+		"preview_unavailable":  "Preview unavailable; retry while the camera is streaming.",
 		"invalid_request":      "Unsupported or malformed camera request.",
 		"busy":                 "Camera is already owned or running.",
 		"not_configured":       "Configure the camera before starting.",
@@ -65,8 +67,15 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 	} else if r.Config != nil {
 		return r, errors.New("unexpected config")
 	}
+	if r.Method == "preview_detach" {
+		if _, err := parsePreviewGeneration(r.PreviewGeneration); err != nil {
+			return r, err
+		}
+	} else if r.PreviewGeneration != "" {
+		return r, errors.New("unexpected preview generation")
+	}
 	switch r.Method {
-	case "devices", "config", "configure", "start", "status", "stop", "export", "quit":
+	case "preview_attach", "preview_detach", "devices", "config", "configure", "start", "status", "stop", "export", "quit":
 		return r, nil
 	default:
 		return r, errors.New("unknown method")
@@ -101,7 +110,7 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	defer in.Close() //nolint:errcheck // Unblock the protocol reader on shutdown.
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	if err = a.encoder.Encode(AppReply{Version: 1, Event: "ready", Result: map[string]int{"protocol": 1}}); err != nil {
+	if err = a.encoder.Encode(AppReply{Version: 1, Event: "ready", Result: map[string]int{"protocol": 1, "preview": 1}}); err != nil {
 		return err
 	}
 	for {
@@ -199,6 +208,8 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	switch r.Method {
+	case "preview_attach", "preview_detach":
+		return a.dispatchPreview(ctx, r)
 	case "devices":
 		v, err := a.service.Devices(ctx)
 		if err != nil {
@@ -248,4 +259,28 @@ func (a *appSession) exportStopped() (any, *AppError) {
 		return nil, appError("export_failed")
 	}
 	return v, nil
+}
+
+func (a *appSession) dispatchPreview(ctx context.Context, r AppRequest) (any, *AppError) {
+	switch r.Method {
+	case "preview_attach":
+		if a.running == nil {
+			return nil, appError("preview_unavailable")
+		}
+		v, err := (AttachPreviewHandler{Service: a.service}).Run(ctx, AttachPreview{})
+		if err != nil {
+			return nil, appError("preview_unavailable")
+		}
+		return v, nil
+	case "preview_detach":
+		if a.running == nil {
+			return Status{State: "stopped"}, nil
+		}
+		if err := (DetachPreviewHandler{Service: a.service}).Execute(ctx, DetachPreview{Generation: r.PreviewGeneration}); err != nil {
+			return nil, appError("preview_unavailable")
+		}
+		return map[string]bool{"detached": true}, nil
+	default:
+		return nil, appError("invalid_request")
+	}
 }

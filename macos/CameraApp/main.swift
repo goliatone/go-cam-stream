@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private let model = CameraModel()
     private var window: NSWindow!
     private var status: NSStatusItem!
@@ -37,10 +37,12 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             edit.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
         }
         NSApp.mainMenu = main
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 608, height: 688),
-            styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Camstream Camera"
         window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.minSize = NSSize(width: 900, height: 680)
         window.contentView = NSHostingView(rootView: CameraView(model: model))
         window.center()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -80,7 +82,19 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status.button?.toolTip = "Camstream Camera: \(model.title)"
         status.button?.setAccessibilityLabel("Camstream Camera: \(model.title)")
     }
-    private func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    private func showWindow() {
+        window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true); updatePreviewVisibility()
+    }
+    private func updatePreviewVisibility() {
+        model.setWindowVisible(window != nil && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
+    }
+    func windowWillClose(_ notification: Notification) { model.setWindowVisible(false) }
+    func windowDidMiniaturize(_ notification: Notification) { model.setWindowVisible(false) }
+    func windowDidDeminiaturize(_ notification: Notification) { updatePreviewVisibility() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }
+    func applicationDidHide(_ notification: Notification) { model.setWindowVisible(false) }
+    func applicationDidUnhide(_ notification: Notification) { updatePreviewVisibility() }
     @objc private func settings() { model.section = 0; showWindow() }
     @objc private func connection() { model.section = 1; showWindow() }
     @objc private func toggleCapture() { if model.capture.active { model.stop() } else { model.start() } }

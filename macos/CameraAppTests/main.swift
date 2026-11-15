@@ -100,3 +100,79 @@ for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof"] {
     try FileManager.default.removeItem(at: root)
 }
 print("PASS: \(checks) total native state/transport checks (no camera access)")
+
+// Shared Go/Swift wire fixture and hostile header boundaries.
+func fromHex(_ value: String) -> Data {
+    var bytes = Data(); var index = value.startIndex
+    while index < value.endIndex {
+        let next = value.index(index, offsetBy: 2)
+        bytes.append(UInt8(value[index..<next], radix: 16)!); index = next
+    }
+    return bytes
+}
+let repo = fixture.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+let wireURL = repo.appendingPathComponent("internal/maccamera/testdata/preview-frame-v1.json")
+let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: wireURL)) as! [String: String]
+let headerBytes = fromHex(wire["header_hex"]!)
+let generation = UInt64(wire["generation"]!, radix: 16)!
+let header = PreviewHeader(headerBytes, generation: generation, after: 0)
+check(header?.width == 2 && header?.height == 1 && header?.size == 8, "Go wire fixture decodes")
+check(header?.image(fromHex(wire["payload_hex"]!)) != nil, "BGRA fixture renders")
+check(header?.image(Data([0])) == nil, "partial pixels cannot render")
+check(PreviewHeader(headerBytes.prefix(47), generation: generation, after: 0) == nil, "partial header rejected")
+check(PreviewHeader(headerBytes, generation: generation + 1, after: 0) == nil, "stale generation rejected")
+check(PreviewHeader(headerBytes, generation: generation, after: 42) == nil, "replayed sequence rejected")
+for offset in [0, 4, 6, 32, 36, 40, 44] {
+    var corrupt = headerBytes; corrupt[offset] = 255
+    check(PreviewHeader(corrupt, generation: generation, after: 0) == nil, "malformed header at \(offset) rejected before pixels")
+}
+
+// Delay attach across visibility/capture changes; old replies must detach first.
+let preview = PreviewController()
+var requests: [(String, String?, ([String: Any]) -> Void)] = []
+preview.request = { method, generation, done in requests.append((method, generation, done)) }
+preview.update(wanted: false, ready: true, supported: true, captureGeneration: 1)
+check(requests.isEmpty, "opening stopped preview cannot start capture")
+preview.update(wanted: true, ready: true, supported: true, captureGeneration: 1)
+check(requests.count == 1 && requests[0].0 == "preview_attach", "live visible preview attaches")
+preview.update(wanted: false, ready: true, supported: true, captureGeneration: 2)
+let endpoint: [String: Any] = ["version": 1, "socket": "/tmp/unused", "generation": "0123456789abcdef"]
+requests.removeFirst().2(["result": endpoint])
+check(requests.count == 1 && requests[0].0 == "preview_detach" && preview.image == nil, "late attach after Stop only detaches")
+preview.update(wanted: true, ready: true, supported: true, captureGeneration: 3)
+check(requests.count == 1, "reopen waits for detach")
+requests.removeFirst().2(["result": ["detached": true]])
+check(requests.count == 1 && requests[0].0 == "preview_attach", "reopen attaches after cleanup")
+requests.removeFirst().2(["error": ["code": "preview_unavailable"]])
+check(preview.phase == .unavailable && requests.isEmpty, "preview failure has no automatic retry loop")
+preview.retry()
+check(requests.count == 1 && preview.phase == .connecting, "explicit retry attaches")
+preview.update(wanted: false, ready: false, supported: false, captureGeneration: 4)
+requests.removeFirst().2(["error": ["code": "transport"]])
+check(preview.image == nil && preview.phase == .idle, "helper loss clears preview")
+
+// Real Unix socket reads fragment both header and payload. No camera involved.
+for mode in ["fragmented", "malformed", "partial", "cancel"] {
+    let folder = URL(fileURLWithPath: "/tmp/camstream-camera-\(getuid())-test\(UUID().uuidString.prefix(6))")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let socket = folder.appendingPathComponent("preview-0123456789abcdef.sock")
+    let process = Process(), output = Pipe()
+    process.executableURL = fixture.deletingLastPathComponent().appendingPathComponent("fake-preview.py")
+    process.arguments = [socket.path, mode]; process.standardOutput = output
+    try process.run()
+    _ = output.fileHandleForReading.availableData
+    var frames = 0, failures = 0
+    let reader = PreviewReader(onFrame: { image in frames += 1; check(image.width == 2 && image.height == 1, "fragmented payload dimensions") }, onFailure: { failures += 1 })
+    reader.start(PreviewEndpoint(version: 1, socket: socket.path, generation: "0123456789abcdef"))
+    if mode == "cancel" { reader.stop() }
+    let deadline = Date().addingTimeInterval(7)
+    while failures == 0 && process.isRunning && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    reader.stop()
+    if process.isRunning { process.terminate() }
+    process.waitUntilExit()
+    check(mode == "fragmented" ? frames == 1 : frames == 0, "\(mode) only complete valid frames render")
+    check(mode == "cancel" ? failures == 0 : failures == 1, "\(mode) failure/cancel classification")
+    try FileManager.default.removeItem(at: folder)
+}
+print("PASS: \(checks) total native checks including preview framing and lifecycle (no camera access)")

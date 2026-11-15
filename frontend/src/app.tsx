@@ -1,16 +1,23 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type {
   CameraList,
+  CameraSummary,
   ErrorBody,
   StreamRef,
   StreamStatus,
 } from "./services/contracts";
-import { CameraSelector } from "./components/camera-selector";
-import { CameraIcon } from "./components/icon";
+import { CameraLinks } from "./components/camera-selector";
+import {
+  CameraIcon,
+  CloseIcon,
+  KeyboardIcon,
+  SidebarIcon,
+} from "./components/icon";
 import { Player, type PlayerPresentation } from "./components/player";
 import { describeView, errorCopy, stateLabels } from "./components/status";
 import { linkFor, resolveSelection } from "./services/links";
 import { pageTitle, showPageState } from "./services/page-meta";
+import { closeDialog, openDialog, useShortcuts } from "./services/shortcuts";
 
 export interface ViewerInput {
   selection: StreamRef;
@@ -29,6 +36,20 @@ export interface AppProps {
 }
 const sameStream = (a: StreamRef, b: StreamRef) =>
   a.camera_id === b.camera_id && a.stream_id === b.stream_id;
+// Below 1024 px the rail starts as icons, leaving the width to the video.
+const narrow = () =>
+  typeof matchMedia === "function" && matchMedia("(max-width: 1023px)").matches;
+const SHORTCUTS: [keys: string[], action: string][] = [
+  [["Space", "K"], "Play or pause"],
+  [["M"], "Mute or unmute"],
+  [["F"], "Fullscreen, or double-click the video"],
+  [["P"], "Picture in picture"],
+  [["S"], "Stop and free your viewer slot"],
+  [["R"], "Try again"],
+  [["[", "]"], "Previous or next camera"],
+  [["1–9"], "Go to a camera in the list"],
+  [["?"], "Show these shortcuts"],
+];
 
 export function App({
   catalog,
@@ -40,6 +61,11 @@ export function App({
   onReload,
 }: AppProps) {
   const [requested, setRequested] = useState(initialSelection);
+  const [railOpen, setRailOpen] = useState(() => !narrow());
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const sheet = useRef<HTMLDialogElement>(null);
+  const shortcuts = useRef<HTMLDialogElement>(null);
+  const viewerRoot = useRef<HTMLElement>(null);
   // Resolve against the current filtered catalog on every render. Never retain a removed scope.
   const cameras = error || loading ? [] : catalog.cameras;
   const selected = resolveSelection(cameras, requested);
@@ -57,6 +83,7 @@ export function App({
   const view = describeView(presentation);
   // "Status unknown" adds nothing to a tab title.
   const word = view.label === stateLabels.unknown ? undefined : view.label;
+  const noRail = Boolean(error) || (!loading && !cameras.length);
 
   // Notify the integration owner of the effective selection, including initial
   // selection and catalog revocation. This callback performs no transport work here.
@@ -72,34 +99,99 @@ export function App({
     if (selected && sameStream(selected, next)) return;
     setRequested(next);
   }
+  // A row names a camera; choosing the one on screen keeps its stream.
+  function choose(next: StreamRef) {
+    const root = viewerRoot.current;
+    // Switching replaces the player. Focus on one of its controls, or on the
+    // sheet that its Cameras button opened, would fall back to the page.
+    const keepFocus =
+      sheetOpen || Boolean(root?.contains(document.activeElement));
+    hideCameras();
+    if (next.camera_id === selected?.camera_id) return;
+    select(next);
+    if (keepFocus) root?.focus({ preventScroll: true });
+  }
+  function chooseCamera(item: CameraSummary | undefined) {
+    const first = item?.streams[0];
+    if (item && first) choose({ camera_id: item.id, stream_id: first.id });
+  }
+  function showCameras() {
+    setSheetOpen(true);
+    openDialog(sheet.current);
+  }
+  function hideCameras() {
+    closeDialog(sheet.current);
+    setSheetOpen(false);
+  }
+
+  // Camera shortcuts: [ and ] step through playable cameras and 1–9 pick a
+  // row. The player owns its own keys.
+  useShortcuts((key) => {
+    if (key === "?") openDialog(shortcuts.current);
+    else if (key === "[" || key === "]") {
+      const playable = cameras.filter((item) => item.streams.length);
+      const step = key === "]" ? 1 : -1;
+      const at = playable.findIndex((item) => item.id === camera?.id);
+      const from = at < 0 ? (step > 0 ? -1 : 0) : at;
+      chooseCamera(playable[(from + step + playable.length) % playable.length]);
+    } else if (/^[1-9]$/.test(key)) chooseCamera(cameras[Number(key) - 1]);
+    else return false;
+    return true;
+  });
 
   return (
-    <div class="app-shell">
+    <div
+      class="app"
+      data-rail={railOpen ? "open" : "collapsed"}
+      {...(noRail ? { "data-norail": "" } : {})}
+    >
       <a class="skip-link" href="#viewer">
         Skip to viewer
       </a>
-      <header class="site-header">
+      <header class="topbar">
+        {!noRail && (
+          <button
+            type="button"
+            class="icon-button rail-toggle"
+            aria-label="Camera list"
+            aria-controls="camera-rail"
+            aria-expanded={railOpen}
+            title={railOpen ? "Hide camera names" : "Show camera names"}
+            onClick={() => setRailOpen(!railOpen)}
+          >
+            <SidebarIcon />
+          </button>
+        )}
         <a class="brand" href="#viewer" aria-label="Camstream viewer">
           <span class="brand-mark">
             <CameraIcon />
           </span>
-          camstream
-          <span class="brand-divider" />{" "}
-          <span class="brand-caption">Camera viewer</span>
+          <span class="brand-name">camstream</span>
         </a>
-        <span class="header-note">A closer look, wherever you are.</span>
+        <span class="topbar-divider" aria-hidden="true" />
+        <h1 class="view-title">
+          {loading ? (
+            <>
+              <span class="skeleton title-skeleton" aria-hidden="true" />
+              <span class="sr-only">Camera viewer</span>
+            </>
+          ) : (
+            (camera?.name ?? "Camera viewer")
+          )}
+        </h1>
+        <button
+          type="button"
+          class="icon-button shortcuts-button"
+          aria-label="Keyboard shortcuts"
+          aria-keyshortcuts="?"
+          aria-haspopup="dialog"
+          title="Keyboard shortcuts (?)"
+          onClick={() => openDialog(shortcuts.current)}
+        >
+          <KeyboardIcon />
+        </button>
       </header>
-      <main id="viewer" tabIndex={-1}>
-        <div class="page-heading">
-          <div>
-            <p class="eyebrow">YOUR SPACE, IN VIEW</p>
-            <h1>Camera viewer</h1>
-            <p class="page-description">
-              Choose a camera. Keep what matters in view.
-            </p>
-          </div>
-          <span class="view-mode">Single view</span>
-        </div>
+      <main id="viewer" ref={viewerRoot} tabIndex={-1} data-player-root="">
         {error ? (
           <div class="catalog-message" role="alert">
             <CameraIcon />
@@ -112,10 +204,12 @@ export function App({
             )}
           </div>
         ) : loading ? (
-          <div class="catalog-message" role="status">
-            <CameraIcon />
-            <h2>Loading cameras</h2>
-            <p>Finding the cameras you can watch.</p>
+          // The same layout as the player, so nothing jumps when cameras arrive.
+          <div class="stage-skeleton" role="status" aria-busy="true">
+            <div class="sr-only">
+              <h2>Loading cameras</h2>
+              <p>Finding the cameras you can watch.</p>
+            </div>
           </div>
         ) : !cameras.length ? (
           <div class="catalog-message" role="status">
@@ -126,86 +220,166 @@ export function App({
               to add cameras or give you access.
             </p>
           </div>
+        ) : camera && stream ? (
+          <Player
+            key={JSON.stringify([camera.id, stream.id])}
+            stream={stream}
+            presentation={presentation}
+            reloadHref={linkFor(camera, stream.id)}
+            onCameras={showCameras}
+          />
         ) : (
-          <div class="workspace">
-            <CameraSelector
-              cameras={cameras}
-              selected={selected}
-              onSelect={select}
-            />
-            <div class="view-panel">
-              {camera && stream && selected ? (
-                <>
-                  <div class="view-heading">
-                    <div>
-                      <p class="eyebrow">SELECTED CAMERA</p>
-                      <h2>{camera.name}</h2>
-                    </div>
-                    <div class="stream-select">
-                      <label for="stream-select">Stream</label>
-                      <select
-                        id="stream-select"
-                        value={stream.id}
-                        onChange={(event) =>
-                          select({
-                            camera_id: camera.id,
-                            stream_id: event.currentTarget.value,
-                          })
-                        }
-                      >
-                        {camera.streams.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                  <Player
-                    key={JSON.stringify([camera.id, stream.id])}
-                    stream={stream}
-                    presentation={presentation}
-                    reloadHref={linkFor(camera, stream.id)}
-                  />
-                  <div class="stream-details" aria-label="Stream details">
-                    <div>
-                      <span class="detail-label">MEDIA</span>
-                      <strong>
-                        {stream.capabilities.video
-                          ? stream.capabilities.audio
-                            ? "Video + audio"
-                            : "Video only"
-                          : stream.capabilities.audio
-                            ? "Audio only"
-                            : "No media"}
-                      </strong>
-                    </div>
-                    <div>
-                      <span class="detail-label">VIEWERS</span>
-                      <strong>
-                        {status?.viewers == null ? "Unknown" : status.viewers}
-                      </strong>
-                    </div>
-                    <div>
-                      <span class="detail-label">LAST UPDATE</span>
-                      <strong>{formatObserved(status?.observed_at)}</strong>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div class="catalog-message" role="status">
-                  <h2>No supported streams</h2>
-                  <p>These cameras have no streams this viewer can play.</p>
-                </div>
-              )}
-            </div>
+          <div class="catalog-message" role="status">
+            <h2>No supported streams</h2>
+            <p>These cameras have no streams this viewer can play.</p>
           </div>
         )}
-        <footer class="page-footer">
-          <span>camstream</span>
-          <p>Switching views affects only this page.</p>
-        </footer>
       </main>
+      {camera && stream ? (
+        <section class="stream-bar" aria-label="Stream details">
+          <div class="stream-bar-inner">
+            <div class="stream-select">
+              <label for="stream-select">Stream</label>
+              <select
+                id="stream-select"
+                value={stream.id}
+                onChange={(event) =>
+                  select({
+                    camera_id: camera.id,
+                    stream_id: event.currentTarget.value,
+                  })
+                }
+              >
+                {camera.streams.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <dl class="stream-facts">
+              <div>
+                <dt>Media</dt>
+                <dd>
+                  {stream.capabilities.video
+                    ? stream.capabilities.audio
+                      ? "Video + audio"
+                      : "Video only"
+                    : stream.capabilities.audio
+                      ? "Audio only"
+                      : "No media"}
+                </dd>
+              </div>
+              <div>
+                <dt>Viewers</dt>
+                <dd>{status?.viewers == null ? "Unknown" : status.viewers}</dd>
+              </div>
+              <div>
+                <dt>Last update</dt>
+                <dd>{formatObserved(status?.observed_at)}</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+      ) : loading ? (
+        <div class="stream-bar" aria-hidden="true">
+          <div class="stream-bar-inner">
+            <span class="skeleton line-skeleton" />
+          </div>
+        </div>
+      ) : null}
+      {!noRail && (
+        <nav id="camera-rail" class="rail" aria-labelledby="rail-title">
+          <div class="rail-heading">
+            <h2 id="rail-title">Cameras</h2>
+            {!loading && <span class="count">{cameras.length}</span>}
+          </div>
+          {loading ? (
+            <div aria-hidden="true">
+              {[0, 1, 2].map((row) => (
+                <div key={row} class="row-skeleton">
+                  <span class="skeleton" />
+                  <span class="skeleton" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <CameraLinks
+              cameras={cameras}
+              selected={selected}
+              onSelect={choose}
+              titles={!railOpen}
+            />
+          )}
+          <p class="rail-note">Switching cameras changes only this page.</p>
+        </nav>
+      )}
+      <dialog
+        ref={sheet}
+        class="dialog camera-sheet"
+        aria-labelledby="sheet-title"
+        onClose={() => setSheetOpen(false)}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) hideCameras();
+        }}
+      >
+        <div class="dialog-inner">
+          <div class="dialog-head">
+            <h2 id="sheet-title">Cameras</h2>
+            <button
+              type="button"
+              class="icon-button"
+              aria-label="Close"
+              onClick={hideCameras}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+          {sheetOpen && (
+            <CameraLinks
+              cameras={cameras}
+              selected={selected}
+              onSelect={choose}
+            />
+          )}
+        </div>
+      </dialog>
+      <dialog
+        ref={shortcuts}
+        class="dialog"
+        aria-labelledby="shortcuts-title"
+        onClick={(event) => {
+          if (event.target === event.currentTarget)
+            closeDialog(shortcuts.current);
+        }}
+      >
+        <div class="dialog-inner">
+          <div class="dialog-head">
+            <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+            <button
+              type="button"
+              class="icon-button"
+              aria-label="Close"
+              onClick={() => closeDialog(shortcuts.current)}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+          <dl class="key-list">
+            {SHORTCUTS.map(([keys, action]) => (
+              <div key={action}>
+                <dt>{action}</dt>
+                <dd>
+                  {keys.map((key) => (
+                    <kbd key={key}>{key}</kbd>
+                  ))}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p class="dialog-note">Shortcuts are off while a field has focus.</p>
+        </div>
+      </dialog>
     </div>
   );
 }

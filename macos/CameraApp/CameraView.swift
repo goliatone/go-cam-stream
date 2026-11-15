@@ -29,9 +29,13 @@ struct CameraView: View {
                     .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("camera-error")
             }
-            ScrollView {
-                if model.section == 0 { settings } else { connection }
-            }
+            if model.section == 0 {
+                HStack(alignment: .top, spacing: 24) {
+                    ScrollView { settings }.frame(maxWidth: .infinity)
+                    PreviewView(preview: model.preview, streaming: model.capture.phase == .streaming)
+                        .frame(width: 400)
+                }.frame(maxHeight: .infinity, alignment: .top)
+            } else { ScrollView { connection } }
             if let notice = model.notice {
                 Text(notice).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -39,7 +43,7 @@ struct CameraView: View {
             Divider()
             Text("Video only · No microphone or recording. Closing this window keeps the app running. Use the camera icon in the menu bar or reopen from the Dock. Quit stops the camera.")
                 .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(24).frame(width: 600, height: 720)
+        }.padding(24).frame(minWidth: 900, minHeight: 640)
     }
 
     private var settings: some View {

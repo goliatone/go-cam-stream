@@ -3,8 +3,20 @@
 The Preact/TypeScript viewer at `/` uses the published [HTTP contract](../data/api/README.md)
 and T07 API for catalog, status, WebRTC negotiation and owned-session release.
 It starts muted and offers Play when autoplay is denied or live video is paused.
-Fullscreen covers the player and its controls where the browser supports element
-fullscreen, and picture in picture uses detected browser APIs. See [browser behavior](../docs/browser-client-compatibility.md).
+Fullscreen covers the viewer, video and controls, where the browser supports
+element fullscreen, and stays on when cameras switch; picture in picture uses
+detected browser APIs. See [browser behavior](../docs/browser-client-compatibility.md).
+
+The page puts the video first. A 56 px top bar names the camera, and the camera
+rail collapses to icons, starting that way below 1024 px. The 16:9 stage takes
+the largest size that fits the window, so desktop views do not scroll. On a phone
+in portrait the player stays pinned while the stream details and camera list
+scroll beneath it; in landscape it fills the screen and its **Cameras** button
+opens the list as a sheet. Controls sit over the video and fade after 3 seconds of
+playback; moving the pointer, a tap or keyboard focus brings them back. **Stop**
+ends this page's session and frees its viewer slot, and Play starts a new one.
+Press <kbd>?</kbd> for keyboard shortcuts. Loading shows a skeleton of the same
+layout.
 
 Each view has an address: `?camera=<id>&stream=<id>`, with the stream omitted for a
 camera's first stream. Opening it selects that view when the catalog lists it.
@@ -69,8 +81,11 @@ not catalog state or successful signaling, establish playing state.
 Switching immediately detaches local media. A serialized cleanup/create chain
 releases a late session response before admitting the newest selection. Failed
 cleanup retains its session ID and withholds allocation until an explicit retry
-confirms release. No automatic mutation replay, upstream reconnect, credential
-storage, session lease renewal or foreground heartbeat exists in the viewer.
+confirms release. **Stop** releases the session through the same chain and keeps
+the selection, so Play negotiates again; a failed release shows the cleanup error
+instead of reporting the slot free. No automatic mutation replay, upstream
+reconnect, credential storage, session lease renewal or foreground heartbeat
+exists in the viewer.
 
 Status observations are read-only and pause when hidden. Native ICE may recover
 brief interruptions; a failed peer exposes **Try again**. Each new disconnection

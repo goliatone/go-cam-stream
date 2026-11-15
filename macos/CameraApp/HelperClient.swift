@@ -23,6 +23,7 @@ final class HelperClient {
     private var sequence = 0
     private var closing = false
     private var ready = false
+    private(set) var previewVersion = 0
     var idle: Bool { ready && current == nil && queue.isEmpty && !closing }
 
     func launch(executable: URL, directory: URL) {
@@ -66,11 +67,12 @@ final class HelperClient {
         }
     }
 
-    func request(_ method: String, config: CameraConfig? = nil, completion: @escaping (Reply) -> Void) {
+    func request(_ method: String, config: CameraConfig? = nil, previewGeneration: String? = nil, completion: @escaping (Reply) -> Void) {
         guard ready, !closing, queue.count < 8 else { fail(); return }
         sequence += 1
         let id = "request-\(sequence)"
         var value: Reply = ["version": 1, "id": id, "method": method]
+        if let generation = previewGeneration { value["preview_generation"] = generation }
         if let config = config, let data = try? JSONEncoder().encode(config),
            let object = try? JSONSerialization.jsonObject(with: data) { value["config"] = object }
         guard var data = try? JSONSerialization.data(withJSONObject: value) else { fail(); return }
@@ -101,6 +103,7 @@ final class HelperClient {
             if let event = reply["event"] as? String {
                 if event == "ready", !ready,
                    (reply["result"] as? Reply)?["protocol"] as? Int == 1 {
+                    previewVersion = (reply["result"] as? Reply)?["preview"] as? Int ?? 0
                     deadline?.invalidate(); ready = true; onReady?()
                 } else if event == "capture_stopped" || event == "session_error" {
                     onEvent?(reply)

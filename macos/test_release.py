@@ -53,6 +53,16 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('--timestamp', calls[1])
         self.assertIn('runtime', calls[1])
 
+    def test_notary_uses_explicit_temporary_keychain_when_supplied(self):
+        result = subprocess.CompletedProcess([], 0, json.dumps({'status': 'Accepted', 'id': 'test'}))
+        with tempfile.TemporaryDirectory() as temp, patch.object(release, 'run', return_value=result) as run:
+            release.notarize(Path(temp) / 'app.zip', 'profile', Path(temp) / 'result.json', Path(temp) / 'ci.keychain-db')
+            args = run.call_args.args
+            self.assertEqual(args[args.index('--keychain') + 1], Path(temp) / 'ci.keychain-db')
+            self.assertNotIn('--password', args)
+            release.notarize(Path(temp) / 'app.zip', 'profile', Path(temp) / 'result.json')
+            self.assertNotIn('--keychain', run.call_args.args)
+
     def fixture(self, root):
         app = root / 'Camstream Camera.app'
         (app / 'Contents/Resources').mkdir(parents=True)

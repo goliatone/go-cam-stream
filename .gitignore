@@ -118,3 +118,7 @@ evidence
 !.env.*.example
 secrets.env
 *.secrets.env
+# Local signing exports/Keychains are never application source.
+*.p12
+*.pfx
+*.keychain-db

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "runtime_id": "camera-runtime-1",
+  "runtime_id": "camera-runtime-2",
   "target": {
     "os": "darwin",
     "arch": "arm64",
@@ -79,17 +79,17 @@
       "--enable-indev=avfoundation,lavfi",
       "--enable-decoder=rawvideo,h264,wrapped_avframe",
       "--enable-parser=h264",
-      "--enable-encoder=libx264,wrapped_avframe",
-      "--enable-muxer=rtsp,null",
+      "--enable-encoder=libx264,wrapped_avframe,rawvideo",
+      "--enable-muxer=rtsp,null,rawvideo",
       "--enable-demuxer=rtsp,concat",
       "--enable-protocol=file,pipe,tcp,udp,rtp",
-      "--enable-filter=buffer,buffersink,format,scale,null,testsrc2"
+      "--enable-filter=buffer,buffersink,format,scale,fps,null,testsrc2"
     ]
   },
   "packs": {
     "darwin-arm64": {
-      "file": "camera-runtime-1-darwin-arm64-macos26.0.tar.gz",
-      "sha256": "5eafd7129ab833754e8075c357edad7b29f431552808c82fc96fd0f8e7a4b79c",
+      "file": "camera-runtime-2-darwin-arm64-macos26.0.tar.gz",
+      "sha256": "b5e5fec2046297ab6989ca56b800cfb52f6e2ab17e781b4059544922058711e4",
       "url": null
     }
   }

@@ -9,11 +9,11 @@ on:
         required: true
         type: string
       runtime_pack_url:
-        description: HTTPS URL of the exact runtime pack in macos/runtime.lock.json
-        required: true
+        description: Optional HTTPS mirror override; defaults to the runtime lock URL
+        required: false
         type: string
       distribution:
-        description: Use provisioned Developer ID/notary runner (requires existing vVERSION tag)
+        description: Sign/notarize on hosted macOS using protected secrets (requires vVERSION tag)
         default: false
         type: boolean
       create_draft:
@@ -33,8 +33,8 @@ env:
 
 jobs:
   camera:
-    runs-on: ${{ inputs.distribution && fromJSON('["self-hosted","macOS","ARM64","camstream-release"]') || fromJSON('["macos-26"]') }}
-    environment: camera-release
+    runs-on: macos-26
+    environment: ${{ inputs.distribution && 'camera-release' || 'camera-build' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +68,9 @@ jobs:
           import os, sys
           sys.path.insert(0, 'macos')
           from runtime_pack import load_lock, fetch
-          record = dict(load_lock()['packs']['darwin-arm64'], url=os.environ['RUNTIME_PACK_URL'])
+          record = dict(load_lock()['packs']['darwin-arm64'])
+          if os.environ['RUNTIME_PACK_URL']:
+              record['url'] = os.environ['RUNTIME_PACK_URL']
           fetch(record, '.cache/camera-runtime/packs', offline=False)
           PY
       - name: Native and pack checks
@@ -76,6 +78,46 @@ jobs:
           python3 -m unittest discover -s macos -p 'test_*.py' -q
           xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$RUNNER_TEMP/camera-tests"
           "$RUNNER_TEMP/camera-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
+      - name: Prepare temporary signing Keychain
+        if: ${{ inputs.distribution }}
+        env:
+          CAMERA_CERTIFICATE_P12_BASE64: ${{ secrets.CAMERA_CERTIFICATE_P12_BASE64 }}
+          CAMERA_CERTIFICATE_PASSWORD: ${{ secrets.CAMERA_CERTIFICATE_PASSWORD }}
+          CAMERA_APPLE_ID: ${{ secrets.CAMERA_APPLE_ID }}
+          CAMERA_APP_PASSWORD: ${{ secrets.CAMERA_APP_PASSWORD }}
+          CAMERA_TEAM_ID: ${{ vars.CAMERA_TEAM_ID }}
+          CAMERA_NOTARY_PROFILE: ${{ vars.CAMERA_NOTARY_PROFILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PYTHON'
+          import base64, os
+          from pathlib import Path
+          required = ('CAMERA_CERTIFICATE_P12_BASE64', 'CAMERA_CERTIFICATE_PASSWORD',
+                      'CAMERA_APPLE_ID', 'CAMERA_APP_PASSWORD', 'CAMERA_TEAM_ID', 'CAMERA_NOTARY_PROFILE')
+          for name in required:
+              if not os.environ.get(name):
+                  raise SystemExit('Missing protected signing input: ' + name)
+          try:
+              cert = base64.b64decode(os.environ['CAMERA_CERTIFICATE_P12_BASE64'], validate=True)
+          except ValueError:
+              raise SystemExit('Invalid certificate base64') from None
+          (Path(os.environ['RUNNER_TEMP']) / 'camera-signing.p12').write_bytes(cert)
+          PYTHON
+          camera_keychain="$RUNNER_TEMP/camera-signing.keychain-db"
+          camera_keychain_password=$(openssl rand -hex 32)
+          security create-keychain -p "$camera_keychain_password" "$camera_keychain"
+          security set-keychain-settings -lut 7200 "$camera_keychain"
+          security unlock-keychain -p "$camera_keychain_password" "$camera_keychain"
+          security import "$RUNNER_TEMP/camera-signing.p12" -P "$CAMERA_CERTIFICATE_PASSWORD" \
+            -t cert -f pkcs12 -k "$camera_keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$camera_keychain_password" "$camera_keychain" >/dev/null
+          security list-keychains -d user -s "$camera_keychain"
+          xcrun notarytool store-credentials "$CAMERA_NOTARY_PROFILE" \
+            --keychain "$camera_keychain" --apple-id "$CAMERA_APPLE_ID" \
+            --team-id "$CAMERA_TEAM_ID" --password "$CAMERA_APP_PASSWORD"
+          rm -f "$RUNNER_TEMP/camera-signing.p12"
       - name: Assemble DMG
         env:
           DISTRIBUTION: ${{ inputs.distribution }}
@@ -83,15 +125,21 @@ jobs:
           CAMERA_NOTARY_PROFILE: ${{ vars.CAMERA_NOTARY_PROFILE }}
         run: |
           if [ "$DISTRIBUTION" = true ]; then
-            # Provision these on the protected release runner; never commit credentials.
+            # Secrets are provisioned only in the protected camera-release environment.
             test -n "$CAMERA_SIGN_IDENTITY" && test -n "$CAMERA_NOTARY_PROFILE"
             python3 macos/package-release.py "$RELEASE_VERSION" \
               --sign-identity "$CAMERA_SIGN_IDENTITY" --notary-profile "$CAMERA_NOTARY_PROFILE" \
+              --notary-keychain "$RUNNER_TEMP/camera-signing.keychain-db" \
               --output "$RUNNER_TEMP/camera-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           else
             python3 macos/package-release.py "$RELEASE_VERSION" --development \
               --output "$RUNNER_TEMP/camera-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           fi
+      - name: Remove signing material
+        if: ${{ always() && inputs.distribution }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/camera-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/camera-signing.p12"
       - name: Retain camera assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -167,8 +215,11 @@ jobs:
           r = json.load(open(sys.argv[1]))
           assert r['version'] == sys.argv[2] and r['distribution'] == 'developer-id-notarized'
           PY
+          mv "$camera/release.json" "$camera/camera-release.json"
+          sed 's/  release.json$/  camera-release.json/' "$camera/SHA256SUMS" > "$camera/camera-SHA256SUMS"
+          (cd "$camera" && sha256sum -c camera-SHA256SUMS)
           # A tag must already exist. Never create a tag or replace release assets.
           gh release create "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "Camstream $RELEASE_VERSION" --notes 'Draft: validate downloaded camera on the minimum supported macOS before publication.' \
-            "$camera/"*.dmg "$camera/release.json#camera-release.json" "$camera/SHA256SUMS#camera-SHA256SUMS" \
+            "$camera/"*.dmg "$camera/camera-release.json" "$camera/camera-SHA256SUMS" \
             "$server/"*.tar.gz "$server/"*.sha256

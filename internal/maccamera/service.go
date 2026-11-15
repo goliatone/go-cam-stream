@@ -188,9 +188,10 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 }
 
 type Status struct {
-	State  string `json:"state"`
-	URL    string `json:"url,omitempty"`
-	Frames int64  `json:"frames,omitempty"`
+	Preview *PreviewEndpoint `json:"preview,omitempty"`
+	State   string           `json:"state"`
+	URL     string           `json:"url,omitempty"`
+	Frames  int64            `json:"frames,omitempty"`
 }
 
 func (s *Service) request(ctx context.Context, action string) (Status, error) {
@@ -198,7 +199,7 @@ func (s *Service) request(ctx context.Context, action string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "unix", filepath.Join(dir, "control.sock"))
@@ -209,7 +210,7 @@ func (s *Service) request(ctx context.Context, action string) (Status, error) {
 		return Status{}, err
 	}
 	defer conn.Close() //nolint:errcheck // Connection is no longer used.
-	if err = conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	if err = conn.SetDeadline(time.Now().Add(6 * time.Second)); err != nil {
 		return Status{}, err
 	}
 	if err = json.NewEncoder(conn).Encode(action); err != nil {

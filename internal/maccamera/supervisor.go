@@ -83,7 +83,9 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 	}
 	defer os.Remove(configPath) //nolint:errcheck // Runtime secrets are also replaced on the next owned start.
 	var frames atomic.Int64
-	listener, err := s.control(ctx, c, &frames, cancel, dir)
+	preview := &previewManager{ctx: ctx, config: c, secret: secret, tool: s.Tools.FFmpeg, dir: dir, frames: &frames}
+	defer preview.close()
+	listener, err := s.control(ctx, c, &frames, cancel, dir, preview)
 	if err != nil {
 		return err
 	}
@@ -91,7 +93,7 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 	return s.runMedia(ctx, c, configPath, &frames, out)
 }
 
-func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, cancel context.CancelFunc, dir string) (net.Listener, error) {
+func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, cancel context.CancelFunc, dir string, preview *previewManager) (net.Listener, error) {
 	path := filepath.Join(dir, "control.sock")
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -107,15 +109,15 @@ func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, c
 			if acceptErr != nil {
 				return
 			}
-			serveControl(conn, c, frames, cancel)
+			serveControl(conn, c, frames, cancel, preview)
 		}
 	}()
 	return listener, nil
 }
 
-func serveControl(conn net.Conn, c Config, frames *atomic.Int64, cancel context.CancelFunc) {
+func serveControl(conn net.Conn, c Config, frames *atomic.Int64, cancel context.CancelFunc, preview *previewManager) {
 	defer conn.Close() //nolint:errcheck // Response is bounded and connection is no longer used.
-	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return
 	}
 	var action string
@@ -126,13 +128,18 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, cancel context.
 	if frames.Load() > 0 {
 		state = "streaming"
 	}
-	if action == "stop" {
+	var endpoint *PreviewEndpoint
+	if action == "preview_attach" {
+		endpoint, _ = preview.attach() //nolint:errcheck // Missing endpoint is the sanitized unavailable response.
+	} else if strings.HasPrefix(action, "preview_detach:") {
+		preview.detach(strings.TrimPrefix(action, "preview_detach:"))
+	} else if action == "stop" {
 		state = "stopping"
 		cancel()
 	} else if action != "status" {
 		return
 	}
-	if err := json.NewEncoder(conn).Encode(Status{State: state, URL: c.URL(), Frames: frames.Load()}); err != nil {
+	if err := json.NewEncoder(conn).Encode(Status{State: state, URL: c.URL(), Frames: frames.Load(), Preview: endpoint}); err != nil {
 		return
 	}
 }

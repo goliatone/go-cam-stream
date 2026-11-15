@@ -1,7 +1,11 @@
 # MacBook RTSP camera
 
 `camstream-camera` turns a macOS webcam into an authenticated H.264 RTSP source.
-For the native setup and menu-bar app, see [Mac app instructions](../macos/README.md#menu-bar-app). The commands below remain the diagnostic CLI workflow.
+For double-click installation, use the versioned camera DMG: copy the app to
+Applications, eject the disk, then open it and explicitly Start Camera. See
+[Mac app instructions](../macos/README.md#menu-bar-app) and
+[release/install status](../macos/README.md#versioned-releases). Local development
+DMGs are not signed/notarized releases. The commands below remain the diagnostic CLI workflow.
 It runs separately from the Linux camstream viewer/server. The exported folder
 includes FFmpeg, MediaMTX and their non-system libraries; target Macs need neither
 Homebrew nor Go. Keep the entire folder together. No microphone capture or recording.

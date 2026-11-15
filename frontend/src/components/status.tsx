@@ -12,7 +12,7 @@ export const stateLabels: Record<State, string> = {
   connecting: "Connecting",
   playing: "Live",
   reconnecting: "Reconnecting",
-  closing: "Closing",
+  closing: "Stopping",
   closed: "Stopped",
   offline: "Offline",
   failed: "Unavailable",

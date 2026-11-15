@@ -11,7 +11,9 @@ final class CameraModel: ObservableObject {
     @Published var devices: [CameraDevice] = []
     @Published var ready = false
     @Published var working = false
-    @Published var section = 0
+    @Published var section = 0 { didSet { syncPreview() } }
+    let preview = PreviewController()
+    private var windowVisible = false
     @Published var notice: String?
     @Published var exported: [URL] = []
     private let client = HelperClient()
@@ -59,6 +61,9 @@ final class CameraModel: ObservableObject {
     }
 
     func launch() {
+        preview.request = { [weak self] method, generation, completion in
+            self?.client.request(method, previewGeneration: generation, completion: completion)
+        }
         refreshPermission()
         client.onReady = { [weak self] in
             guard let self = self else { return }
@@ -187,6 +192,7 @@ final class CameraModel: ObservableObject {
     }
     func quit() -> Bool {
         quitting = true
+        syncPreview()
         timer?.invalidate()
         capture.stop()
         if !exited { client.shutdown() }
@@ -220,5 +226,10 @@ final class CameraModel: ObservableObject {
               let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
-    private func changed() { didChange?() }
+    func setWindowVisible(_ visible: Bool) { windowVisible = visible; syncPreview() }
+    private func syncPreview() {
+        preview.update(wanted: !quitting && windowVisible && section == 0 && capture.phase == .streaming,
+                       ready: ready && !quitting, supported: client.previewVersion == 1, captureGeneration: capture.generation)
+    }
+    private func changed() { syncPreview(); didChange?() }
 }

@@ -322,6 +322,10 @@ func TestRuntimeHelper(t *testing.T) {
 		if os.Getenv("CAMERA_TEST_EXIT") == "1" {
 			os.Exit(2)
 		}
+		if strings.Contains(strings.Join(args, " "), "-pix_fmt bgra") {
+			previewRuntimeHelper()
+			os.Exit(0)
+		}
 		fmt.Println("frame=10\nprogress=continue")
 	}
 	sig := make(chan os.Signal, 1)

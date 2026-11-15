@@ -19,6 +19,7 @@ const control = vi.hoisted(() => ({
     | undefined,
   select: vi.fn().mockResolvedValue(undefined),
   retry: vi.fn().mockResolvedValue(undefined),
+  stop: vi.fn().mockResolvedValue(undefined),
   dispose: vi.fn().mockResolvedValue(undefined),
   observe: vi.fn(),
   playing: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock("../services/playback", () => ({
     }
     select = control.select;
     retry = control.retry;
+    stop = control.stop;
     dispose = control.dispose;
     observe = control.observe;
     playing = control.playing;
@@ -192,6 +194,41 @@ describe("addresses and paused video", () => {
     expect(document.title).toBe("Room 1 · Live · camstream");
   });
 
+  it("pauses live video from the toolbar", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    act(() => control.changed!(snapshot("playing")));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledOnce();
+    fireEvent(document.querySelector("video")!, new Event("pause"));
+    expect(await screen.findByRole("heading", { name: "Paused" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Play" })).toBeTruthy();
+  });
+
+  it("stops the view, detaches its media and starts again only on Play", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    const live = snapshot("playing");
+    act(() => control.changed!(live));
+    const video = document.querySelector("video")!;
+    await waitFor(() => expect(video.srcObject).toBe(live.media));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(control.stop).toHaveBeenCalledOnce());
+    act(() => control.changed!({ selection: ref, state: "closing", media: null }));
+    expect(await screen.findByRole("heading", { name: "Stopping…" })).toBeTruthy();
+    expect(video.srcObject).toBeNull();
+    act(() => control.changed!({ selection: ref, state: "closed", media: null }));
+    expect(
+      await screen.findByRole("heading", { name: "Video stopped" }),
+    ).toBeTruthy();
+    expect(document.title).toBe("Room 1 · Stopped · camstream");
+    expect(control.retry).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Play video" }));
+    await waitFor(() => expect(control.retry).toHaveBeenCalledOnce());
+  });
+
   it("keeps the new view's Play prompt when an old Play request finishes", async () => {
     let finishOld!: () => void;
     const pending = new Promise<void>((resolve) => {
@@ -298,7 +335,9 @@ describe("addresses and paused video", () => {
       });
       fireEvent(video, new Event("loadedmetadata"));
       const button = () => screen.getByRole("button", { name: "Fullscreen" });
-      await waitFor(() => expect(button().hasAttribute("disabled")).toBe(false));
+      await waitFor(() =>
+        expect(button().getAttribute("aria-disabled")).toBeNull(),
+      );
       Object.defineProperty(video, "readyState", {
         configurable: true,
         value: 0,
@@ -311,7 +350,9 @@ describe("addresses and paused video", () => {
           error: { code: "media_connection_failed", message: "", retryable: true },
         }),
       );
-      await waitFor(() => expect(button().hasAttribute("disabled")).toBe(true));
+      await waitFor(() =>
+        expect(button().getAttribute("aria-disabled")).toBe("true"),
+      );
       expect(
         screen.getByText("Fullscreen is available after video arrives."),
       ).toBeTruthy();

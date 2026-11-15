@@ -1,9 +1,11 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -47,6 +49,9 @@ function input(state: State = "playing"): ViewerInput {
         pip: { enabled: true },
       },
       actions: {
+        onPlay: vi.fn(),
+        onPause: vi.fn(),
+        onStop: vi.fn(),
         onMute: vi.fn(),
         onRetry: vi.fn(),
         onFullscreen: vi.fn(),
@@ -97,9 +102,10 @@ describe("camera selection and scope", () => {
     const firstVideo = document.querySelector("video");
     await user.click(screen.getByRole("button", { name: "Unmute" }));
     expect(viewer.presentation.actions!.onMute).toHaveBeenCalledWith(false);
+    // The label names the next action; there is no pressed state to misread.
     expect(
-      screen.getByRole("button", { name: "Mute" }).getAttribute("aria-pressed"),
-    ).toBe("true");
+      screen.getByRole("button", { name: "Mute" }).hasAttribute("aria-pressed"),
+    ).toBe(false);
     await user.click(screen.getByRole("button", { name: "Fullscreen" }));
     expect(
       await screen.findByText(
@@ -253,19 +259,23 @@ describe("states and controls", () => {
       reason: "Picture in picture is not supported by this browser.",
     };
     render(<App catalog={catalog} viewer={viewer} />);
+    // Unavailable controls stay focusable, so the reason is reachable by
+    // keyboard and touch, not hover alone.
+    const pip = screen.getByRole("button", { name: "Picture in picture" });
+    expect(pip.getAttribute("aria-disabled")).toBe("true");
     expect(
-      screen.getByRole<HTMLButtonElement>("button", {
-        name: "Picture in picture",
-      }).disabled,
-    ).toBe(true);
-    expect(
-      screen.getByText("Picture in picture is not supported by this browser."),
-    ).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Fullscreen" }));
-    expect(viewer.presentation.actions!.onFullscreen).toHaveBeenCalledOnce();
+      document.getElementById(pip.getAttribute("aria-describedby")!)!
+        .textContent,
+    ).toBe("Picture in picture is not supported by this browser.");
+    await user.click(pip);
     expect(
       viewer.presentation.actions!.onPictureInPicture,
     ).not.toHaveBeenCalled();
+    expect(document.querySelector(".player-hint")!.textContent).toBe(
+      "Picture in picture is not supported by this browser.",
+    );
+    await user.click(screen.getByRole("button", { name: "Fullscreen" }));
+    expect(viewer.presentation.actions!.onFullscreen).toHaveBeenCalledOnce();
   });
 
   it("gates retry by the published error and prevents concurrent clicks", async () => {
@@ -475,18 +485,21 @@ describe("addressable views and tab state", () => {
     expect(document.title).toBe("Room 1 · Paused · camstream");
   });
 
-  it("fullscreens the whole player and labels the way back", async () => {
+  it("fullscreens the player root and labels the way back", async () => {
     const user = userEvent.setup();
     const viewer = input();
     render(<App catalog={catalog} viewer={viewer} />);
+    const root = document.querySelector<HTMLElement>("main")!;
     const player = document.querySelector<HTMLElement>("section.player")!;
+    expect(root.contains(player)).toBe(true);
     await user.click(screen.getByRole("button", { name: "Fullscreen" }));
+    // The root outlives camera switches, so fullscreen survives them.
     expect(viewer.presentation.actions!.onFullscreen).toHaveBeenCalledWith(
-      player,
+      root,
     );
     Object.defineProperty(document, "fullscreenElement", {
       configurable: true,
-      value: player,
+      value: root,
     });
     try {
       fireEvent(document, new Event("fullscreenchange"));
@@ -494,6 +507,15 @@ describe("addressable views and tab state", () => {
         screen.getByRole("button", { name: "Exit fullscreen" }),
       ).toBeTruthy();
       expect(player.hasAttribute("data-fullscreen")).toBe(true);
+      fireEvent.keyDown(document.body, { key: "]" });
+      await waitFor(() =>
+        expect(document.querySelector("section.player")).not.toBe(player),
+      );
+      expect(
+        document
+          .querySelector("section.player")!
+          .hasAttribute("data-fullscreen"),
+      ).toBe(true);
     } finally {
       Reflect.deleteProperty(document, "fullscreenElement");
     }
@@ -518,5 +540,247 @@ describe("addressable views and tab state", () => {
     expect(
       screen.getByRole("link", { name: "Reload page" }).getAttribute("href"),
     ).toBe("?camera=room1&stream=compact");
+  });
+});
+
+describe("video-first shell", () => {
+  const paused = (viewer: ViewerInput): ViewerInput => ({
+    ...viewer,
+    presentation: { ...viewer.presentation, paused: true },
+  });
+
+  it("hides the controls during playback until the pointer, a tap or focus returns", () => {
+    vi.useFakeTimers();
+    try {
+      const viewer = input();
+      const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+      const player = document.querySelector<HTMLElement>("section.player")!;
+      const video = player.querySelector("video")!;
+      const idle = () => player.hasAttribute("data-idle");
+      act(() => {
+        vi.advanceTimersByTime(2900);
+      });
+      expect(idle()).toBe(false);
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(idle()).toBe(true);
+      fireEvent.pointerMove(player, { pointerType: "mouse" });
+      expect(idle()).toBe(false);
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      expect(idle()).toBe(true);
+      // A tap shows them; a tap on the video while they show hides them.
+      fireEvent.pointerUp(video, { pointerType: "touch" });
+      expect(idle()).toBe(false);
+      fireEvent.pointerUp(video, { pointerType: "touch" });
+      expect(idle()).toBe(true);
+      fireEvent.focus(screen.getByRole("button", { name: "Stop" }));
+      expect(idle()).toBe(false);
+      // Anything that waits on the viewer keeps them in view.
+      rerender(<App catalog={catalog} viewer={paused(viewer)} />);
+      act(() => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(idle()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the view, frees the slot and offers Play", async () => {
+    const user = userEvent.setup();
+    const viewer = input();
+    const actions = viewer.presentation.actions!;
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(actions.onStop).toHaveBeenCalledOnce();
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={{
+          ...viewer,
+          presentation: { ...viewer.presentation, state: "closed" },
+        }}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "Video stopped" })).toBeTruthy();
+    expect(
+      screen.getByText("Your viewer slot is free. Play to watch again."),
+    ).toBeTruthy();
+    expect(document.querySelector(".stage-badge")!.textContent).toBe("Stopped");
+    expect(document.title).toBe("Room 1 · Stopped · camstream");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop.getAttribute("aria-disabled")).toBe("true");
+    await user.click(stop);
+    expect(actions.onStop).toHaveBeenCalledOnce();
+    expect(document.querySelector(".player-hint")!.textContent).toBe(
+      "Nothing is playing.",
+    );
+    // Play starts a new session; nothing restarts on its own.
+    await user.click(screen.getByRole("button", { name: "Play video" }));
+    expect(actions.onRetry).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Play" }));
+    expect(actions.onRetry).toHaveBeenCalledTimes(2);
+    expect(actions.onPlay).not.toHaveBeenCalled();
+  });
+
+  it("plays and pauses from the toolbar and explains when it cannot", async () => {
+    const user = userEvent.setup();
+    const viewer = input();
+    const actions = viewer.presentation.actions!;
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    expect(actions.onPause).toHaveBeenCalledOnce();
+    rerender(<App catalog={catalog} viewer={paused(viewer)} />);
+    await user.click(screen.getByRole("button", { name: "Play" }));
+    expect(actions.onPlay).toHaveBeenCalledOnce();
+    rerender(<App catalog={catalog} viewer={input("connecting")} />);
+    const play = screen.getByRole("button", { name: "Play" });
+    expect(play.getAttribute("aria-disabled")).toBe("true");
+    await user.click(play);
+    expect(document.querySelector(".player-hint")!.textContent).toBe(
+      "Available while video is connected.",
+    );
+  });
+
+  it("drives the player and the camera list from the keyboard", async () => {
+    const viewer = input();
+    const actions = viewer.presentation.actions!;
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={viewer} onSelect={onSelect} />);
+    // The player runs one action at a time; wait for each to finish.
+    const press = async (
+      key: string,
+      init: KeyboardEventInit = {},
+      target: Element = document.body,
+    ) => {
+      fireEvent.keyDown(target, { key, ...init });
+      await waitFor(() =>
+        expect(document.querySelector(".player-hint")!.textContent).toBe(""),
+      );
+    };
+    await press("m");
+    expect(actions.onMute).toHaveBeenCalledWith(false);
+    await press("f");
+    expect(actions.onFullscreen).toHaveBeenCalledWith(
+      document.querySelector("main"),
+    );
+    await press("p");
+    expect(actions.onPictureInPicture).toHaveBeenCalledOnce();
+    await press(" ");
+    expect(actions.onPause).toHaveBeenCalledOnce();
+    await press("s");
+    expect(actions.onStop).toHaveBeenCalledOnce();
+    // Browser shortcuts and focused fields keep their keys.
+    await press("f", { metaKey: true });
+    await press("m", {}, screen.getByLabelText("Stream"));
+    expect(actions.onFullscreen).toHaveBeenCalledOnce();
+    expect(actions.onMute).toHaveBeenCalledOnce();
+    const room = (camera_id: string) => ({ camera_id, stream_id: "default" });
+    await press("]");
+    await waitFor(() => expect(onSelect).toHaveBeenLastCalledWith(room("room2")));
+    await press("1");
+    await waitFor(() => expect(onSelect).toHaveBeenLastCalledWith(room("room1")));
+    await press("[");
+    await waitFor(() => expect(onSelect).toHaveBeenLastCalledWith(room("room2")));
+    await press("?");
+    const help = document.querySelector("dialog[aria-labelledby='shortcuts-title']")!;
+    expect(help.hasAttribute("open")).toBe(true);
+    // An open dialog keeps every key.
+    await press("1");
+    expect(onSelect).toHaveBeenLastCalledWith(room("room2"));
+  });
+
+  it("retries from the keyboard only when the view offers it", async () => {
+    const viewer = input("failed");
+    viewer.presentation.error = {
+      code: "media_connection_failed",
+      message: "",
+      retryable: true,
+    };
+    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    fireEvent.keyDown(document.body, { key: "r" });
+    await act(async () => {});
+    expect(viewer.presentation.actions!.onRetry).toHaveBeenCalledOnce();
+    const playing = input();
+    rerender(<App catalog={catalog} viewer={playing} />);
+    fireEvent.keyDown(document.body, { key: "r" });
+    expect(playing.presentation.actions!.onRetry).not.toHaveBeenCalled();
+  });
+
+  it("toggles fullscreen when the video is double-clicked", () => {
+    const viewer = input();
+    render(<App catalog={catalog} viewer={viewer} />);
+    fireEvent.dblClick(screen.getByRole("button", { name: "Stop" }));
+    expect(viewer.presentation.actions!.onFullscreen).not.toHaveBeenCalled();
+    fireEvent.dblClick(document.querySelector("video")!);
+    expect(viewer.presentation.actions!.onFullscreen).toHaveBeenCalledWith(
+      document.querySelector("main"),
+    );
+  });
+
+  it("collapses the rail to icons and keeps every name available", async () => {
+    const user = userEvent.setup();
+    render(<App catalog={catalog} />);
+    const toggle = screen.getByRole("button", { name: "Camera list" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector(".app")!.getAttribute("data-rail")).toBe(
+      "collapsed",
+    );
+    expect(
+      screen.getByRole("link", { name: /Room 2/ }).getAttribute("title"),
+    ).toBe("Room 2");
+  });
+
+  it("opens the camera sheet from the player and closes it on a choice", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    const sheet = document.querySelector<HTMLElement>(".camera-sheet")!;
+    expect(sheet.querySelectorAll("a")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Cameras" }));
+    expect(sheet.hasAttribute("open")).toBe(true);
+    await user.click(within(sheet).getByRole("link", { name: /Room 2/ }));
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenLastCalledWith({
+        camera_id: "room2",
+        stream_id: "default",
+      }),
+    );
+    expect(sheet.hasAttribute("open")).toBe(false);
+    expect(sheet.querySelectorAll("a")).toHaveLength(0);
+    // The button that opened the sheet left with the old player.
+    expect(document.activeElement).toBe(document.querySelector("main"));
+  });
+
+  it("keeps focus in the viewer when a key switches cameras from a control", async () => {
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    screen.getByRole("button", { name: "Stop" }).focus();
+    fireEvent.keyDown(document.activeElement!, { key: "]" });
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenLastCalledWith({
+        camera_id: "room2",
+        stream_id: "default",
+      }),
+    );
+    expect(document.activeElement).toBe(document.querySelector("main"));
+  });
+
+  it("shows a skeleton of the same layout while cameras load", () => {
+    render(<App catalog={catalog} loading />);
+    const stage = document.querySelector<HTMLElement>(".stage-skeleton")!;
+    expect(stage.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(stage).getByRole("heading", { name: "Loading cameras" }),
+    ).toBeTruthy();
+    expect(document.querySelectorAll(".row-skeleton").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: /Room/ })).toBeNull();
+    expect(document.querySelector("video")).toBeNull();
   });
 });

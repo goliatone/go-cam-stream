@@ -29,7 +29,7 @@ def build(args):
     sdk = capture("/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path")
     cc = capture("/usr/bin/xcrun", "--find", "clang")
     flags = f"-arch arm64 -mmacosx-version-min={lock['target']['minimum_macos']} -isysroot {sdk}"
-    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(work), "LC_ALL": "C",
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(work), "TMPDIR": str(work), "LC_ALL": "C",
            "MACOSX_DEPLOYMENT_TARGET": lock["target"]["minimum_macos"], "SDKROOT": sdk,
            "CC": cc, "CFLAGS": flags, "LDFLAGS": flags, "SOURCE_DATE_EPOCH": "0",
            "PKG_CONFIG_LIBDIR": str(prefix / "lib/pkgconfig"), "PKG_CONFIG_PATH": "",
@@ -73,8 +73,9 @@ def build(args):
     if not versions["ffmpeg"].startswith("ffmpeg version " + lock["sources"]["ffmpeg"]["version"]) or versions["mediamtx"] != "v" + lock["sources"]["mediamtx"]["version"]:
         raise ValueError("built runtime version mismatch")
     capabilities = {}
-    for option, required in {"-devices": ["avfoundation", "lavfi"], "-encoders": ["libx264", "wrapped_avframe"],
-                             "-decoders": ["h264", "rawvideo", "wrapped_avframe"], "-muxers": ["rtsp", "null"],
+    for option, required in {"-devices": ["avfoundation", "lavfi"], "-encoders": ["libx264", "wrapped_avframe", "rawvideo"],
+                             "-decoders": ["h264", "rawvideo", "wrapped_avframe"], "-muxers": ["rtsp", "null", "rawvideo"],
+                             "-filters": ["scale", "fps", "format"],
                              "-demuxers": ["rtsp", "concat"], "-protocols": ["tcp", "pipe", "file"]}.items():
         result = capture(str(stage / "tools/ffmpeg"), "-hide_banner", option)
         if any(item not in result.split() for item in required):
@@ -83,6 +84,14 @@ def build(args):
     run("encode-smoke", [str(stage / "tools/ffmpeg"), "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-an", "-frames:v", "30",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-f", "null", "-"], work)
+    preview = work / "synthetic-preview.bgra"
+    run("preview-smoke", [str(stage / "tools/ffmpeg"), "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-an", "-frames:v", "3",
+        "-vf", "fps=15,scale=640:360", "-pix_fmt", "bgra", "-c:v", "rawvideo",
+        "-f", "rawvideo", str(preview)], work)
+    if preview.stat().st_size != 3 * 640 * 360 * 4:
+        raise ValueError("preview output size mismatch")
+    preview.unlink()
     for name, directory in source_dirs.items():
         notice_dir = stage / "licenses" / name
         notice_dir.mkdir()

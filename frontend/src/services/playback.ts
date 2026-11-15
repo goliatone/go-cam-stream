@@ -173,6 +173,37 @@ export class PlaybackController {
       return this.select(this.selected.ref, this.selected.capabilities);
     return Promise.resolve();
   }
+  /**
+   * Ends this page's view and releases its session, which frees the viewer slot
+   * without closing the page. The selection is kept, so retry() starts it again.
+   */
+  stop(): Promise<void> {
+    const kept = this.selected;
+    if (!kept || this.disposed) return Promise.resolve();
+    const generation = ++this.generation;
+    this.cancel();
+    this.snapshot = { selection: kept.ref, state: "closing", media: null };
+    this.changed(this.snapshot);
+    return this.enqueue(async () => {
+      let error: ErrorBody | undefined;
+      try {
+        await this.release();
+      } catch (reason) {
+        error = safeError(reason, "cleanup_incomplete");
+      }
+      if (generation !== this.generation || this.disposed) return;
+      this.snapshot = error
+        ? {
+            selection: kept.ref,
+            state: "failed",
+            media: null,
+            error,
+            reloadRequired: this.reloadRequired,
+          }
+        : { selection: kept.ref, state: "closed", media: null };
+      this.changed(this.snapshot);
+    });
+  }
   async dispose(keepalive = false) {
     this.disposed = true;
     this.keepalive = keepalive;

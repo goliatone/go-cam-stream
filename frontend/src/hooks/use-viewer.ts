@@ -216,6 +216,10 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
         videoRef: bindVideo,
         actions: {
           onRetry: () => controller.retry(),
+          // Ends this page's session; the stopped view offers Play (retry).
+          onStop: () => controller.stop(),
+          // Media keeps arriving while paused; the pause event shows Play.
+          onPause: () => video.current?.pause(),
           onPlay: async () => {
             const node = video.current;
             if (!node) return;

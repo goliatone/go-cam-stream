@@ -41,6 +41,34 @@ export const PlayIcon = () => (
     />
   </Icon>
 );
+export const PauseIcon = () => (
+  <Icon size={20}>
+    <rect x="6" y="5" width="4" height="14" rx="1" {...solid} />
+    <rect x="14" y="5" width="4" height="14" rx="1" {...solid} />
+  </Icon>
+);
+export const StopIcon = () => (
+  <Icon size={20}>
+    <rect x="6" y="6" width="12" height="12" rx="2" {...solid} />
+  </Icon>
+);
+export const SidebarIcon = () => (
+  <Icon size={20}>
+    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+    <path d="M9 4v16" />
+  </Icon>
+);
+export const KeyboardIcon = () => (
+  <Icon size={20}>
+    <rect x="2.5" y="6" width="19" height="12" rx="2.5" />
+    <path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14h8" />
+  </Icon>
+);
+export const CloseIcon = () => (
+  <Icon size={20}>
+    <path d="m6 6 12 12M18 6 6 18" />
+  </Icon>
+);
 export const VolumeIcon = () => (
   <Icon size={20}>
     <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z" {...solid} />
