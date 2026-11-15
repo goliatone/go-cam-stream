@@ -53,6 +53,10 @@ def main():
         output = plan(os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_REF'],
                       os.environ.get('INPUT_VERSION', ''), os.environ.get('INPUT_DISTRIBUTION') == 'true',
                       os.environ.get('INPUT_DRAFT') == 'true')
+        if os.environ['GITHUB_EVENT_NAME'] == 'push':
+            file_version = validate_version(Path('.version').read_text().strip())
+            if file_version != output['version']:
+                raise ValueError('release tag must match the committed .version')
     else:
         output = draft_snapshot(json.loads(Path(sys.argv[2]).read_text()),
                                 os.environ['RELEASE_VERSION'], os.environ['RELEASE_SHA'])

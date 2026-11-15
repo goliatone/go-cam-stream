@@ -112,6 +112,59 @@ function dev:env:load {
     eval "$(envset development --isolated=true)"
 }
 
+## dev:build
+## Install locked frontend dependencies, type-check/build/embed assets, and compile Go.
+function dev:build() (
+    cd "${SCRIPT_DIR}" || exit "$?"
+    local tool
+    for tool in go node npm; do
+        if ! command -v "${tool}" >/dev/null 2>&1; then
+            echo "dev:build requires ${tool} on PATH." >&2
+            return 1
+        fi
+    done
+
+    ./scripts/build-web.sh || return "$?"
+    mkdir -p bin || return "$?"
+    go build -o bin/camstream ./cmd/camstream
+)
+
+## dev:serve [--config FILE]
+## Build and serve using an explicit config, or CAMSTREAM_CONFIG from the environment/.taskenv.
+## Re-run after source changes. Ctrl-C gracefully stops the server.
+function dev:serve {
+    local config="${CAMSTREAM_CONFIG:-}"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --config)
+                if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                    echo "--config requires a file path." >&2
+                    return 2
+                fi
+                config="$2"
+                shift 2
+                ;;
+            --config=*) config="${1#*=}"; shift ;;
+            -h|--help)
+                echo "Usage: $0 dev:serve --config FILE"
+                echo "Or set CAMSTREAM_CONFIG in the environment or .taskenv."
+                return 0
+                ;;
+            *) echo "Unknown dev:serve argument: $1" >&2; return 2 ;;
+        esac
+    done
+    if [ -z "${config}" ] || [ ! -f "${config}" ]; then
+        echo "Set CAMSTREAM_CONFIG or pass --config with an existing startup YAML file." >&2
+        return 2
+    fi
+
+    dev:build || return "$?"
+    "${SCRIPT_DIR}/bin/camstream" config validate --config "${config}" || return "$?"
+    echo "Starting camstream; open the HTTPS origin configured in ${config}."
+    # Replace the task runner so signals reach the server without a go-run wrapper.
+    exec "${SCRIPT_DIR}/bin/camstream" serve --config "${config}"
+}
+
 ##
 ## ########################################
 ##           Version Management
@@ -133,7 +186,7 @@ function version:upsert {
     if [ -z "$tag" ]; then
         version:get
     else
-        version:set "$tag"
+        version:set "$tag" || return 1
         version:get
     fi
 }
@@ -145,129 +198,68 @@ function version:upsert {
 ##
 ## Get version from meta file.
 function version:get {
-
-    test -f "${VERSION_FILE}" || touch "${VERSION_FILE}"
-
-    local tag
-    tag=$(cat "${VERSION_FILE}")
-
-    if [ -z "$tag" ]; then
-        tag="0.0.1"
-        version:set "$tag"
-    fi
-
-    echo -n "$tag"
+    version:check || return 1
+    cat "$VERSION_FILE"
 }
 
-##
-## -----
-##
-## version:set
-##
-## Set and save version to meta file.
-## First time will create file if not present.
-##
-## Arguments:
-## @arg 1 {string} [tag=0.0.1]
+# Match the native app's CFBundleShortVersionString limits.
+function version:validate {
+    if ! [[ "${1:-}" =~ ^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$ ]]; then
+        echo "Version must be MAJOR.MINOR.PATCH (up to 4/2/2 digits, no leading zeros)." >&2
+        return 1
+    fi
+}
+
 function version:set {
-
-    local tag
-    tag=${1}
-    if [ -z "$tag" ]; then
-        exit 1
-    fi
-
-    version:check
-
-    echo -e "$tag" > "${VERSION_FILE}"
+    version:validate "${1:-}" || return 1
+    printf '%s\n' "$1" > "$VERSION_FILE"
 }
 
-##
-## -----
-##
-## version:bump
-## Bump sem ver by specifying a level.
-## Valid levels are:
-## - patch (default)
-## - minor
-## - major
-##
-## If you want to update the .version file
-## pass the `--write` flag.
-## @see https://github.com/fsaintjacques/semver-tool/blob/master/src/semver
-##
-## @arg 1 {string} [level=patch]
-## Outputs:
-##   Semver string "$major.$minor.$patch"
-##
-## @flag --write Will write to .version file
-##
+## version:bump [major|minor|patch] [--write]
+## Preview the next version; only --write updates .version.
 function version:bump {
-
-    version:check
-
-    # Default values
-    level='patch'
-    write_to_file=0
-
-    # Parse options
+    local level=patch write_to_file=0 current major minor patch next
     while [[ "$#" -gt 0 ]]; do
-        case $1 in
-            --write)
-                write_to_file=1
-                shift
-            ;;
-            patch|minor|major)
-                level=$1
-                shift
-            ;;
-            *)
-                echo "Invalid option: $1"
-                return 2
-            ;;
+        case "$1" in
+            --write) write_to_file=1 ;;
+            patch|minor|major) level=$1 ;;
+            *) echo "Invalid version option: $1" >&2; return 2 ;;
         esac
+        shift
     done
-
-    # Read contents of version and store in
-    IFS='.' read -ra identifiers < "$VERSION_FILE"
-
-    [[ "${#identifiers[@]}" -ne 3 ]] && echo "Invalid semver string" && return 1
-
-    patch=${identifiers[2]}
-    minor=${identifiers[1]}
-    major=${identifiers[0]}
-
-    case $level in
-        patch)
-            patch=$((patch+1))
-        ;;
-        minor)
-            minor=$((minor+1))
-            patch=0
-        ;;
-        major)
-            major=$((major+1))
-            minor=0
-            patch=0
-        ;;
-        *)
-            echo "Invalid level passed"
-            return 2
+    current=$(version:get) || return 1
+    IFS='.' read -r major minor patch <<< "$current"
+    case "$level" in
+        major) major=$((major+1)); minor=0; patch=0 ;;
+        minor) minor=$((minor+1)); patch=0 ;;
+        patch) patch=$((patch+1)) ;;
     esac
-
-    new_version="$major.$minor.$patch"
-
-    if [[ $write_to_file -eq 1 ]]; then
-        echo "$new_version" > "${VERSION_FILE}"
+    next="$major.$minor.$patch"
+    version:validate "$next" || return 1
+    if [ "$write_to_file" -eq 1 ]; then
+        version:set "$next"
     else
-        echo "$new_version"
+        printf '%s\n' "$next"
     fi
 }
 
 function version:check {
     if [ ! -f "$VERSION_FILE" ]; then
-        echo "0.0.0" > "$VERSION_FILE"
+        echo "Missing $VERSION_FILE; restore the reviewed release baseline before releasing." >&2
+        return 1
     fi
+    version:validate "$(cat "$VERSION_FILE")"
+}
+
+function version:is_greater {
+    local left right index
+    IFS='.' read -ra left <<< "$1"
+    IFS='.' read -ra right <<< "$2"
+    for index in 0 1 2; do
+        (( left[index] > right[index] )) && return 0
+        (( left[index] < right[index] )) && return 1
+    done
+    return 1
 }
 
 function release:notes:has_content {
@@ -297,18 +289,17 @@ function release:notes:assert_temporary {
 function release:changelog:generate {
     local release_tag=${1}
     local release_notes_file=${2}
+    local output=${3:-CHANGELOG.md}
     local release_notes
 
     if release:notes:has_content "${release_notes_file}"; then
         release:notes:assert_temporary "${release_notes_file}" || return 1
         release_notes=$(cat "${release_notes_file}") || return 1
-        git cliff --tag "${release_tag}" --with-tag-message "${release_notes}" --output CHANGELOG.md || return 1
-        rm -f "${release_notes_file}" || return 1
-        echo "Included and removed temporary release notes: ${release_notes_file}" >&2
+        git cliff --tag "${release_tag}" --with-tag-message "${release_notes}" --output "$output" || return 1
         return 0
     fi
 
-    git cliff --tag "${release_tag}" --output CHANGELOG.md
+    git cliff --tag "${release_tag}" --output "$output"
 }
 
 
@@ -323,6 +314,7 @@ function release:changelog:generate {
 ## Arguments:
 ## @arg 1 {string} [level=patch]
 ##        Accepted major, minor, patch
+## @flag --dry-run Validate and print the plan without writes or pushes.
 function release {
     local tag
     local level
@@ -332,6 +324,8 @@ function release {
     local main_branch="${GIT_MAIN:-main}"
     local release_notes_file
     local release_notes_enabled
+    local dry_run=0 current_version remote_refs remote_main remote_tag latest_tag local_tags
+    local changelog_temp head_before
 
     level=""
     message=""
@@ -346,6 +340,10 @@ function release {
                     return 2
                 fi
                 level=$1
+                shift
+            ;;
+            --dry-run)
+                dry_run=1
                 shift
             ;;
             --notes|--notes-file)
@@ -389,45 +387,98 @@ function release {
 
     level=${level:-"patch"}
 
+    # Resolve paths from this checkout even when invoked from another directory.
+    cd "$SCRIPT_DIR" || return 1
     current_branch=$(git symbolic-ref --short HEAD) || return 1
-    if [[ "${current_branch}" != "${main_branch}" ]]; then
-        lgr E "Release must run on ${main_branch}; current branch is ${current_branch}"
+    if [[ "$current_branch" != "$main_branch" ]]; then
+        echo "Release must run on $main_branch; current branch is $current_branch" >&2
         return 1
     fi
-
-    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-        echo "Tracked working tree changes are present; commit or stash them before release." >&2
-        git status --short --untracked-files=no >&2
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Working tree changes are present; review and commit them before release." >&2
+        git status --short >&2
         return 1
     fi
-
-    git fetch origin "${main_branch}" --tags || return 1
-    git merge --ff-only "origin/${main_branch}" || return 1
-
-    tag=$(version:bump "${level}") || return 1
-    release_tag="v${tag}"
-
-    if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
-        echo "Release tag already exists: ${release_tag}" >&2
+    current_version=$(version:get) || return 1
+    git ls-files --error-unmatch -- "$VERSION_FILE" >/dev/null || return 1
+    command -v git-cliff >/dev/null || {
+        echo "Install git-cliff before releasing (brew install git-cliff)." >&2
         return 1
-    fi
-
-    message=${message:-"New ${level} release: ${release_tag}"}
-
-    version:set "${tag}" || return 1
-
-    if [ "${release_notes_enabled}" -eq 1 ]; then
-        release:changelog:generate "${release_tag}" "${release_notes_file}" || return 1
+    }
+    if [ "$release_notes_enabled" -eq 1 ]; then
+        release:notes:assert_temporary "$release_notes_file" || return 1
     else
-        git cliff --tag "${release_tag}" --output CHANGELOG.md || return 1
+        release_notes_file=""
+    fi
+    # Read remote refs even in a dry run: no fetch, merge, writes or push.
+    remote_refs=$(git ls-remote origin "refs/heads/$main_branch" 'refs/tags/v*') || return 1
+    remote_main=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/heads/$main_branch" '$2 == ref {print $1}')
+    if [ -z "$remote_main" ] || ! git merge-base --is-ancestor "$remote_main" HEAD; then
+        echo "Fetch origin and fast-forward/reconcile $main_branch before releasing; origin is not an ancestor of HEAD." >&2
+        return 1
+    fi
+    # Include local tags to detect an earlier release whose push failed.
+    local_tags=$(git tag --list 'v*') || return 1
+    latest_tag=0.0.0
+    while IFS= read -r remote_tag; do
+        remote_tag=${remote_tag#v}
+        version:validate "$remote_tag" 2>/dev/null || continue
+        if version:is_greater "$remote_tag" "$latest_tag"; then latest_tag=$remote_tag; fi
+    done <<< "$(printf '%s\n' "$remote_refs" | awk '$2 ~ /^refs\/tags\/v/ && $2 !~ /\^\{\}$/ {sub(/^refs\/tags\/v/, "", $2); print $2}')
+$local_tags"
+    if version:is_greater "$latest_tag" "$current_version"; then
+        echo "$VERSION_FILE ($current_version) is behind release tag v$latest_tag; reconcile the baseline first." >&2
+        return 1
+    fi
+    # A local-only tag means a previous push may need recovery, not another bump.
+    if git show-ref --verify --quiet "refs/tags/v$current_version" &&
+       ! printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/v$current_version" '$2 == ref {found=1} END {exit !found}'; then
+        echo "Local v$current_version is not on origin. Recover its atomic push before another release." >&2
+        return 1
+    fi
+    tag=$(version:bump "$level") || return 1
+    release_tag="v$tag"
+    message=${message:-"New $level release: $release_tag"}
+    printf 'Release %s → %s: commit .version/CHANGELOG.md, tag, atomic push to origin/%s.\n' "$current_version" "$tag" "$main_branch"
+    echo "GitHub will build/sign/notarize a draft, then wait for release-publish approval."
+    if [ "$dry_run" -eq 1 ]; then
+        echo "Dry run: no files, commits, tags or remote refs changed."
+        return 0
     fi
 
-    git add "${VERSION_FILE}" CHANGELOG.md || return 1
-    git commit -m "Bump version: ${release_tag}" || return 1
+    # Populate history for git-cliff without advancing the branch.
+    git fetch origin "$main_branch" --tags || return 1
+    git merge-base --is-ancestor "origin/$main_branch" HEAD || return 1
+    if git show-ref --verify --quiet "refs/tags/$release_tag"; then
+        echo "Release tag already exists: $release_tag" >&2
+        return 1
+    fi
+    head_before=$(git rev-parse HEAD) || return 1
+    changelog_temp=$(mktemp "${TMPDIR:-/tmp}/camstream-changelog.XXXXXX") || return 1
+    if ! release:changelog:generate "$release_tag" "$release_notes_file" "$changelog_temp"; then
+        rm -f "$changelog_temp"
+        return 1
+    fi
+    if [ "$(git rev-parse HEAD)" != "$head_before" ] || [ -n "$(git status --porcelain)" ]; then
+        rm -f "$changelog_temp"
+        echo "Source changed during release preparation; review before retrying." >&2
+        return 1
+    fi
+    mv "$changelog_temp" CHANGELOG.md || return 1
+    version:set "$tag" || return 1
+    git add -- "$VERSION_FILE" CHANGELOG.md || return 1
+    git commit -m "Bump version: $release_tag" || return 1
+    git tag -a "$release_tag" -m "$message" || return 1
+    if ! git push --atomic origin "HEAD:$main_branch" "refs/tags/$release_tag"; then
+        echo "Push failed; local release commit/tag retained. Do not bump again." >&2
+        echo "Inspect origin, then retry: git push --atomic origin HEAD:$main_branch refs/tags/$release_tag" >&2
+        return 1
+    fi
+    if release:notes:has_content "$release_notes_file"; then
+        rm -f "$release_notes_file" || return 1
+    fi
+    echo "Release tag pushed. Open GitHub Actions → Versioned release artifacts → Review deployments → release-publish."
 
-    git tag -a "${release_tag}" -m "${message}" || return 1
-
-    git push --atomic origin "HEAD:${main_branch}" "refs/tags/${release_tag}" || return 1
 }
 
 ##########################################
@@ -456,4 +507,10 @@ function help {
 }
 
 TIMEFORMAT="Task completed in %3lR"
-time "${@:-help}"
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+if [ "$#" -eq 0 ]; then
+    set -- help
+fi
+time "$@"

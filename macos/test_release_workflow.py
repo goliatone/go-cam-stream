@@ -44,11 +44,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / 'output'
             data = Path(temp) / 'draft.json'
+            (Path(temp) / '.version').write_text('1.2.3\n')
             data.write_text(json.dumps(self.release()))
             env = {**os.environ, 'GITHUB_OUTPUT': str(output), 'GITHUB_EVENT_NAME': 'push',
                    'GITHUB_REF': 'refs/tags/v1.2.3', 'RELEASE_VERSION': '1.2.3', 'RELEASE_SHA': 'a' * 40}
-            subprocess.run([sys.executable, script, 'plan'], env=env, check=True)
+            subprocess.run([sys.executable, script, 'plan'], cwd=temp, env=env, check=True)
             self.assertIn('publish=true', output.read_text())
+            for version in ['1.2.4\n', '01.2.3\n']:
+                (Path(temp) / '.version').write_text(version)
+                result = subprocess.run([sys.executable, script, 'plan'], cwd=temp,
+                                        env=env, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
             subprocess.run([sys.executable, script, 'snapshot', str(data)], env=env, check=True)
             values = dict(line.split('=', 1) for line in output.read_text().splitlines())
             env.update(EXPECTED_RELEASE_ID=values['release_id'], EXPECTED_FINGERPRINT=values['fingerprint'])

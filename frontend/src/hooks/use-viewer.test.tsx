@@ -376,7 +376,9 @@ describe("camera availability", () => {
       const answer = deferList();
       await advance(AVAILABILITY_MS);
       expect(api.list).toHaveBeenCalledTimes(2);
-      view.unmount();
+      // Preact may run an unmount's effect cleanups later; act runs them now,
+      // so the answer arrives after the page closed.
+      await act(() => view.unmount());
       answer(catalog);
       await advance(AVAILABILITY_MS * 3);
       expect(api.list).toHaveBeenCalledTimes(2);

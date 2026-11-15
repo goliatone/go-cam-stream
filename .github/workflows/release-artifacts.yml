@@ -45,6 +45,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Check taskfile release flow in disposable repositories
+        run: python3 -m unittest discover -s scripts -p 'test_taskfile_release.py' -q
       - id: plan
         env:
           INPUT_VERSION: ${{ inputs.version }}

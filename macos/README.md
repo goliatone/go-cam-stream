@@ -180,8 +180,12 @@ never substitute runtime-1 for it.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
 
-Push a new `vMAJOR.MINOR.PATCH` tag at a reviewed commit to start the release
-workflow automatically. The version comes from the tag; runtime-only tags such as
+Use `./taskfile release patch` (or `minor` / `major`) from a clean, reviewed
+`main` checkout. It bumps the checked-in `.version`, generates/commits the
+changelog and atomically pushes the branch plus annotated version tag. Preview
+with `./taskfile release patch --dry-run`; see the [release guide](../README.md#release).
+The new `vMAJOR.MINOR.PATCH` tag starts the release workflow automatically.
+CI requires the committed `.version` to match the tag; runtime-only tags such as
 `camera-runtime-2` do not trigger it. The workflow runs tests, builds the signed and
 notarized camera DMG plus Linux server, and creates an unpublished draft. It then
 waits at **release-publish** for one approval from `goliatone`.
