@@ -1,0 +1,30 @@
+# Default for ./taskfile dev:serve. The task expands @RUNTIME_DIR@ below to
+# this checkout's ignored .cache/dev/runtime directory before loading it.
+# No camera credentials or external camera connections are configured.
+installation_id: camstream-dev
+origin: https://camstream-dev.example.test
+listen: 127.0.0.1:8081
+backend:
+  driver: go2rtc
+  executable: /usr/local/bin/go2rtc
+  runtime_dir: @RUNTIME_DIR@
+  media_address: 127.0.0.1
+  candidate_address: 127.0.0.1
+  network: tcp+udp
+  private_ports: {first: 35000, last: 35099}
+  media_ports: {first: 35100, last: 35131}
+cameras:
+  - id: dev-camera
+    name: Development RTSP camera
+    physical_id: dev-camera
+    strategy: rtsp
+    config:
+      host: 127.0.0.1
+      port: 8554
+      profiles:
+        - {id: default, name: Local RTSP, path: /cam, audio: false}
+    streams: [default]
+access:
+  - login: developer@example.test
+    grants:
+      - {camera_id: dev-camera, streams: [default], view: true, diagnose: true, reconnect: true}

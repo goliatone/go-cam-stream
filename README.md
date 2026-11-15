@@ -43,11 +43,10 @@ an application checkout does not include it or require it to build and run.
 
 ## Development server
 
-Prepare a local startup YAML using the [configuration guide](config/README.md),
-then run:
+Start with the included [development config](config/dev.yaml):
 
 ```sh
-./taskfile dev:serve --config /absolute/path/to/dev.yaml
+./taskfile dev:serve
 ```
 
 Each invocation installs locked frontend dependencies, type-checks and builds the
@@ -55,11 +54,21 @@ viewer, embeds its assets, compiles `bin/camstream`, validates the configuration
 and starts the server in the foreground. Ctrl-C shuts it down; rerun after source
 changes. `./taskfile dev:build` performs only the build steps.
 
-Alternatively, export `CAMSTREAM_CONFIG` (or set it in the ignored `.taskenv` in
-your working directory) and run `./taskfile dev:serve`. Relative config paths are
-resolved from your working directory. Use a private, writable
-`backend.runtime_dir` for your development installation and open the configured
-HTTPS origin through Serve. The example YAML contains placeholders.
+The default binds `127.0.0.1:8081`, with a local RTSP source at
+`rtsp://127.0.0.1:8554/cam` and the development login `developer@example.test`.
+The task renders the config to ignored `.cache/dev/config.yaml`, expanding its
+runtime path to this checkout's `.cache/dev/runtime`; no privileged directory is
+needed. Check startup with `curl http://127.0.0.1:8081/healthz`.
+
+For your own cameras and Serve origin, use the [configuration guide](config/README.md)
+and run `./taskfile dev:serve --config /absolute/path/to/dev.yaml`, or set
+`CAMSTREAM_CONFIG` in the environment or ignored `.taskenv` in your working
+directory. Precedence is `--config`, then `CAMSTREAM_CONFIG`, then the bundled
+default. Relative custom config paths resolve from your working directory.
+
+The default HTTPS origin `https://camstream-dev.example.test` and login are
+placeholders for authenticated ingress; opening the loopback URL directly does
+not bypass authentication. Configure your actual Serve origin/login for the viewer.
 
 The task uses the normal authentication and runtime settings. On macOS or outside
 the supported Linux process boundary, HTTP diagnostics can run but playback stays
@@ -93,9 +102,13 @@ Download/review the draft, then open **Review deployments**, select
 CI requires the tag to match the committed `.version`.
 [Signing setup and approval details](macos/README.md#shared-cameraserver-ci).
 
-Optional `.release-notes.md` is ignored by Git and included in the changelog; it
-is removed only after a successful push. Use `--notes /path/to/notes.md` or
-`--no-release-notes`. A rejected push retains the local commit/tag and prints the
+Optional `.release-notes.md` in the checkout is ignored by Git and included in the
+changelog; it is removed only after a successful push and only if its contents
+have not changed during release preparation. Use `--notes /path/to/notes.md` or
+`--no-release-notes`. Explicit relative note paths resolve from your current
+directory; missing explicit files fail before release. Version commands always
+use this checkout's `.version`, even when invoked elsewhere.
+A rejected push retains the local commit/tag and prints the
 exact atomic push retry; inspect the remote and retry that push, rather than
 bumping again. Earlier preparation failures leave any local edits visible for
 review; nothing is reset automatically.

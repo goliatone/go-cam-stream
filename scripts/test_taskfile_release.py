@@ -83,6 +83,48 @@ class TaskfileReleaseTests(unittest.TestCase):
         self.assertFalse((self.repo / '.release-notes.md').exists())
         self.assertEqual(self.git('status', '--porcelain').stdout, '')
 
+    def test_version_commands_use_checkout_version_from_another_directory(self):
+        caller = self.base / 'caller'
+        caller.mkdir()
+        (caller / '.version').write_text('9.8.7\n')
+        for args, expected in [(('version:get',), '0.1.3'),
+                               (('version:bump', 'patch'), '0.1.4')]:
+            result = self.run_cmd('bash', str(self.repo / 'taskfile'), *args, cwd=caller)
+            self.assertEqual(result.stdout.strip(), expected)
+        self.run_cmd('bash', str(self.repo / 'taskfile'), 'version:set', '0.1.4', cwd=caller)
+        self.assertEqual((self.repo / '.version').read_text(), '0.1.4\n')
+        self.assertEqual((caller / '.version').read_text(), '9.8.7\n')
+
+    def test_relative_notes_use_callers_directory(self):
+        caller = self.base / 'caller with spaces'
+        caller.mkdir()
+        notes = caller / 'notes.md'
+        notes.write_text('Caller release notes\n')
+        (self.bin / 'git-cliff').write_text(
+            '#!/bin/bash\nwhile [ "$#" -gt 0 ]; do\n'
+            ' case "$1" in\n'
+            ' --with-tag-message) shift; message=$1 ;;\n'
+            ' --output) shift; output=$1 ;;\n'
+            ' esac\n shift\ndone\nprintf "%s\\n" "$message" > "$output"\n')
+        self.run_cmd('bash', str(self.repo / 'taskfile'), 'release', 'patch',
+                     '--notes', 'notes.md', cwd=caller)
+        self.assertIn('Caller release notes', (self.repo / 'CHANGELOG.md').read_text())
+        self.assertFalse(notes.exists())
+
+    def test_notes_edited_during_release_are_preserved(self):
+        notes = self.repo / '.release-notes.md'
+        notes.write_text('Included notes\n')
+        cliff = self.bin / 'git-cliff'
+        cliff.write_text(cliff.read_text().replace(
+            'while [', 'printf "New notes for next release\\n" > .release-notes.md\nwhile [', 1))
+        self.task('release', 'patch')
+        self.assertEqual(notes.read_text(), 'New notes for next release\n')
+
+    def test_missing_explicit_notes_fail_before_release(self):
+        self.assertIn('does not exist', self.task('release', 'patch', '--notes',
+                                                 'missing.md', ok=False).stderr)
+        self.unchanged()
+
     @unittest.skipUnless(shutil.which('git-cliff'), 'git-cliff not installed')
     def test_release_with_real_changelog_formatter(self):
         (self.bin / 'git-cliff').unlink()

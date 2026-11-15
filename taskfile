@@ -8,10 +8,10 @@ fi
 export LGR_NO_TIMESTAMP=true
 
 GIT_MAIN="main"
-VERSION_FILE="./.version"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION_FILE="${SCRIPT_DIR}/.version"
 
 # If we have a .taskenv file load it as source
 # the file should be e.g.
@@ -130,10 +130,10 @@ function dev:build() (
 )
 
 ## dev:serve [--config FILE]
-## Build and serve using an explicit config, or CAMSTREAM_CONFIG from the environment/.taskenv.
+## Build and serve with config/dev.yaml; override with --config or CAMSTREAM_CONFIG.
 ## Re-run after source changes. Ctrl-C gracefully stops the server.
 function dev:serve {
-    local config="${CAMSTREAM_CONFIG:-}"
+    local config="${CAMSTREAM_CONFIG:-${SCRIPT_DIR}/config/dev.yaml}"
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --config)
@@ -146,8 +146,8 @@ function dev:serve {
                 ;;
             --config=*) config="${1#*=}"; shift ;;
             -h|--help)
-                echo "Usage: $0 dev:serve --config FILE"
-                echo "Or set CAMSTREAM_CONFIG in the environment or .taskenv."
+                echo "Usage: $0 dev:serve [--config FILE]"
+                echo "Default: config/dev.yaml; override with CAMSTREAM_CONFIG or --config."
                 return 0
                 ;;
             *) echo "Unknown dev:serve argument: $1" >&2; return 2 ;;
@@ -159,6 +159,21 @@ function dev:serve {
     fi
 
     dev:build || return "$?"
+    if [ "${config}" -ef "${SCRIPT_DIR}/config/dev.yaml" ]; then
+        # The development template gets a checkout-local absolute runtime path.
+        # Keep application config loading strict and custom configs unchanged.
+        node - "${SCRIPT_DIR}" <<'NODE' || return "$?"
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.argv[2];
+const dir = path.join(root, '.cache/dev');
+const template = fs.readFileSync(path.join(root, 'config/dev.yaml'), 'utf8');
+const config = template.replace('runtime_dir: @RUNTIME_DIR@', 'runtime_dir: ' + JSON.stringify(path.join(dir, 'runtime')));
+fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+fs.writeFileSync(path.join(dir, 'config.yaml'), config, { mode: 0o600 });
+NODE
+        config="${SCRIPT_DIR}/.cache/dev/config.yaml"
+    fi
     "${SCRIPT_DIR}/bin/camstream" config validate --config "${config}" || return "$?"
     echo "Starting camstream; open the HTTPS origin configured in ${config}."
     # Replace the task runner so signals reach the server without a go-run wrapper.
@@ -324,12 +339,14 @@ function release {
     local main_branch="${GIT_MAIN:-main}"
     local release_notes_file
     local release_notes_enabled
+    local release_notes_required=0 release_notes_hash=""
     local dry_run=0 current_version remote_refs remote_main remote_tag latest_tag local_tags
     local changelog_temp head_before
 
     level=""
     message=""
-    release_notes_file="${RELEASE_NOTES_FILE:-.release-notes.md}"
+    release_notes_file="${RELEASE_NOTES_FILE:-${SCRIPT_DIR}/.release-notes.md}"
+    if [ -n "${RELEASE_NOTES_FILE:-}" ]; then release_notes_required=1; fi
     release_notes_enabled=1
 
     while [[ "$#" -gt 0 ]]; do
@@ -353,6 +370,7 @@ function release {
                     return 2
                 fi
                 release_notes_file=$1
+                release_notes_required=1
                 shift
             ;;
             --no-release-notes)
@@ -387,6 +405,15 @@ function release {
 
     level=${level:-"patch"}
 
+    # Explicit relative note paths belong to the caller, like other file arguments.
+    if [[ "$release_notes_file" != /* ]]; then
+        release_notes_file="$PWD/$release_notes_file"
+    fi
+    if [ "$release_notes_enabled" -eq 1 ] && [ "$release_notes_required" -eq 1 ] &&
+       [ ! -f "$release_notes_file" ]; then
+        echo "Release notes file does not exist: $release_notes_file" >&2
+        return 1
+    fi
     # Resolve paths from this checkout even when invoked from another directory.
     cd "$SCRIPT_DIR" || return 1
     current_branch=$(git symbolic-ref --short HEAD) || return 1
@@ -454,6 +481,9 @@ $local_tags"
         return 1
     fi
     head_before=$(git rev-parse HEAD) || return 1
+    if release:notes:has_content "$release_notes_file"; then
+        release_notes_hash=$(git hash-object -- "$release_notes_file") || return 1
+    fi
     changelog_temp=$(mktemp "${TMPDIR:-/tmp}/camstream-changelog.XXXXXX") || return 1
     if ! release:changelog:generate "$release_tag" "$release_notes_file" "$changelog_temp"; then
         rm -f "$changelog_temp"
@@ -474,8 +504,12 @@ $local_tags"
         echo "Inspect origin, then retry: git push --atomic origin HEAD:$main_branch refs/tags/$release_tag" >&2
         return 1
     fi
-    if release:notes:has_content "$release_notes_file"; then
-        rm -f "$release_notes_file" || return 1
+    if [ -n "$release_notes_hash" ] && [ -f "$release_notes_file" ]; then
+        if [ "$(git hash-object -- "$release_notes_file")" = "$release_notes_hash" ]; then
+            rm -f -- "$release_notes_file" || return 1
+        else
+            echo "Release notes changed during preparation; preserved: $release_notes_file" >&2
+        fi
     fi
     echo "Release tag pushed. Open GitHub Actions → Versioned release artifacts → Review deployments → release-publish."
 
