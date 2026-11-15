@@ -9,9 +9,9 @@ statistics, and playing state comes from the media element.
 | Control or event | Behavior |
 | --- | --- |
 | Initial playback | Muted, inline video; a rejected `play()` promise exposes Play video. |
-| Paused live video | A pause from picture-in-picture controls, media keys or the OS shows Paused and offers Play video. The peer keeps receiving media; the viewer does not resume on its own. |
+| Paused live video | A pause from picture-in-picture controls, media keys or the OS shows Paused and offers Play video, also while a brief transport loss recovers. A paused element reports no playback, so Play is what restores the Live state. The peer keeps receiving media; the viewer does not resume on its own. |
 | Unmute | User gesture changes mute and resumes playback; rejection restores muted state and safe feedback. |
-| Fullscreen | The player container (video and controls) through the standard element API, then the WebKit-prefixed one; otherwise Safari video fullscreen once metadata has loaded. Exit uses the matching API. Rejections remain visible. |
+| Fullscreen | The player container (video and controls) through the standard element API, then the WebKit-prefixed one; otherwise Safari video fullscreen once metadata has loaded, disabled again when the media is removed. Exit uses the matching API. Standard API rejections remain visible; the older WebKit-prefixed request reports failure only by event, which the viewer does not surface. |
 | Picture in picture | Standard API or supported Safari presentation mode, only after live video arrives. Unsupported cases explain why. |
 | Selection change | Detach/pause old video, close peer/stop tracks, confirm server release, then negotiate the latest selection. |
 | Brief transport loss | Show reconnecting while native ICE recovers; sustained disconnection/failed media releases the viewer and offers explicit retry. |

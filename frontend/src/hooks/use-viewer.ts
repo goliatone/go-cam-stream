@@ -12,7 +12,19 @@ import {
   mediaControls,
   pictureInPicture,
 } from "../services/browser-media";
-import { linkFor, parseLink } from "../services/links";
+import { linkFor, parseLink, withView } from "../services/links";
+
+// Replace the address without adding a history entry. Browsers rate-limit
+// history updates and may throw; the view itself must not depend on it.
+function showAddress(link: string) {
+  const next = withView(location.href, link);
+  if (next === location.href) return;
+  try {
+    history.replaceState(history.state, "", next);
+  } catch {
+    // The address catches up on the next selection or history traversal.
+  }
+}
 
 export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
   const [catalog, setCatalog] = useState<CameraList>({ cameras: [] });
@@ -24,6 +36,10 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
   const [controls, setControls] = useState(() => mediaControls(null));
   // The address only requests a view; App resolves it against the catalog.
   const [initialSelection] = useState(() => parseLink(location.search));
+  // Address of the view on screen. Fragment links such as the skip link add
+  // same-document history entries; traversing them must not leave the address
+  // naming a camera this page no longer shows.
+  const viewLink = useRef<string | undefined>(undefined);
   const catalogRef = useRef(catalog);
   catalogRef.current = catalog;
   const video = useRef<HTMLVideoElement | null>(null);
@@ -65,11 +81,13 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
         ref && camera?.streams.find((s) => s.id === ref.stream_id);
       setNeedsPlay(false);
       setPaused(false);
+      void controller.select(ref, stream?.capabilities);
       // Keep the address on the effective view without adding history entries.
       // Loading, denied and empty states leave it alone, so a reload retries it.
-      if (ref && camera)
-        history.replaceState(history.state, "", linkFor(camera, ref.stream_id));
-      void controller.select(ref, stream?.capabilities);
+      if (ref && camera) {
+        viewLink.current = linkFor(camera, ref.stream_id);
+        showAddress(viewLink.current);
+      }
     },
     [controller],
   );
@@ -84,6 +102,7 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
           old.ontimeupdate =
           old.onwaiting =
           old.onloadedmetadata =
+          old.onemptied =
           old.onpause =
           old.onplay =
           old.onerror =
@@ -113,7 +132,12 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
       };
       node.onwaiting = () => controller.waiting();
       node.onerror = () => controller.mediaError();
-      node.onloadedmetadata = () => setControls(mediaControls(node));
+      // Controls depend on the element's media. Removing it empties the
+      // element, so iPhone's video-only fullscreen must not stay enabled.
+      node.onloadedmetadata = node.onemptied = () => {
+        if (alive.current && video.current === node)
+          setControls(mediaControls(node));
+      };
       setControls(mediaControls(node));
     },
     [controller],
@@ -129,6 +153,7 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
       node.muted = true;
       setNeedsPlay(false);
       setPaused(false);
+      setControls(mediaControls(node));
       if (media)
         void node.play().catch(() => {
           if (
@@ -157,15 +182,20 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
     const pageshow = (event: PageTransitionEvent) => {
       if (event.persisted) reload();
     };
+    const popstate = () => {
+      if (viewLink.current) showAddress(viewLink.current);
+    };
     document.addEventListener("visibilitychange", visibility);
     window.addEventListener("pagehide", pagehide);
     window.addEventListener("pageshow", pageshow);
+    window.addEventListener("popstate", popstate);
     return () => {
       alive.current = false;
       refreshAbort.current?.abort();
       document.removeEventListener("visibilitychange", visibility);
       window.removeEventListener("pagehide", pagehide);
       window.removeEventListener("pageshow", pageshow);
+      window.removeEventListener("popstate", popstate);
       if (video.current) void detachVideo(video.current);
       void controller.dispose().catch(() => {});
     };

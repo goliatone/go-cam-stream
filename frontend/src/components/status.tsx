@@ -31,6 +31,25 @@ const stateTones: Record<State, Tone> = {
 
 // One description of the player's state, shared by the badge, the document
 // title and the favicon so they never disagree.
+/**
+ * A paused video that Play can resume. A paused element fires no media events,
+ * so a reconnect that recovers while paused leaves the state at "reconnecting";
+ * Play then restores "playing" through the element's playing event.
+ */
+export function resumable(view: {
+  state: State;
+  error?: ErrorBody | undefined;
+  paused?: boolean | undefined;
+  reloadRequired?: boolean | undefined;
+}) {
+  return Boolean(
+    view.paused &&
+      !view.error &&
+      !view.reloadRequired &&
+      (view.state === "playing" || view.state === "reconnecting"),
+  );
+}
+
 export function describeView(view: {
   state: State;
   error?: ErrorBody | undefined;
@@ -41,8 +60,7 @@ export function describeView(view: {
   if (view.reloadRequired) return { label: "Reload needed", tone: "danger" };
   if (view.error) return { label: stateLabels.failed, tone: "danger" };
   if (view.needsPlay) return { label: "Ready to play", tone: "idle" };
-  if (view.state === "playing" && view.paused)
-    return { label: "Paused", tone: "idle" };
+  if (resumable(view)) return { label: "Paused", tone: "idle" };
   return { label: stateLabels[view.state], tone: stateTones[view.state] };
 }
 

@@ -11,7 +11,7 @@ import {
   PlayIcon,
   VolumeIcon,
 } from "./icon";
-import { describeView, errorCopy, StatusBadge } from "./status";
+import { describeView, errorCopy, resumable, StatusBadge } from "./status";
 
 export type Control = { enabled: true } | { enabled: false; reason: string };
 export interface PlayerControls {
@@ -149,10 +149,11 @@ export function Player({
   }
 
   const live = state === "playing" && !error;
+  const canResume = resumable({ state, error, paused, reloadRequired });
   const view = describeView({
     state,
     error,
-    paused: live && paused,
+    paused,
     needsPlay,
     reloadRequired,
   });
@@ -173,10 +174,12 @@ export function Player({
         title: "Ready to play",
         detail: "Your browser needs a tap to start video.",
       }
-    : live && paused
+    : canResume
       ? { title: "Paused", detail: "Play to return to live video." }
       : undefined;
   const message = prompt ?? copy;
+  // A prompt waits on the viewer, not the connection.
+  const busy = !prompt && (state === "connecting" || state === "reconnecting");
   const mayRetry =
     !reloadRequired &&
     (error
@@ -213,13 +216,11 @@ export function Player({
     <section
       ref={section}
       class="player"
+      tabIndex={-1}
       aria-label="Selected camera player"
       {...(isFullscreen ? { "data-fullscreen": "" } : {})}
     >
-      <div
-        class="video-stage"
-        aria-busy={state === "connecting" || state === "reconnecting"}
-      >
+      <div class="video-stage" aria-busy={busy}>
         <video
           key={stream.id}
           {...(videoRef ? { ref: videoRef } : {})}
@@ -242,9 +243,7 @@ export function Player({
             role="status"
             aria-live="polite"
           >
-            <span
-              class={`message-icon ${state === "connecting" || state === "reconnecting" ? "is-connecting" : ""}`}
-            >
+            <span class={`message-icon ${busy ? "is-connecting" : ""}`}>
               <CameraIcon />
             </span>
             <h3>{message.title}</h3>
@@ -254,9 +253,17 @@ export function Player({
                 type="button"
                 class="primary-button"
                 disabled={Boolean(pending)}
-                onClick={() =>
-                  actions.onPlay && void run("Play", actions.onPlay)
-                }
+                onClick={() => {
+                  const play = actions.onPlay;
+                  if (!play) return;
+                  void run("Play", async () => {
+                    await play();
+                    // The prompt and its focused button go away; keep keyboard
+                    // and screen reader focus in the player.
+                    if (mounted.current)
+                      section.current?.focus({ preventScroll: true });
+                  });
+                }}
               >
                 <PlayIcon />
                 Play video

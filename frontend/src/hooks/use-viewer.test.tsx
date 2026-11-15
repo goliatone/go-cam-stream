@@ -218,4 +218,105 @@ describe("addresses and paused video", () => {
       expect(document.title).toBe("Room 2 · Ready to play · camstream"),
     );
   });
+
+  it("offers Play when the connection recovers while video is paused", async () => {
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    const live = snapshot("playing");
+    act(() => control.changed!(live));
+    const video = document.querySelector("video")!;
+    await waitFor(() => expect(video.srcObject).toBe(live.media));
+    fireEvent(video, new Event("pause"));
+    // The peer drops and recovers; a paused element reports no playback, so
+    // the controller stays at reconnecting until Play resumes the element.
+    act(() => control.changed!({ ...live, state: "reconnecting" }));
+    expect(await screen.findByRole("heading", { name: "Paused" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Play video" }));
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+    Object.defineProperties(video, {
+      paused: { configurable: true, value: false },
+      readyState: { configurable: true, value: 2 },
+    });
+    fireEvent(video, new Event("play"));
+    fireEvent(video, new Event("playing"));
+    expect(control.playing).toHaveBeenCalledOnce();
+  });
+
+  it("keeps other address parts and restores the view's address on Back", async () => {
+    history.replaceState(null, "", "/?camera=room1&lang=en#viewer");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() =>
+      expect(control.select).toHaveBeenCalledWith(ref, expect.anything()),
+    );
+    fireEvent.click(screen.getByRole("link", { name: /Room 2/ }));
+    await waitFor(() => expect(location.search).toBe("?camera=room2&lang=en"));
+    expect(location.hash).toBe("#viewer");
+    // Back reaches an older same-document entry that still names Room 1, as
+    // after following the skip link.
+    history.replaceState(null, "", "/?camera=room1");
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(location.search).toBe("?camera=room2");
+  });
+
+  it("switches cameras even when the browser refuses an address update", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() =>
+      expect(control.select).toHaveBeenCalledWith(ref, expect.anything()),
+    );
+    vi.spyOn(history, "replaceState").mockImplementation(() => {
+      throw new DOMException("Too many calls", "SecurityError");
+    });
+    fireEvent.click(screen.getByRole("link", { name: /Room 2/ }));
+    await waitFor(() =>
+      expect(control.select).toHaveBeenLastCalledWith(
+        { camera_id: "room2", stream_id: "default" },
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("disables iPhone video fullscreen once the media is removed", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    Object.defineProperty(HTMLVideoElement.prototype, "webkitEnterFullscreen", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    try {
+      render(<Live />);
+      await waitFor(() => expect(control.select).toHaveBeenCalled());
+      const live = snapshot("playing");
+      act(() => control.changed!(live));
+      const video = document.querySelector("video")!;
+      Object.defineProperty(video, "readyState", {
+        configurable: true,
+        value: 1,
+      });
+      fireEvent(video, new Event("loadedmetadata"));
+      const button = () => screen.getByRole("button", { name: "Fullscreen" });
+      await waitFor(() => expect(button().hasAttribute("disabled")).toBe(false));
+      Object.defineProperty(video, "readyState", {
+        configurable: true,
+        value: 0,
+      });
+      act(() =>
+        control.changed!({
+          ...live,
+          state: "failed",
+          media: null,
+          error: { code: "media_connection_failed", message: "", retryable: true },
+        }),
+      );
+      await waitFor(() => expect(button().hasAttribute("disabled")).toBe(true));
+      expect(
+        screen.getByText("Fullscreen is available after video arrives."),
+      ).toBeTruthy();
+    } finally {
+      Reflect.deleteProperty(HTMLVideoElement.prototype, "webkitEnterFullscreen");
+    }
+  });
 });

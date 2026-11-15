@@ -452,6 +452,27 @@ describe("addressable views and tab state", () => {
     expect(screen.getByRole("heading", { name: "Paused" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Play video" }));
     expect(onPlay).toHaveBeenCalledOnce();
+    // The prompt is about to go away; focus stays in the player.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        document.querySelector("section.player"),
+      ),
+    );
+  });
+
+  it("offers Play when video paused across a brief reconnect", () => {
+    const viewer = input("reconnecting");
+    viewer.presentation.paused = true;
+    viewer.presentation.actions!.onPlay = vi.fn();
+    render(<App catalog={catalog} viewer={viewer} />);
+    expect(document.querySelector(".stage-badge")!.textContent).toBe("Paused");
+    expect(screen.getByRole("heading", { name: "Paused" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Reconnecting…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Play video" })).toBeTruthy();
+    expect(
+      document.querySelector(".video-stage")!.getAttribute("aria-busy"),
+    ).toBe("false");
+    expect(document.title).toBe("Room 1 · Paused · camstream");
   });
 
   it("fullscreens the whole player and labels the way back", async () => {

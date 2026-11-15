@@ -21,6 +21,18 @@ export function linkFor(camera: CameraSummary, streamId?: string) {
   return `?${query.toString()}`;
 }
 
+/** `href` with its view parameters taken from `link`; other parameters and the hash stay. */
+export function withView(href: string, link: string) {
+  const url = new URL(href);
+  const view = new URLSearchParams(link);
+  for (const key of ["camera", "stream"]) {
+    const value = view.get(key);
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
+  return url.href;
+}
+
 /** The requested camera when it has streams, else the first that does. */
 export function resolveSelection(
   cameras: readonly CameraSummary[],

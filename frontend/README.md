@@ -7,11 +7,13 @@ Fullscreen covers the player and its controls where the browser supports element
 fullscreen, and picture in picture uses detected browser APIs. See [browser behavior](../docs/browser-client-compatibility.md).
 
 Each view has an address: `?camera=<id>&stream=<id>`, with the stream omitted for a
-camera's first stream. Opening it selects that view when the catalog lists it and
-otherwise falls back to the first playable camera without an error. A plain click
-on a camera switches in place and replaces the address without adding history; a
-modified or middle click opens that camera in a new tab, which connects only to
-that camera. The tab title and icon show the camera and its state.
+camera's first stream. Opening it selects that view when the catalog lists it.
+Otherwise an unknown stream falls back to the camera's first stream, and an
+unknown camera to the first playable camera, without an error. A plain click on a
+camera switches in place and updates only these parameters without adding
+history; Back across the page's own fragment entries keeps the address on the
+view shown. A modified or middle click opens that camera in a new tab, which
+connects only to that camera. The tab title and icon show the camera and its state.
 
 ## Run locally
 
