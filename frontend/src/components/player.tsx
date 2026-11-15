@@ -57,7 +57,7 @@ export interface PlayerPresentation {
   /** The video element is paused while media keeps arriving. */
   paused?: boolean;
   reloadRequired?: boolean;
-  /** While a dropped connection may recover: when it fails (Date.now() ms). */
+  /** While a dropped connection may recover: when it fails (performance.now()). */
   recoverBy?: number;
   state: State;
   error?: ErrorBody;
@@ -109,7 +109,9 @@ const stateCopy: Record<
     detail: "This view couldn't connect. Other cameras may still work.",
   },
 };
-// Failures of this camera or stream, where another camera may still play.
+// Failures the server reports for this camera or stream, where another camera
+// may still play. Lost connections and timeouts can come from this device's
+// network as well, so they offer Try again only.
 const cameraFaults = new Set<ErrorCode>([
   "not_found",
   "authentication_failed",
@@ -118,8 +120,7 @@ const cameraFaults = new Set<ErrorCode>([
   "source_unavailable",
   "unsupported_capability",
   "camera_busy",
-  "media_connection_failed",
-  "deadline_exceeded",
+  "conflict",
 ]);
 /** Controls fade after this long without pointer, touch or keyboard activity. */
 const IDLE_MS = 3000;
@@ -500,14 +501,10 @@ export function Player({
         </div>
         <div class="stage-center">
           {recovering && (
-            <p class="player-notice" role="status">
+            <p class="player-notice">
               <span class="status-dot is-connecting" />
               Reconnecting…
-              <span class="sr-only">
-                {" "}
-                The connection dropped. Trying to restore it.
-              </span>
-              {recoverBy && <Countdown until={recoverBy} />}
+              {recoverBy !== undefined && <Countdown until={recoverBy} />}
             </p>
           )}
           {message && (
@@ -591,6 +588,11 @@ export function Player({
         <p class="player-hint" role="status" aria-live="polite">
           {status}
         </p>
+        {/* Present from the start, so the change is announced; a region
+            inserted with its text may go unannounced. */}
+        <p class="sr-only" role="status">
+          {recovering ? "Reconnecting. Waiting for video to resume." : ""}
+        </p>
         <div
           class="player-toolbar"
           role="group"
@@ -658,7 +660,7 @@ export function Player({
 // changed every second would interrupt a screen reader.
 function Countdown({ until }: { until: number }) {
   useTick(true);
-  const left = Math.ceil((until - Date.now()) / 1000);
+  const left = Math.ceil((until - performance.now()) / 1000);
   return left > 0 ? (
     <span class="countdown" aria-hidden="true">
       {left} s

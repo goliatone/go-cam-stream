@@ -15,9 +15,10 @@ export interface PlaybackSnapshot {
   status?: StreamStatus;
   transport?: "tcp" | "udp";
   reloadRequired?: boolean;
-  /** While a dropped connection may recover: when it fails (Date.now() ms). */
+  // Page-local times from performance.now(), which a clock change cannot move.
+  /** While a dropped connection may recover: when it fails. */
   recoverBy?: number | undefined;
-  /** When this page last received a status carrying an observation. */
+  /** When this page last received a newer observation of a known state. */
   statusAt?: number;
   /** Since when this page has asked for status; unset while it does not. */
   observingSince?: number | undefined;
@@ -35,6 +36,8 @@ interface Attempt {
   connectTimer?: ReturnType<typeof setTimeout>;
   /** The status loop has started. */
   observed?: boolean;
+  /** The observation time of the last answer counted as an update. */
+  counted?: string | null;
 }
 export function gather(
   peer: RTCPeerConnection,
@@ -229,7 +232,7 @@ export class PlaybackController {
     const attempt = this.active;
     if (attempt?.observed)
       this.publish(attempt, {
-        observingSince: enabled ? Date.now() : undefined,
+        observingSince: enabled ? performance.now() : undefined,
       });
   }
   playing() {
@@ -354,7 +357,7 @@ export class PlaybackController {
         );
         this.publish(attempt, {
           state: "reconnecting",
-          recoverBy: Date.now() + RECOVERY_MS,
+          recoverBy: performance.now() + RECOVERY_MS,
         });
       }
     };
@@ -381,7 +384,7 @@ export class PlaybackController {
       attempt.observed = true;
       this.publish(attempt, {
         media: attempt.media,
-        observingSince: this.observing ? Date.now() : undefined,
+        observingSince: this.observing ? performance.now() : undefined,
       });
       if (peer.connectionState !== "connected") {
         attempt.connectTimer = this.timer(
@@ -413,9 +416,16 @@ export class PlaybackController {
           attempt.abort.signal,
         );
         if (!this.current(attempt)) return;
+        // Only a newer observation of a known state is an update. A server
+        // whose observation went stale answers unknown with its old time.
+        const update =
+          status.observed_at !== null &&
+          status.observed_at !== attempt.counted &&
+          status.state !== "unknown";
+        if (update) attempt.counted = status.observed_at;
         this.publish(
           attempt,
-          status.observed_at ? { status, statusAt: Date.now() } : { status },
+          update ? { status, statusAt: performance.now() } : { status },
         );
         if (status.error) {
           void this.failure(attempt, status.error);

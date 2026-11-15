@@ -30,7 +30,7 @@ import { closeDialog, openDialog, useShortcuts } from "./services/shortcuts";
 export interface ViewerInput {
   selection: StreamRef;
   status?: StreamStatus;
-  /** When this page last received a status carrying an observation. */
+  /** When this page last received a newer observation (performance.now()). */
   statusAt?: number;
   /** Since when this page has asked for status; unset while it does not. */
   observingSince?: number;
@@ -468,8 +468,9 @@ function StreamDetails({
 }
 
 // How current the status is, timed on this device: server observation times
-// may be skewed. It warns only once the page has asked for a whole window
-// without an answer, so a page shown again does not warn while it asks.
+// may be skewed against its clock. It warns only once the page has asked for a
+// whole window without an update, so a page shown again does not warn while
+// its first new request runs.
 function Freshness({
   at,
   since,
@@ -477,10 +478,10 @@ function Freshness({
   at: number | undefined;
   since: number | undefined;
 }) {
-  useTick(Boolean(at ?? since));
-  const now = Date.now();
-  const age = at ? now - at : undefined;
-  const quiet = since ? now - Math.max(at ?? 0, since) : 0;
+  useTick(at !== undefined || since !== undefined);
+  const now = performance.now();
+  const age = at === undefined ? undefined : now - at;
+  const quiet = since === undefined ? 0 : now - Math.max(at ?? since, since);
   if (quiet >= STALE_MS)
     return <span class="stale">No update for {duration(age ?? quiet)}</span>;
   if (age === undefined) return <>No update yet</>;

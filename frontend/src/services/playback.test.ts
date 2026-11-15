@@ -280,7 +280,7 @@ describe("owned viewer lifecycle", () => {
     expect(last()!.recoverBy).toBeUndefined();
     peers[0]!.connect("disconnected");
     expect(last()!.state).toBe("reconnecting");
-    expect(last()!.recoverBy).toBe(Date.now() + RECOVERY_MS);
+    expect(last()!.recoverBy).toBe(performance.now() + RECOVERY_MS);
     await vi.advanceTimersByTimeAsync(5000);
     // Recovered: no window is open, so no deadline remains to show.
     peers[0]!.connect("connected");
@@ -293,7 +293,7 @@ describe("owned viewer lifecycle", () => {
     expect(last()!.recoverBy).toBeUndefined();
     controller.playing();
     peers[0]!.connect("disconnected");
-    const deadline = Date.now() + RECOVERY_MS;
+    const deadline = performance.now() + RECOVERY_MS;
     expect(last()!.recoverBy).toBe(deadline);
     // A repeated disconnected event keeps the same window.
     await vi.advanceTimersByTimeAsync(3000);
@@ -304,9 +304,17 @@ describe("owned viewer lifecycle", () => {
     expect(last()!.recoverBy).toBeUndefined();
     await controller.dispose();
   });
-  it("tells when status last arrived and since when the page asks", async () => {
+  it("counts only newer observations of a known state as updates", async () => {
     const { controller, api, peers, last } = setup();
-    const start = Date.now();
+    // A healthy server observes continuously, so each answer is newer.
+    const healthy = async (ref: StreamRef): Promise<StreamStatus> => ({
+      stream_id: ref.stream_id,
+      state: "playing",
+      viewers: 1,
+      observed_at: new Date().toISOString(),
+    });
+    api.status.mockImplementation(healthy);
+    const start = performance.now();
     await controller.select(one, capabilities);
     await flush();
     peers[0]!.connect("connected");
@@ -315,30 +323,40 @@ describe("owned viewer lifecycle", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flush();
     expect(last()!.statusAt).toBe(start + 2000);
-    // A failed request keeps the time of the last answer, so the page can
+    const seen = last()!.status!.observed_at;
+    // A failed request keeps the time of the last update, so the page can
     // tell how long updates have stopped.
     api.status.mockRejectedValue(new PlaybackError("server_unavailable"));
     await vi.advanceTimersByTimeAsync(2000);
     await flush();
     expect(last()!.status!.state).toBe("unknown");
     expect(last()!.statusAt).toBe(start + 2000);
-    // An answer without an observation is not an update.
-    api.status.mockResolvedValue({
-      stream_id: "default",
-      state: "unknown",
-      viewers: null,
-      observed_at: null,
-    });
+    // A server whose observation went stale answers unknown with its old
+    // time. The same observation again, an unknown state or no observation
+    // is no update either.
+    for (const answer of [
+      { state: "unknown", viewers: null, observed_at: seen },
+      { state: "playing", viewers: 1, observed_at: seen },
+      { state: "unknown", viewers: null, observed_at: "2026-11-15T09:00:00Z" },
+      { state: "unknown", viewers: null, observed_at: null },
+    ] as const) {
+      api.status.mockResolvedValue({ stream_id: "default", ...answer });
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+      expect(last()!.status!.state).toBe(answer.state);
+      expect(last()!.statusAt).toBe(start + 2000);
+    }
+    api.status.mockImplementation(healthy);
     await vi.advanceTimersByTimeAsync(2000);
     await flush();
-    expect(last()!.status!.observed_at).toBeNull();
-    expect(last()!.statusAt).toBe(start + 2000);
+    // Two answers, the failure and four non-updates later: 14 s in.
+    expect(last()!.statusAt).toBe(start + 14000);
     // A hidden page does not ask; shown again, its window starts afresh.
     controller.observe(false);
     expect(last()!.observingSince).toBeUndefined();
     await vi.advanceTimersByTimeAsync(30000);
     controller.observe(true);
-    expect(last()!.observingSince).toBe(Date.now());
+    expect(last()!.observingSince).toBe(performance.now());
     // Stopping ends observation and its times.
     await controller.stop();
     expect(last()!.state).toBe("closed");
@@ -354,7 +372,7 @@ describe("owned viewer lifecycle", () => {
     expect(api.status).not.toHaveBeenCalled();
     expect(last()!.observingSince).toBeUndefined();
     controller.observe(true);
-    expect(last()!.observingSince).toBe(Date.now());
+    expect(last()!.observingSince).toBe(performance.now());
     await controller.dispose();
   });
   it("retains healthy playback during a read-only control-plane outage", async () => {

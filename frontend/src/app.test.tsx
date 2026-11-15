@@ -246,7 +246,7 @@ describe("states and controls", () => {
       viewers: 0,
       observed_at: "2026-11-14T14:30:00Z",
     };
-    viewer.statusAt = Date.now();
+    viewer.statusAt = performance.now();
     rerender(<App catalog={catalog} viewer={{ ...viewer }} />);
     expect(screen.getByText("0")).toBeTruthy();
     expect(screen.getByText("Updated just now")).toBeTruthy();
@@ -504,6 +504,7 @@ describe("addressable views and tab state", () => {
     expect(document.querySelector(".stage-badge")!.textContent).toBe("Paused");
     expect(screen.getByRole("heading", { name: "Paused" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reconnecting…" })).toBeNull();
+    expect(document.querySelector(".player-notice")).toBeNull();
     expect(screen.getByRole("button", { name: "Play video" })).toBeTruthy();
     expect(document.querySelector("video")!.getAttribute("aria-busy")).toBe(
       "false",
@@ -1004,14 +1005,23 @@ describe("live status and recovery", () => {
 
   it("counts down the recovery window over the last frame", () => {
     vi.useFakeTimers({ now: T0 });
+    const { rerender } = render(<App catalog={catalog} viewer={input()} />);
+    // The announcement goes through a region present before it changes.
+    const spoken = document.querySelector(
+      "section.player p.sr-only[role='status']",
+    )!;
+    expect(spoken.textContent).toBe("");
     const viewer = input("reconnecting");
-    viewer.presentation.recoverBy = T0 + 15000;
-    const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
+    viewer.presentation.recoverBy = performance.now() + 15000;
+    rerender(<App catalog={catalog} viewer={viewer} />);
+    expect(spoken.textContent).toBe(
+      "Reconnecting. Waiting for video to resume.",
+    );
     const notice = document.querySelector(".player-notice")!;
     const seconds = () => notice.querySelector(".countdown")?.textContent;
-    expect(notice.getAttribute("role")).toBe("status");
+    expect(notice.getAttribute("role")).toBeNull();
     expect(notice.textContent).toContain("Reconnecting…");
-    // The seconds are visual only, so the status is announced once.
+    // The seconds are visual only, so nothing is announced every second.
     expect(seconds()).toBe("15 s");
     expect(
       notice.querySelector(".countdown")!.getAttribute("aria-hidden"),
@@ -1034,13 +1044,15 @@ describe("live status and recovery", () => {
     const stalled = input("reconnecting");
     rerender(<App catalog={catalog} viewer={stalled} />);
     expect(document.querySelector(".countdown")).toBeNull();
+    rerender(<App catalog={catalog} viewer={input()} />);
+    expect(spoken.textContent).toBe("");
   });
 
   it("shows how fresh the status is and warns when updates stop", () => {
     vi.useFakeTimers({ now: T0 });
     const viewer = input();
-    viewer.statusAt = T0;
-    viewer.observingSince = T0 - 2000;
+    viewer.statusAt = performance.now();
+    viewer.observingSince = viewer.statusAt - 2000;
     render(<App catalog={catalog} viewer={viewer} />);
     expect(screen.getByText("Updated just now")).toBeTruthy();
     tick(5000);
@@ -1050,19 +1062,22 @@ describe("live status and recovery", () => {
     expect(screen.getByText("No update for 10 s").className).toBe("stale");
     tick(110000);
     expect(screen.getByText("No update for 2 min")).toBeTruthy();
+    tick(3 * 3600000);
+    expect(screen.getByText("No update for 3 h")).toBeTruthy();
   });
 
   it("warns only after the page has asked for a whole window", () => {
     vi.useFakeTimers({ now: T0 });
     const viewer = input();
+    const shown = performance.now();
     // A hidden page does not ask, so an old update is only old.
-    viewer.statusAt = T0 - 600000;
+    viewer.statusAt = shown - 600000;
     const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
     expect(screen.getByText("Updated 10 min ago")).toBeTruthy();
     expect(document.querySelector(".stale")).toBeNull();
     // Shown again, its first request gets a whole window before a warning.
     rerender(
-      <App catalog={catalog} viewer={{ ...viewer, observingSince: T0 }} />,
+      <App catalog={catalog} viewer={{ ...viewer, observingSince: shown }} />,
     );
     tick(9000);
     expect(document.querySelector(".stale")).toBeNull();
@@ -1072,7 +1087,7 @@ describe("live status and recovery", () => {
     rerender(
       <App
         catalog={catalog}
-        viewer={{ ...input(), observingSince: Date.now() - 12000 }}
+        viewer={{ ...input(), observingSince: performance.now() - 12000 }}
       />,
     );
     expect(screen.getByText("No update for 12 s").className).toBe("stale");
@@ -1139,19 +1154,32 @@ describe("live status and recovery", () => {
     expect(within(sheet).getByRole("link", { name: /Room 2/ })).toBeTruthy();
     fireEvent.click(within(sheet).getByRole("button", { name: "Close" }));
     expect(sheet.hasAttribute("open")).toBe(false);
-    // Failures every camera shares get no such step.
-    for (const code of [
-      "capacity_exceeded",
-      "backend_unavailable",
-      "server_unavailable",
-    ] as const) {
+    // Only failures reported for this camera or stream offer it. Lost
+    // connections and timeouts may be this device's network, and the rest
+    // affect every camera.
+    const scoped = [
+      "not_found",
+      "authentication_failed",
+      "camera_unreachable",
+      "stream_unavailable",
+      "source_unavailable",
+      "unsupported_capability",
+      "camera_busy",
+      "conflict",
+    ];
+    for (const code of Object.keys(errorCopy) as (keyof typeof errorCopy)[]) {
       rerender(
         <App
           catalog={catalog}
           viewer={failed({ code, message: "", retryable: true })}
         />,
       );
-      expect(choose()).toBeNull();
+      expect([code, Boolean(choose())]).toEqual([code, scoped.includes(code)]);
+    }
+    // So do offline and failed views without a reported error.
+    for (const state of ["offline", "failed"] as const) {
+      rerender(<App catalog={catalog} viewer={input(state)} />);
+      expect(choose()).toBeTruthy();
     }
     // Where trying again won't help, it becomes the main step.
     const source = failed({

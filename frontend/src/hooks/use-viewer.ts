@@ -172,6 +172,8 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
     reload();
     const visibility = () =>
       controller.observe(document.visibilityState !== "hidden");
+    // A page opened in a background tab starts hidden.
+    visibility();
     const pagehide = (event: PageTransitionEvent) => {
       if (event.persisted) {
         void controller.select(undefined);
@@ -205,13 +207,17 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
     viewer = {
       selection: snapshot.selection,
       ...(snapshot.status ? { status: snapshot.status } : {}),
-      ...(snapshot.statusAt ? { statusAt: snapshot.statusAt } : {}),
-      ...(snapshot.observingSince
+      ...(snapshot.statusAt !== undefined
+        ? { statusAt: snapshot.statusAt }
+        : {}),
+      ...(snapshot.observingSince !== undefined
         ? { observingSince: snapshot.observingSince }
         : {}),
       presentation: {
         state: snapshot.state,
-        ...(snapshot.recoverBy ? { recoverBy: snapshot.recoverBy } : {}),
+        ...(snapshot.recoverBy !== undefined
+          ? { recoverBy: snapshot.recoverBy }
+          : {}),
         ...(snapshot.error ? { error: snapshot.error } : {}),
         ...(snapshot.transport ? { transport: snapshot.transport } : {}),
         needsPlay,

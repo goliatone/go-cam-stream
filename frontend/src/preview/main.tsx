@@ -101,9 +101,10 @@ const observed: readonly Scenario[] = [
 
 function Preview() {
   const [scenario, setScenario] = useState<Scenario>("connecting");
-  // When the scenario began and when its synthetic status last arrived.
-  const [since, setSince] = useState(() => Date.now());
-  const [polled, setPolled] = useState(() => Date.now());
+  // When the scenario or view began and when its synthetic status last
+  // arrived, in page-local performance.now() time as the controller uses.
+  const [since, setSince] = useState(() => performance.now());
+  const [polled, setPolled] = useState(() => performance.now());
   const [selection, setSelection] = useState<StreamRef>({
     camera_id: "room1",
     stream_id: "default",
@@ -112,13 +113,13 @@ function Preview() {
   const [attempt, setAttempt] = useState(0);
   function show(next: Scenario) {
     setScenario(next);
-    setSince(Date.now());
-    setPolled(Date.now());
+    setSince(performance.now());
+    setPolled(performance.now());
   }
   const live = observed.includes(scenario);
   useEffect(() => {
     if (!live) return;
-    const timer = setInterval(() => setPolled(Date.now()), 2000);
+    const timer = setInterval(() => setPolled(performance.now()), 2000);
     return () => clearInterval(timer);
   }, [live]);
   // As a real connection that stays down, the recovery window ends in failure.
@@ -129,7 +130,7 @@ function Preview() {
       setEvent("Recovery window ended; preview only");
     }, 15000);
     return () => clearTimeout(timer);
-  }, [scenario]);
+  }, [scenario, since]);
   const error =
     failures[scenario] ??
     (selection.camera_id === "hall" ? failures.offline : undefined);
@@ -161,7 +162,7 @@ function Preview() {
       stream_id: selection.stream_id,
       state,
       viewers: state === "playing" ? 2 : null,
-      observed_at: state === "playing" ? "2026-11-14T14:30:00Z" : null,
+      observed_at: live || state === "playing" ? "2026-11-14T14:30:00Z" : null,
     },
     // Synthetic times: live scenarios answer every 2 s; "stale" stopped 25 s
     // before it was chosen.
@@ -253,6 +254,8 @@ function Preview() {
         viewer={viewer}
         onSelect={(next) => {
           if (next) setSelection(next);
+          // A new view starts its own status and recovery times.
+          show(scenario);
           setEvent("Selection changed; presentation reset");
         }}
       />

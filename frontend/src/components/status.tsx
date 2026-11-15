@@ -77,8 +77,9 @@ export const errorCopy: Record<ErrorCode, { title: string; detail: string }> = {
       "It may have been removed, or you may no longer have access. Choose another camera or stream.",
   },
   conflict: {
-    title: "Another request is still finishing",
-    detail: "Wait a moment, then try again.",
+    title: "This stream can't start right now",
+    detail:
+      "It conflicts with how this camera is set up or already in use. Choose another stream or camera.",
   },
   authentication_failed: {
     title: "The camera rejected its sign-in",
@@ -183,10 +184,14 @@ export function useTick(active: boolean) {
   }, [active]);
 }
 
-/** "4 s" or "2 min". */
+/** "4 s", "2 min" or "3 h". */
 export function duration(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`;
+  return s < 60
+    ? `${s} s`
+    : s < 3600
+      ? `${Math.floor(s / 60)} min`
+      : `${Math.floor(s / 3600)} h`;
 }
 
 /**

@@ -131,7 +131,7 @@ describe("live media binding", () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     render(<Live />);
     await waitFor(() => expect(control.select).toHaveBeenCalled());
-    const now = Date.now();
+    const now = performance.now();
     act(() =>
       control.changed!({
         ...snapshot("reconnecting"),
@@ -152,6 +152,18 @@ describe("live media binding", () => {
     act(() => control.changed!(snapshot("reconnecting")));
     expect(await screen.findByText("No update yet")).toBeTruthy();
     expect(document.querySelector(".countdown")).toBeNull();
+  });
+  it("starts without observation in a page opened in the background", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const hidden = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    render(<Live />);
+    expect(control.observe).toHaveBeenCalledWith(false);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    hidden.mockReturnValue("visible");
+    fireEvent(document, new Event("visibilitychange"));
+    expect(control.observe).toHaveBeenLastCalledWith(true);
   });
   it("pauses only observation when hidden and uses keepalive cleanup on exit", async () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
