@@ -1,0 +1,9 @@
+# Review and integrate into the host's firewall; do not flush existing rules.
+# Must match backend.media_ports. Tailnet grants must restrict allowed viewers.
+table inet camstream_media {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname != "tailscale0" tcp dport 35100-35103 drop
+    iifname != "tailscale0" udp dport 35100-35103 drop
+  }
+}

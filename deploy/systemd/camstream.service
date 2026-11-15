@@ -1,0 +1,42 @@
+[Unit]
+Description=Camstream camera viewer
+Wants=network-online.target
+After=network-online.target tailscaled.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExitType=main
+User=camstream
+Group=camstream
+WorkingDirectory=/var/lib/camstream
+EnvironmentFile=/etc/camstream/secrets.env
+ExecStartPre=/opt/camstream/current/bin/camstream config validate --config /etc/camstream/config.yaml
+ExecStart=/opt/camstream/current/bin/camstream serve --config /etc/camstream/config.yaml
+Restart=on-failure
+RestartSec=3s
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=60s
+Delegate=no
+StateDirectory=camstream
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+# Go/WebRTC uses route netlink to enumerate local interfaces for ICE.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+TasksMax=256
+MemoryMax=512M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

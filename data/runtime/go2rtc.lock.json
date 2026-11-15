@@ -1,0 +1,11 @@
+{
+  "name": "go2rtc",
+  "version": "1.9.15",
+  "commit": "7c05066c90ab6ad1fccb506d5f0408aa31ebe60f",
+  "artifacts": {
+    "linux/arm64": {
+      "url": "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_linux_arm64",
+      "sha256": "af416f22b21a24ab83b8d78642190b4932ae695b4e386853f11d1b0319781763"
+    }
+  }
+}

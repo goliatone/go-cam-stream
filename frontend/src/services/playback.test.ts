@@ -1,0 +1,299 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PlaybackController, gather, type PlaybackSnapshot } from "./playback";
+import { PlaybackError, type ViewerAPI } from "./api";
+import type { Session, StreamRef } from "./contracts";
+class Stream {
+  tracks: MediaStreamTrack[] = [];
+  getTracks() {
+    return this.tracks;
+  }
+  addTrack(track: MediaStreamTrack) {
+    this.tracks.push(track);
+  }
+}
+class Peer extends EventTarget {
+  iceGatheringState = "complete";
+  connectionState = "new";
+  localDescription = { type: "offer", sdp: "v=0\r\ncomplete" };
+  ontrack: ((event: RTCTrackEvent) => void) | null = null;
+  onconnectionstatechange: (() => void) | null = null;
+  addTransceiver = vi.fn();
+  createOffer = vi.fn(async () => this.localDescription);
+  setLocalDescription = vi.fn(async () => {});
+  setRemoteDescription = vi.fn(async () => {});
+  getStats = vi.fn(
+    async () =>
+      new Map([
+        ["transport", { type: "transport", selectedCandidatePairId: "pair" }],
+        ["pair", { remoteCandidateId: "remote" }],
+        [
+          "remote",
+          { protocol: "tcp", address: "private-should-not-be-exposed" },
+        ],
+      ]),
+  );
+  close = vi.fn(() => {
+    this.connectionState = "closed";
+  });
+  connect(state: string) {
+    this.connectionState = state;
+    this.onconnectionstatechange?.();
+  }
+}
+const one = { camera_id: "one", stream_id: "default" };
+const two = { camera_id: "two", stream_id: "default" };
+const capabilities = { video: true, audio: true };
+const answer = (ref: StreamRef, id = ref.camera_id): Session => ({
+  ...ref,
+  id,
+  state: "connecting",
+  playback: {
+    protocol: "webrtc",
+    answer: { type: "answer", sdp: "v=0\r\nanswer" },
+  },
+});
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+async function flush() {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+function setup() {
+  const peers: Peer[] = [];
+  const changes: (PlaybackSnapshot | undefined)[] = [];
+  const api = {
+    list: vi.fn(async () => ({ cameras: [] })),
+    create: vi.fn(async (ref: StreamRef) => answer(ref)),
+    close: vi.fn(async () => {}),
+    status: vi.fn(async (ref: StreamRef) => ({
+      stream_id: ref.stream_id,
+      state: "playing" as const,
+      viewers: 1,
+      observed_at: "2026-11-14T12:00:00Z",
+    })),
+  } satisfies ViewerAPI;
+  const controller = new PlaybackController(
+    api,
+    (v) => changes.push(v),
+    () => {
+      const peer = new Peer();
+      peers.push(peer);
+      return peer as unknown as RTCPeerConnection;
+    },
+  );
+  return { api, controller, peers, changes, last: () => changes.at(-1) };
+}
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.stubGlobal("MediaStream", Stream);
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("owned viewer lifecycle", () => {
+  it("waits for complete ICE, uses receive-only media and never treats an answer as playing", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    await flush();
+    expect(peers[0]!.addTransceiver.mock.calls).toEqual([
+      ["video", { direction: "recvonly" }],
+      ["audio", { direction: "recvonly" }],
+    ]);
+    expect(api.create).toHaveBeenCalledWith(one, "v=0\r\ncomplete");
+    expect(last()!.state).toBe("connecting");
+    peers[0]!.connect("connected");
+    controller.playing();
+    expect(last()!.state).toBe("playing");
+    expect(last()!.transport).toBe("tcp");
+    expect(JSON.stringify(last())).not.toContain(
+      "private-should-not-be-exposed",
+    );
+    await controller.dispose();
+  });
+  it("releases a late create before starting the newest requested selection", async () => {
+    const { controller, api, peers, last } = setup();
+    const late = deferred<Session>();
+    api.create.mockImplementationOnce(() => late.promise);
+    const first = controller.select(one, capabilities);
+    await flush();
+    const middle = controller.select(two, capabilities);
+    const newest = controller.select(
+      { ...two, stream_id: "alternate" },
+      capabilities,
+    );
+    expect(peers[0]!.close).toHaveBeenCalledOnce();
+    expect(api.create).toHaveBeenCalledTimes(1);
+    late.resolve(answer(one));
+    await Promise.all([first, middle, newest]);
+    expect(api.close).toHaveBeenCalledWith("one", false);
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(api.close.mock.invocationCallOrder[0]).toBeLessThan(
+      api.create.mock.invocationCallOrder[1]!,
+    );
+    expect(last()!.selection).toEqual({ ...two, stream_id: "alternate" });
+    expect(peers[0]!.setRemoteDescription).not.toHaveBeenCalled();
+    await controller.dispose();
+  });
+  it("withholds new allocation after failed cleanup and retries cleanup explicitly", async () => {
+    const { controller, api, last } = setup();
+    await controller.select(one, capabilities);
+    api.close.mockRejectedValueOnce(new PlaybackError("cleanup_incomplete"));
+    await controller.select(two, capabilities);
+    expect(api.create).toHaveBeenCalledTimes(1);
+    expect(last()!.error!.code).toBe("cleanup_incomplete");
+    await controller.retry();
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(api.close).toHaveBeenCalledTimes(2);
+    await controller.dispose();
+  });
+  it("requires a page reload when the server no longer recognizes ownership", async () => {
+    const { controller, api, last } = setup();
+    await controller.select(one, capabilities);
+    api.close.mockRejectedValue(new PlaybackError("access_denied", false));
+    await controller.select(two, capabilities);
+    expect(last()!.reloadRequired).toBe(true);
+    expect(last()!.error!.retryable).toBe(false);
+    await controller.retry();
+    expect(api.create).toHaveBeenCalledOnce();
+    await expect(controller.dispose()).rejects.toMatchObject({
+      body: { code: "cleanup_incomplete" },
+    });
+  });
+  it("stops tracks and closes only this page's session on removal", async () => {
+    const { controller, api, peers } = setup();
+    await controller.select(one, capabilities);
+    const track = { stop: vi.fn() } as unknown as MediaStreamTrack;
+    peers[0]!.ontrack!({ track } as RTCTrackEvent);
+    await controller.select(undefined);
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(api.close).toHaveBeenCalledWith("one", false);
+    expect(api.create).toHaveBeenCalledOnce();
+    await controller.dispose();
+  });
+  it("cleans a late session after disposal, without publishing stale state", async () => {
+    const { controller, api, changes } = setup();
+    const late = deferred<Session>();
+    api.create.mockImplementationOnce(() => late.promise);
+    const start = controller.select(one, capabilities);
+    await flush();
+    const stop = controller.dispose();
+    const count = changes.length;
+    late.resolve(answer(one));
+    await Promise.all([start, stop]);
+    expect(api.close).toHaveBeenCalledOnce();
+    expect(changes).toHaveLength(count);
+  });
+  it("does not replay uncertain session creation", async () => {
+    const { controller, api, last } = setup();
+    api.create.mockRejectedValueOnce(new PlaybackError("server_unavailable"));
+    await controller.select(one, capabilities);
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(api.create).toHaveBeenCalledOnce();
+    expect(last()!.error!.code).toBe("server_unavailable");
+    await controller.retry();
+    expect(api.create).toHaveBeenCalledTimes(2);
+    await controller.dispose();
+  });
+  it("keeps media alive beyond CSRF expiry with observation paused and no heartbeat", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    await flush();
+    peers[0]!.connect("connected");
+    controller.playing();
+    controller.observe(false);
+    const reads = api.status.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(35 * 60 * 1000);
+    expect(last()!.state).toBe("playing");
+    expect(api.status).toHaveBeenCalledTimes(reads);
+    expect(api.create).toHaveBeenCalledOnce();
+    expect(api.close).not.toHaveBeenCalled();
+    await controller.dispose();
+  });
+  it("permits a connected peer to await an autoplay gesture without a viewing TTL", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    controller.observe(false);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(api.close).not.toHaveBeenCalled();
+    expect(last()!.state).toBe("connecting");
+    controller.playing();
+    expect(last()!.state).toBe("playing");
+    await controller.dispose();
+  });
+  it("allows native ICE recovery, but requires explicit retry after failure", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    controller.playing();
+    peers[0]!.connect("disconnected");
+    expect(last()!.state).toBe("reconnecting");
+    peers[0]!.connect("connected");
+    controller.playing();
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(api.create).toHaveBeenCalledOnce();
+    peers[0]!.connect("failed");
+    await flush();
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(api.close).toHaveBeenCalledOnce();
+    expect(api.create).toHaveBeenCalledOnce();
+    await controller.dispose();
+  });
+  it("gives each disconnection its own recovery window", async () => {
+    const { controller, peers, last } = setup();
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    controller.playing();
+    peers[0]!.connect("disconnected");
+    await vi.advanceTimersByTimeAsync(10000);
+    peers[0]!.connect("connected");
+    controller.playing();
+    peers[0]!.connect("disconnected");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(last()!.state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(last()!.state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(last()!.error!.code).toBe("media_connection_failed");
+    await controller.dispose();
+  });
+  it("retains healthy playback during a read-only control-plane outage", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    peers[0]!.connect("connected");
+    controller.playing();
+    api.status.mockRejectedValue(new PlaybackError("server_unavailable"));
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(last()!.state).toBe("playing");
+    expect(last()!.status!.viewers).toBeNull();
+    expect(api.close).not.toHaveBeenCalled();
+    await controller.dispose();
+  });
+  it("stops the viewer after permission revocation without reconnecting upstream", async () => {
+    const { controller, api, last } = setup();
+    await controller.select(one, capabilities);
+    api.status.mockRejectedValue(new PlaybackError("access_denied", false));
+    await vi.advanceTimersByTimeAsync(2500);
+    await flush();
+    expect(last()!.error!.code).toBe("access_denied");
+    expect(api.close).toHaveBeenCalledOnce();
+    expect(api.create).toHaveBeenCalledOnce();
+    await controller.dispose();
+  });
+});
+it("cancels ICE gathering without allocating a server session", async () => {
+  const peer = new Peer();
+  peer.iceGatheringState = "gathering";
+  const abort = new AbortController();
+  const promise = gather(peer as unknown as RTCPeerConnection, abort.signal);
+  abort.abort();
+  await expect(promise).rejects.toMatchObject({ body: { code: "canceled" } });
+});

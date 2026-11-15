@@ -1,0 +1,37 @@
+/* Presentation preview bar. Loaded only by the dev-only preview entry. */
+.preview-bar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 24px;
+  background: #f9f0d7;
+  border-bottom: 1px solid #dfcc98;
+  font-size: 12px;
+  color: #584923;
+}
+.preview-bar strong {
+  font-weight: 700;
+}
+.preview-bar select {
+  font-size: 12px;
+}
+.preview-bar p {
+  flex: 1;
+  min-width: 180px;
+}
+.preview-event {
+  font-family: monospace;
+}
+@media (max-width: 700px) {
+  .preview-bar {
+    padding: 10px 16px;
+    gap: 8px;
+  }
+  .preview-bar p {
+    flex-basis: 100%;
+  }
+  .preview-bar select {
+    max-width: 200px;
+  }
+}

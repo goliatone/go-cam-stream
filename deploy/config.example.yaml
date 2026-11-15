@@ -1,0 +1,45 @@
+# Startup-only example. Addresses and references are placeholders; validation
+# never reads credential values or contacts these cameras.
+installation_id: home-camera-viewer
+origin: https://camera-pi.example.ts.net
+listen: 127.0.0.1:8080
+limits:
+  max_sources: 2
+  max_viewers: 4
+  per_source_viewers: 4
+  max_session_records: 256
+backend:
+  driver: go2rtc
+  executable: /opt/camstream/current/bin/go2rtc
+  runtime_dir: /var/lib/camstream/runtime
+  media_address: 100.64.0.10
+  candidate_address: 100.64.0.10
+  network: tcp+udp
+  private_ports: {first: 35000, last: 35015}
+  media_ports: {first: 35100, last: 35103}
+cameras:
+  - id: room1
+    name: Room 1
+    physical_id: ec70-001
+    strategy: ec70
+    config: {host: 192.0.2.11, username_ref: 'env://KASA_USERNAME', password_ref: 'env://KASA_PASSWORD'}
+    streams: [default]
+  - id: room2
+    name: Driveway
+    physical_id: ip-camera-001
+    strategy: rtsp
+    config:
+      host: 192.0.2.31
+      username_ref: env://DRIVEWAY_USERNAME
+      password_ref: env://DRIVEWAY_PASSWORD
+      profiles:
+        - {id: default, name: Camera, path: /cam/realmonitor, query: 'channel=1&subtype=0'}
+access:
+  - login: operator@example.test
+    grants:
+      - {camera_id: room1, streams: [default], view: true, diagnose: true, reconnect: true}
+      - {camera_id: room2, streams: [default], view: true, diagnose: true, reconnect: true}
+  - login: viewer@example.test
+    grants:
+      - {camera_id: room1, streams: [default], view: true}
+      - {camera_id: room2, streams: [default], view: true}

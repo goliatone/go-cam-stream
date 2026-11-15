@@ -1,0 +1,29 @@
+# Validate only after the native systemd gate passes. Linux arm64 only.
+services:
+  camstream:
+    image: ${CAMSTREAM_IMAGE:?Set a locally built immutable image tag or digest}
+    platform: linux/arm64
+    init: true
+    network_mode: host
+    # The default private PID namespace is required; never use pid: host/service.
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
+    user: "${CAMSTREAM_UID:?Set the native camstream account UID}:${CAMSTREAM_GID:?Set its GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 512m
+    ulimits:
+      nofile: {soft: 4096, hard: 4096}
+    env_file:
+      - path: /etc/camstream/compose.secrets.env
+        format: raw
+    volumes:
+      - /etc/camstream/config.yaml:/etc/camstream/config.yaml:ro
+      # Same host lock/runtime path as native; never run both modes concurrently.
+      - /var/lib/camstream:/var/lib/camstream
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    command: [serve, --config, /etc/camstream/config.yaml]

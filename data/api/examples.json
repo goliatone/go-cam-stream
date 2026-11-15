@@ -1,0 +1,141 @@
+{
+  "empty_catalog": {
+    "cameras": []
+  },
+  "catalog": {
+    "cameras": [
+      {
+        "id": "room1",
+        "name": "Room 1",
+        "availability": "idle",
+        "streams": [
+          {
+            "id": "default",
+            "name": "Default",
+            "capabilities": {
+              "video": true,
+              "audio": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "room2",
+        "name": "Room 2",
+        "availability": "playing",
+        "streams": [
+          {
+            "id": "default",
+            "name": "Default",
+            "capabilities": {
+              "video": true,
+              "audio": false
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "offline_status": {
+    "camera_id": "hall",
+    "streams": [
+      {
+        "stream_id": "default",
+        "state": "offline",
+        "viewers": 0,
+        "observed_at": "2026-11-13T12:00:00Z",
+        "error": {
+          "code": "source_unavailable",
+          "message": "Source is unavailable; operator action is required.",
+          "retryable": false
+        }
+      }
+    ]
+  },
+  "unknown_status": {
+    "stream_id": "default",
+    "state": "unknown",
+    "viewers": null,
+    "observed_at": null
+  },
+  "denied": {
+    "error": {
+      "code": "access_denied",
+      "message": "Access denied.",
+      "retryable": false
+    }
+  },
+  "offer": {
+    "offer": {
+      "type": "offer",
+      "sdp": "v=0\r\n"
+    }
+  },
+  "session": {
+    "id": "session-example",
+    "camera_id": "room1",
+    "stream_id": "default",
+    "state": "connecting",
+    "playback": {
+      "protocol": "webrtc",
+      "answer": {
+        "type": "answer",
+        "sdp": "v=0\r\n"
+      }
+    }
+  },
+  "diagnose_request": {},
+  "diagnose_response": {
+    "camera_id": "room1",
+    "streams": [
+      {
+        "stream_id": "default",
+        "state": "playing",
+        "viewers": 2,
+        "observed_at": "2026-11-13T12:00:00Z",
+        "capabilities": {
+          "video": true,
+          "audio": true
+        },
+        "checks": [
+          {
+            "name": "source",
+            "state": "unknown"
+          },
+          {
+            "name": "backend",
+            "state": "passed"
+          },
+          {
+            "name": "media",
+            "state": "unknown"
+          }
+        ]
+      }
+    ]
+  },
+  "reconnect_target": {
+    "camera_id": "room1",
+    "stream_id": "default"
+  },
+  "reconnect_response": {
+    "affected": [
+      {
+        "camera_id": "room1",
+        "stream_id": "default"
+      },
+      {
+        "camera_id": "nursery",
+        "stream_id": "default"
+      }
+    ],
+    "closed_sessions": [
+      "session-example"
+    ]
+  },
+  "csrf": {
+    "token": "synthetic-example-not-a-valid-token",
+    "field_name": "_token",
+    "header_name": "X-CSRF-Token"
+  }
+}
