@@ -53,6 +53,14 @@ func TestAudioConfigurationAndExactSelection(t *testing.T) {
 }
 
 func TestAudioDiscoveryPayloads(t *testing.T) {
+	expanded := []byte(`{"version":1,"devices":[{"id":"a","name":"` + strings.Repeat("<", 30000) + `"}]}`)
+	if len(expanded) > audioDiscoveryLimit {
+		t.Fatal("bad expansion fixture")
+	}
+	if _, err := parseAudioDevices(expanded); err == nil {
+		t.Fatal("expanded reply exceeds native envelope budget")
+	}
+
 	for _, raw := range []string{
 		`{}`, `{"version":2,"devices":[]}`, `{"version":1,"devices":null}`, `{"version":1,"devices":[]}{}`,
 		`{"version":1,"devices":[{"id":"a","name":"Mic"},{"id":"a","name":"Other"}]}`,
@@ -367,5 +375,54 @@ func TestAudioReadinessDeadline(t *testing.T) {
 	progress.packets.Store(0)
 	if mediaReady(c, 10, &progress) {
 		t.Fatal("video-only progress admitted")
+	}
+}
+
+func TestAudioObserverRejectsMalformedProgress(t *testing.T) {
+	for _, output := range []string{
+		"frame=10\n",
+		"codec_type=audio|pts_time=0|duration_time=.02\ncodec_type=audio|pts_time=0|duration_time=.02\n",
+		strings.Repeat("x", 5000) + "\n",
+	} {
+		s := testService(t)
+		c, secret, err := load(s.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.AudioEnabled = true
+		dir, err := s.runtimeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = privateDir(dir); err != nil {
+			t.Fatal(err)
+		}
+		source := filepath.Join(t.TempDir(), "metadata")
+		if err = os.WriteFile(source, []byte(output), 0600); err != nil {
+			t.Fatal(err)
+		}
+		tool := filepath.Join(t.TempDir(), "observer")
+		quote := func(v string) string { return "'" + strings.ReplaceAll(v, "'", "'\\''") + "'" }
+		if err = os.WriteFile(tool, []byte("#!/bin/sh\ncat "+quote(source)+"\nexec sleep 10\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		s.Tools.FFprobe = tool
+		observer, err := s.observeAudio(c, secret, dir, &audioProgress{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case failure := <-observer.done:
+			if CaptureFailure(failure).Code != "audio_observer_failed" {
+				t.Fatal(failure)
+			}
+		case <-time.After(time.Second):
+			observer.close()
+			t.Fatal("malformed observer output did not fail")
+		}
+		observer.close()
+		if _, err = os.Stat(filepath.Join(dir, "audio.ffconcat")); !os.IsNotExist(err) {
+			t.Fatal("observer credentials retained")
+		}
 	}
 }

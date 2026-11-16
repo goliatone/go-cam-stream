@@ -189,6 +189,22 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 		}
 		t.Logf("%s ready in %s, audio packets=%d", mode, time.Since(start).Round(time.Millisecond), status.Audio.Packets)
 		if mode == "silence-stop" {
+			_, secret, secretErr := load(s.Dir)
+			if secretErr != nil {
+				t.Fatal(secretErr)
+			}
+			args, psErr := exec.CommandContext(ctx, "/bin/ps", "-p", strconv.Itoa(runtimePID(t, s.Dir, "ffprobe")), "-o", "command=").Output()
+			if psErr != nil {
+				t.Fatal(psErr)
+			}
+			if bytes.Contains(args, []byte(secret.Password)) || bytes.Contains(args, []byte("rtsp://camera:")) {
+				t.Fatal("reader credentials exposed in argv")
+			}
+			info, statErr := os.Stat(filepath.Join(runtimeDir, "audio.ffconcat"))
+			if statErr != nil || info.Mode().Perm() != 0600 {
+				t.Fatal("observer input is not private")
+			}
+
 			endpoint, attachErr := s.AttachPreview(ctx)
 			if attachErr != nil {
 				t.Fatal(attachErr)

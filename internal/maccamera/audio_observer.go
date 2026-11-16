@@ -13,13 +13,17 @@ import (
 )
 
 type audioObserver struct {
-	child  *child
-	done   chan error
-	source string
+	child    *child
+	done     chan error
+	source   string
+	gap      *time.Timer
+	finished chan struct{}
 }
 
 func (o *audioObserver) close() {
 	o.child.stop()
+	<-o.finished
+	o.gap.Stop()
 	_ = os.Remove(o.source) //nolint:errcheck // Remove private credentials only after reaping the reader.
 }
 
@@ -41,8 +45,11 @@ func (s *Service) observeAudio(c Config, secret credentials, dir string, progres
 		_ = os.Remove(source) //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
 		return nil, audioFailure("audio_observer_failed")
 	}
-	o := &audioObserver{child: reader, source: source, done: make(chan error, 1)}
+	o := &audioObserver{child: reader, source: source, done: make(chan error, 1), finished: make(chan struct{})}
+	o.gap = time.AfterFunc(audioStallTimeout, func() { o.fail("audio_stalled") })
+	o.gap.Stop()
 	go func() {
+		defer close(o.finished)
 		scanner := bufio.NewScanner(raw)
 		scanner.Buffer(make([]byte, 1024), 4096)
 		previous := math.Inf(-1)
@@ -52,16 +59,16 @@ func (s *Service) observeAudio(c Config, secret credentials, dir string, progres
 			}
 			pts, ok := audioPacketTime(scanner.Text())
 			if !ok || pts <= previous {
-				o.done <- audioFailure("audio_observer_failed")
+				o.fail("audio_observer_failed")
 				return
 			}
 			previous = pts
 			now := time.Now()
 			progress.first.CompareAndSwap(nil, &now)
-			progress.last.Store(&now)
 			progress.packets.Add(1)
+			o.gap.Reset(audioStallTimeout)
 		}
-		o.done <- audioFailure("audio_observer_failed")
+		o.fail("audio_observer_failed")
 	}()
 	return o, nil
 }
@@ -118,9 +125,6 @@ func (w *audioWatch) tick(frames int64) error {
 	if !w.config.AudioEnabled {
 		return nil
 	}
-	if last := w.progress.last.Load(); last != nil && time.Since(*last) >= audioStallTimeout {
-		return audioFailure("audio_stalled")
-	}
 	if w.observer == nil && frames > 0 {
 		var err error
 		w.observer, err = w.service.observeAudio(w.config, w.secret, w.dir, w.progress)
@@ -130,4 +134,11 @@ func (w *audioWatch) tick(frames int64) error {
 		w.observed = w.observer.done
 	}
 	return nil
+}
+
+func (o *audioObserver) fail(code string) {
+	select {
+	case o.done <- audioFailure(code):
+	default:
+	}
 }

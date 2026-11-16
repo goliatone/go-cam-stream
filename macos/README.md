@@ -427,15 +427,16 @@ queue overflow, EOF/read failure, signal or output failure ends the session.
 | Method | Result / behavior |
 | --- | --- |
 | `devices` | Array of `{index,name}` video devices; no screen/audio entries. Native shell obtains permission first. |
-| `config` | Non-secret `{device,listen,host,port,path,width,height,fps}`. |
+| `audio_devices` | Array of `{id,name}` microphones from metadata-only discovery; requires the patched runtime. |
+| `config` | Non-secret `{device,listen,host,port,path,width,height,fps,audio_enabled,audio_device_id}`. Missing audio fields mean false/unset. |
 | `configure` | Requires the complete `config` object with those fields; uses the existing configure service, preserves credentials and returns resolved settings. Refused during capture. |
 | `start` | Acknowledges `starting`; poll `status` for actual readiness. Refuses an existing owned or external capture. |
-| `status` | `{state,url?,frames?}`; URL never contains credentials. `streaming` requires real frame progress. |
+| `status` | `{state,url?,frames?,audio:{enabled,state,packets}}`; URL never contains credentials. Audio-on `streaming` requires video frames and actual audio packets. |
 | `stop` | Cancels and reaps capture owned by this session, then replies `stopped`. Does not stop another CLI owner's capture. |
 | `export` | Recreates private connection files while stopped; returns `{configuration,environment}` file paths, never their contents. |
 | `quit` | Same owned cleanup as stop, replies, then exits. Closing stdin may end the session before the queued reply; helper exit is the Quit completion boundary. |
 
-On open, the helper emits `{"version":1,"event":"ready","result":{"protocol":1}}`.
+On open, the helper emits `{"version":1,"event":"ready","result":{"protocol":1,"preview":1,"audio":1}}`.
 Unexpected capture exit emits `capture_stopped` with `state: stopped` and an
 optional classified error. No automatic restart. A second session using the same
 state directory emits `session_error` / `busy` and exits without disturbing the
@@ -454,7 +455,7 @@ unsolicited streaming event; poll status to observe progress.
 
 EOF cancels in-flight operations and owned capture. The app-session process owns
 the existing supervisor's lifetime pipe; killing either the native app or its
-app-session helper closes that chain and the supervisor reaps both runtime tools.
+app-session helper closes that chain and the supervisor reaps the producer, audio observer, preview decoder and server.
 This does not promise cleanup after SIGKILL of the supervisor itself or a frozen
 OS. Closing the setup window must leave the app and its pipe alive.
 
@@ -477,6 +478,101 @@ golangci-lint run ./internal/maccamera/... ./internal/cameracli/... ./cmd/camstr
 
 Native hardware evidence is recorded in the macos-camera ctx spec. The proof
 has no preview or recording and is independent of the mixed Kasa playback gate.
+
+## Optional microphone backend (audio feature v1)
+
+The T03 backend is ready for native integration; the production settings UI and
+microphone permission presentation remain T05 work. Do not treat an older native
+shell paired with this helper as a completed audio app. No app starts capture at
+launch, Save, discovery or export. A saved opt-in requires a fresh explicit Start.
+
+`audio_enabled` defaults to false. `audio_device_id` is the exact opaque macOS UID,
+not a device label or index. Preserve case, spaces and colons; IDs must be valid
+UTF-8, 1–1024 bytes, with no control characters. Audio-off may retain a valid saved
+ID but never looks it up, requests audio capability or launches an audio observer.
+Duplicate/prefix labels are valid; duplicate IDs fail discovery. Missing/replaced
+IDs fail before capture; the patched runtime binds the exact ID again at input
+creation, so enumeration-to-open removal cannot select a replacement.
+
+CLI examples (the final command explicitly enables capture):
+
+```sh
+camstream-camera audio-devices
+camstream-camera configure --device 'MacBook Pro Camera' --audio-enabled --audio-device-id 'EXACT_UID_FROM_DISCOVERY'
+camstream-camera start
+# In another terminal, or use Ctrl-C in the owner:
+camstream-camera stop
+```
+
+Pass the existing video/network options when configuring: CLI flags start from
+safe defaults, rather than merging omitted fields with saved settings. The same
+Configure command/service backs the native helper and CLI. Audio-on needs the
+complete verified runtime-3 tools, including ffprobe. It publishes H.264 and mono
+48 kHz/64 kbit/s Opus with 20 ms packets from the same capture process. Audio-off
+retains `video:none` and `-an`. There is no fallback, automatic restart or recording.
+
+Discovery has a 20-second limit and a 128 KiB complete version-1 JSON payload
+limit (also enforced after re-encoding for the helper envelope). The pinned enumeration exit code is 251; malformed, oversized, incomplete,
+wrong-version or duplicate-ID inventories fail as a whole. Full IDs appear only
+in private settings and explicit discovery/config replies, not failure messages.
+
+The ready event adds `audio:1` without changing protocol 1: the existing Swift
+transport reads ready fields additively. T05 must explicitly default absent config
+fields in Codable and gate audio controls/requests on this capability. Older helpers
+omit it and reject unknown audio config fields, even when false; use the legacy
+request shape for audio-off or require a matching helper. Shared, synthetic-only
+examples are in [fixtures/audio-protocol.json](fixtures/audio-protocol.json).
+No native implementation is included in T03.
+
+`audio.state` is `disabled`, `waiting`, `live`, `stopping`, `stopped` (enabled but
+inactive), or `failed`. Packets count actual increasing-timestamp Opus packets,
+not amplitude: silence is live audio. Video frames alone cannot produce audio-on
+`streaming`. The first audio deadline is 20 seconds from Start (passed into the
+worker); each subsequent audio packet resets a five-second gap timer. The
+supervisor owns a bounded, authenticated loopback ffprobe reader. Its input file is
+0600 under the private runtime directory; no password is in argv or diagnostics.
+Malformed observer output, observer exit, missing audio, a gap or producer failure
+ends the whole session. Each child gets at most three seconds before kill/reap;
+Stop confirms cleanup within the existing 12-second limit. Packet metadata is
+bounded in memory; no audio samples or images are saved. Native preview stays
+silent and independent of the audio watchdog.
+
+Audio errors are fixed `{code,message}` values: `audio_selection_invalid`,
+`audio_device_unavailable`, `audio_discovery_failed`, `audio_runtime_unsupported`,
+`audio_startup_timeout`, `audio_stalled`, `audio_observer_failed` and
+`audio_capture_failed`. The worker sends only an allowlisted code over a private
+result pipe; raw runtime errors are discarded. `capture_stopped` includes the
+failure and stopped/failed audio state. Within that app session, subsequent status
+replies retain the failure until explicit Stop, successful Configure or a new
+Start. Stop waits for and discards the old run's result before acknowledging, so a
+late failure cannot overwrite a newer session. A fresh helper starts stopped.
+Permission-required/denied labels remain native AVFoundation state in T05; a
+backend capture error alone cannot establish that permission was denied.
+
+The exported server profile has `audio: true` only for an enabled configuration.
+Reimport/reload that profile through the existing server configuration path, then
+explicitly unmute the browser. Export does not update a running server, and browser
+mute changes playback only. Final real microphone/browser and signed identity
+validation remain T04.
+
+### Downgrading to a video-only helper
+
+Old helpers strictly reject the new JSON keys. Stop capture, quit the app, then
+use the new helper's `export-legacy --dir PRIVATE_DIRECTORY`. It writes a separate
+0600 `camera-legacy.json` with the original eight video/network fields; it preserves
+current settings and credentials and refuses an active supervisor lock. While
+stopped, back up `camera.json` privately and replace it with that generated file
+before installing/launching the old bundle. Keep `credentials.json` unchanged.
+Use the old app's Export action to regenerate a video-only server profile and
+reload it; do not reuse an earlier `audio: true` export. Restore the private backup
+only after returning to the matching audio-capable helper. No migration occurs
+silently on launch.
+
+Synthetic service checks with a verified pack (no sensors):
+
+```sh
+CAMSTREAM_AUDIO_RUNTIME='/absolute/path/to/runtime/tools' go test ./internal/maccamera -run '^TestAudioActualRuntime$' -v
+```
 
 ## Local preview protocol v1
 

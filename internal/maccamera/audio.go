@@ -114,6 +114,12 @@ func parseAudioDevices(b []byte) ([]AudioDevice, error) {
 		}
 		seen[device.ID] = true
 	}
+	// Bound the re-encoded helper result too: HTML/Unicode escaping can expand
+	// an otherwise bounded discovery document beyond the native reply buffer.
+	encoded, err := json.Marshal(payload.Devices)
+	if err != nil || len(encoded) > audioDiscoveryLimit {
+		return nil, audioFailure("audio_discovery_failed")
+	}
 	return payload.Devices, nil
 }
 
@@ -172,7 +178,6 @@ type AudioStatus struct {
 
 type audioProgress struct {
 	packets  atomic.Int64
-	last     atomic.Pointer[time.Time]
 	first    atomic.Pointer[time.Time]
 	deadline time.Time
 }

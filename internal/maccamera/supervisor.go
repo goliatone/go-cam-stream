@@ -97,12 +97,16 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 	var frames atomic.Int64
 	audio := audioProgress{deadline: deadline}
 	preview := &previewManager{ctx: ctx, config: c, secret: secret, tool: s.Tools.FFmpeg, dir: dir, frames: &frames}
-	defer preview.close()
 	listener, err := s.control(ctx, c, &frames, &audio, cancel, dir, preview)
 	if err != nil {
 		return err
 	}
-	defer listener.Close() //nolint:errcheck // Owned Unix listener also removes its socket.
+	defer func() {
+		// A missing status socket must mean every owned reader and secret is gone.
+		preview.close()
+		_ = os.Remove(configPath) //nolint:errcheck // Also removed on pre-listener failures by the earlier defer.
+		_ = listener.Close()      //nolint:errcheck // Close the rendezvous only after owned cleanup.
+	}()
 	return s.runMedia(ctx, c, secret, dir, configPath, &frames, &audio, deadline, out)
 }
 
@@ -142,8 +146,10 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioPro
 		state = "streaming"
 	}
 	var endpoint *PreviewEndpoint
-	if action == "preview_attach" && state == "streaming" {
-		endpoint, _ = preview.attach() //nolint:errcheck // Missing endpoint is the sanitized unavailable response.
+	if action == "preview_attach" {
+		if state == "streaming" {
+			endpoint, _ = preview.attach() //nolint:errcheck // Missing endpoint is the sanitized unavailable response.
+		}
 	} else if after, ok := strings.CutPrefix(action, "preview_detach:"); ok {
 		preview.detach(after)
 	} else if action == "stop" {
