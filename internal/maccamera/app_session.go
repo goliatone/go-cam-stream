@@ -250,16 +250,13 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 		a.failure = nil
 		return a.service.stoppedStatus("stopped"), nil
 	case "export":
-		return a.exportStopped()
+		return a.export()
 	default:
 		return nil, appError("invalid_request")
 	}
 }
 
-func (a *appSession) exportStopped() (any, *AppError) {
-	if a.running != nil {
-		return nil, appError("export_failed")
-	}
+func (a *appSession) export() (any, *AppError) {
 	v, err := a.service.Export()
 	if err != nil {
 		return nil, appError("export_failed")

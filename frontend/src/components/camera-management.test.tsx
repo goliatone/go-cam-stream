@@ -34,6 +34,32 @@ it("reviews hidden credentials, warns about localhost/grants and requires a clea
  rerender(<CameraManagementDialog view={{...view,phase:"review",draft:tested,test:tested.test}} actions={a}/>);
  fireEvent.click(screen.getByRole("button",{name:"Save Camera"}));expect(a.save).toHaveBeenCalledOnce();
 });
+it("does not claim anonymous credentials are unnecessary and explains source failures", () => {
+ const anonymous={...draft,authentication:"anonymous" as const,credentials_present:false};
+ const failed={id:"test",attempt_key:"attempt",draft_revision:1,stage:"failed" as const,expires_at:draft.expires_at,source_media_observed:false,browser_frames_reported:false,cleanup:"confirmed" as const,error:{code:"source_unavailable" as const,message:"untrusted backend detail",retryable:true}};
+ const {rerender}=render(<CameraManagementDialog view={{...view,phase:"review",draft:anonymous,test:failed}} actions={actions()}/>);
+ expect(screen.queryByText("Not required")).toBeNull();
+ expect(screen.getByText("Not provided (anonymous access)")).toBeTruthy();
+ expect(screen.getByText(/Camstream Camera on Mac always requires credentials/)).toBeTruthy();
+ expect(screen.getByRole("alert").textContent).toMatch(/credentials are provided and correct/);
+ expect(screen.queryByText(/untrusted backend detail/)).toBeNull();
+ expect((screen.getByRole("button",{name:"Save Camera"}) as HTMLButtonElement).disabled).toBe(true);
+ rerender(<CameraManagementDialog view={{...view,phase:"review",draft,test:{...failed,error:{...failed.error,code:"authentication_failed"}}}} actions={actions()}/>);
+ expect(screen.getByRole("alert").textContent).toMatch(/camera rejected its credentials/);
+});
+it("distinguishes preview timeouts from an expired successful test", () => {
+ const failed={id:"test",attempt_key:"attempt",draft_revision:1,stage:"failed" as const,expires_at:draft.expires_at,source_media_observed:true,browser_frames_reported:false,cleanup:"confirmed" as const,error:{code:"test_expired" as const,message:"untrusted timeout detail",retryable:true}};
+ const {rerender}=render(<CameraManagementDialog view={{...view,phase:"review",draft,test:failed}} actions={actions()}/>);
+ expect(screen.getByRole("alert").textContent).toMatch(/Camera video reached the server/);
+ expect(screen.getByRole("alert").textContent).toContain("--media-address");
+ expect((screen.getByRole("button",{name:"Save Camera"}) as HTMLButtonElement).disabled).toBe(true);
+ rerender(<CameraManagementDialog view={{...view,phase:"review",draft,test:{...failed,source_media_observed:false}}} actions={actions()}/>);
+ expect(screen.getByRole("alert").textContent).toMatch(/before camera video was verified/);
+ expect(screen.getByRole("alert").textContent).not.toContain("Firefox");
+ rerender(<CameraManagementDialog view={{...view,phase:"review",draft,test:{...failed,browser_frames_reported:true}}} actions={actions()}/>);
+ expect(screen.getByRole("alert").textContent).toBe("Test this camera again before saving.");
+ expect(screen.queryByText(/untrusted timeout detail/)).toBeNull();
+});
 it("disables mutations when storage or an operation outcome is unresolved", () => {
  const a=actions();const {rerender}=render(<CameraManagementDialog view={{...view,storageReady:false}} actions={a}/>);
  expect(screen.getByRole("alert").textContent).toMatch(/Enable site storage/);expect((screen.getByRole("button",{name:"Review camera"}) as HTMLButtonElement).closest("fieldset")?.disabled).toBe(true);

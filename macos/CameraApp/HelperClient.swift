@@ -2,7 +2,25 @@ import Foundation
 
 // One in-flight request, correlated replies, and a bounded queue. No secrets or
 // raw helper output are logged. Closing stdin is the authoritative owner boundary.
-final class HelperClient {
+protocol CameraHelper: AnyObject {
+    var onReady: (() -> Void)? { get set }
+    var onEvent: (([String: Any]) -> Void)? { get set }
+    var onFailure: (() -> Void)? { get set }
+    var onExit: (() -> Void)? { get set }
+    var previewVersion: Int { get }
+    var audioVersion: Int { get }
+    var idle: Bool { get }
+    func launch(executable: URL, directory: URL)
+    func request(_ method: String, config: CameraConfig?, previewGeneration: String?, completion: @escaping ([String: Any]) -> Void)
+    func shutdown()
+}
+extension CameraHelper {
+    func request(_ method: String, config: CameraConfig? = nil, previewGeneration: String? = nil, completion: @escaping ([String: Any]) -> Void) {
+        request(method, config: config, previewGeneration: previewGeneration, completion: completion)
+    }
+}
+
+final class HelperClient: CameraHelper {
     typealias Reply = [String: Any]
     private struct Request {
         let id: String
@@ -24,6 +42,7 @@ final class HelperClient {
     private var closing = false
     private var ready = false
     private(set) var previewVersion = 0
+    private(set) var audioVersion = 0
     var idle: Bool { ready && current == nil && queue.isEmpty && !closing }
 
     func launch(executable: URL, directory: URL) {
@@ -72,12 +91,17 @@ final class HelperClient {
 
     func request(_ method: String, config: CameraConfig? = nil, previewGeneration: String? = nil, completion: @escaping (Reply) -> Void) {
         guard ready, !closing, queue.count < 8 else { fail(); return }
+        if audioVersion != 1 && (method == "audio_devices" || config?.audioEnabled == true) {
+            completion(["error": ["code": "audio_runtime_unsupported"]]); return
+        }
         sequence += 1
         let id = "request-\(sequence)"
         var value: Reply = ["version": 1, "id": id, "method": method]
         if let generation = previewGeneration { value["preview_generation"] = generation }
-        if let config = config, let data = try? JSONEncoder().encode(config),
-           let object = try? JSONSerialization.jsonObject(with: data) { value["config"] = object }
+        if let config = config {
+            guard let object = try? config.helperObject(audioSupported: audioVersion == 1) else { fail(); return }
+            value["config"] = object
+        }
         guard var data = try? JSONSerialization.data(withJSONObject: value) else { fail(); return }
         data.append(10)
         queue.append(Request(id: id, data: data, completion: completion))
@@ -107,6 +131,7 @@ final class HelperClient {
                 if event == "ready", !ready,
                    (reply["result"] as? Reply)?["protocol"] as? Int == 1 {
                     previewVersion = (reply["result"] as? Reply)?["preview"] as? Int ?? 0
+                    audioVersion = (reply["result"] as? Reply)?["audio"] as? Int ?? 0
                     deadline?.invalidate(); ready = true; onReady?()
                 } else if event == "capture_stopped" || event == "session_error" {
                     onEvent?(reply)

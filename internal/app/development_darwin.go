@@ -4,6 +4,8 @@ package app
 
 import (
 	"context"
+	"net"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 
@@ -25,7 +27,11 @@ func newDevelopmentController(cfg config.Config, logger admin.Logger, opts Devel
 	if opts.Go2RTC != "" {
 		cfg.Backend.Executable = opts.Go2RTC
 	}
-	cfg.Backend.MediaAddress, cfg.Backend.CandidateAddress = "127.0.0.1", "127.0.0.1"
+	mediaAddress, err := developmentMediaAddress(opts.MediaAddress, net.InterfaceAddrs)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Backend.MediaAddress, cfg.Backend.CandidateAddress = mediaAddress, mediaAddress
 	workers := filepath.Join(cfg.Backend.RuntimeDir, "workers")
 	verify := func(ctx context.Context) error { return go2rtc.DevelopmentBoundary(ctx, workers) }
 	bc := cfg.BackendConfig(verify)
@@ -89,4 +95,27 @@ func (e developmentSourceEncoder) Encode(ctx context.Context, source cs.Source) 
 		inputArgs = " -f avfoundation -framerate 30 -video_size 1280x720 -i " + strconv.Quote(e.webcam+":none")
 	}
 	return go2rtc.Input{URL: "exec:" + strconv.Quote(e.ffmpeg) + " -hide_banner -loglevel error -nostdin" + inputArgs + " -an -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency -profile:v baseline -g 30 -bf 0 -rtsp_transport tcp -f rtsp {output}"}, nil
+}
+
+// developmentMediaAddress is an explicit media-only opt-in. The HTTP ingress,
+// worker API and RTSP listener keep their independent loopback boundaries.
+func developmentMediaAddress(value string, interfaces func() ([]net.Addr, error)) (string, error) {
+	if value == "" || value == "127.0.0.1" {
+		return "127.0.0.1", nil
+	}
+	ip, err := netip.ParseAddr(value)
+	if err != nil || !ip.Is4() || !ip.IsPrivate() {
+		return "", cs.NewError(cs.CodeInvalidArgument, nil)
+	}
+	addresses, err := interfaces()
+	if err != nil {
+		return "", cs.NewError(cs.CodeInvalidArgument, err)
+	}
+	for _, address := range addresses {
+		prefix, parseErr := netip.ParsePrefix(address.String())
+		if parseErr == nil && prefix.Addr() == ip {
+			return ip.String(), nil
+		}
+	}
+	return "", cs.NewError(cs.CodeInvalidArgument, nil)
 }

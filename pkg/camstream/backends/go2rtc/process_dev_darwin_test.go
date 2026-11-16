@@ -167,9 +167,17 @@ func TestDevelopmentNativeListenerOwnership(t *testing.T) {
 	if !tcpOK || !udpOK {
 		t.Fatal("unexpected listener address type")
 	}
-	checks := []listener{{"tcp", tcpAddr.Port}, {"udp", udpAddr.Port}}
+	checks := []listener{{"tcp", tcpAddr.Port, "127.0.0.1"}, {"udp", udpAddr.Port, "127.0.0.1"}}
 	if err := ownsListeners(syscall.Getpgrp(), checks); err != nil {
 		t.Fatal(err)
+	}
+	for _, wrong := range []string{"", "0.0.0.0", "127.0.0.2", "192.168.1.70", "::1"} {
+		for _, check := range checks {
+			check.address = wrong
+			if nativeListenerOwned(syscall.Getpgrp(), os.Getpid(), check) {
+				t.Fatalf("wrong address %s accepted", wrong)
+			}
+		}
 	}
 	if nativeListenerOwned(syscall.Getpgrp()+1000000, os.Getpid(), checks[0]) {
 		t.Fatal("foreign group accepted")

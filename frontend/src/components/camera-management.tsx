@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { DraftInput, DraftReview, ManagementErrorCode, SaveCameraResponse, TestResult } from "../services/contracts";
-import { managementMessage } from "../services/management-copy";
+import { managementMessage, managementTestMessage } from "../services/management-copy";
 import { openDialog } from "../services/shortcuts";
 
 export type ManagementPhase = "editing" | "importing" | "review" | "testing" | "saving" | "saved" | "recovering" | "canceled";
@@ -90,7 +90,7 @@ export default function CameraManagementDialog({ view, actions }: ManagementDial
         }}>
           <fieldset disabled={blocked}>
           {mode === "import" && !draft ? <>
-            <p>In the Mac camera app: Stop → Export Connection Files → Start. Upload the YAML and optionally its matching credentials file. Files are parsed as data; access grants are ignored.</p>
+            <p>In the Mac camera app, open Connection Details → Export Connection Files → Show Files in Finder. Upload both files and keep the camera running for Test connection. Files are parsed as data; access grants are ignored.</p>
             <label>Connection YAML <input name="yaml" type="file" accept=".yaml,.yml" required /></label>
             <label>Credentials file (optional) <input name="env" type="file" /></label>
             <p>YAML up to 32 KiB; credentials up to 8 KiB. Without the credentials file, enter the username and password after import.</p>
@@ -99,6 +99,7 @@ export default function CameraManagementDialog({ view, actions }: ManagementDial
             <label>Camera name <input name="name" required maxLength={120} defaultValue={draft?.name ?? ""} autoComplete="off" /></label>
             <label>RTSP address <input name="endpoint" required maxLength={2048} placeholder="rtsp://localhost:18556/macbook" defaultValue={draft?.endpoint ?? ""} autoComplete="off" spellcheck={false} /></label>
             <p id="localhost-help">Localhost means this server, not necessarily this browser. For another machine, use a reachable camera address. Do not put passwords in the address.</p>
+            <p>Camstream Camera on Mac requires credentials, even on localhost. Get both exported files from Connection Details and use Import Mac files, or enter the username and password from the private .env file.</p>
             <label>Authentication <select value={authentication} onChange={(event) => { clearSecrets(); setAuthentication(event.currentTarget.value as "anonymous" | "credentials"); }}><option value="anonymous">No credentials</option><option value="credentials">Username and password</option></select></label>
             {authentication === "credentials" && <><label>Username <input name="username" autoComplete="off" maxLength={1024} required={!draft?.credentials_present} /></label><label>Password <input name="password" type="password" autoComplete="new-password" maxLength={4096} required={!draft?.credentials_present} /></label>{draft?.credentials_present && <p>Credentials are already held for this draft. Leave both fields empty to keep them.</p>}</>}
           </>}
@@ -107,14 +108,15 @@ export default function CameraManagementDialog({ view, actions }: ManagementDial
         </form>
       </>}
       {draft && !editing && !view.saved && <section aria-label="Camera review" class="management-review">
-        <h3>{draft.name}</h3><dl><dt>Address</dt><dd>{draft.endpoint}</dd><dt>Video</dt><dd>Default stream · No audio</dd><dt>Credentials</dt><dd>{draft.authentication === "anonymous" ? "Not required" : draft.credentials_present ? "Provided (hidden)" : "Required"}</dd>{draft.dial_address && <><dt>Selected address</dt><dd>{draft.dial_address}</dd></>}</dl>
+        <h3>{draft.name}</h3><dl><dt>Address</dt><dd>{draft.endpoint}</dd><dt>Video</dt><dd>Default stream · No audio</dd><dt>Credentials</dt><dd>{draft.authentication === "anonymous" ? "Not provided (anonymous access)" : draft.credentials_present ? "Provided (hidden)" : "Required"}</dd>{draft.dial_address && <><dt>Selected address</dt><dd>{draft.dial_address}</dd></>}</dl>
+        {draft.authentication === "anonymous" && <p>If this camera requires sign-in, choose Edit details → Username and password. Camstream Camera on Mac always requires credentials.</p>}
         {draft.warnings.map(warning => <p key={warning}>{warnings[warning]}</p>)}
         <button type="button" disabled={blocked || activeTest || draft.state === "saving"} onClick={() => setEditing(true)}>Edit details</button>
       </section>}
       {draft && !view.saved && <section class="management-preview" aria-label="Connection test">
         <video ref={video} muted playsInline aria-label="Camera test preview" />
         {view.test && <p role="status">{view.test.stage === "passed" ? "Live video verified and preview closed. Ready to save." : view.test.stage === "failed" ? "Connection test failed." : view.test.stage === "canceled" ? "Test canceled." : view.test.source_media_observed ? "Camera media received. Checking browser playback…" : "Waiting for camera media…"}</p>}
-        {view.test?.error && <p role="alert">{managementMessage(view.test.error.code)}</p>}
+        {view.test?.error && <p role="alert">{managementTestMessage(view.test)}</p>}
         {activeTest ? <div class="management-actions"><button type="button" onClick={() => { void video.current?.play().catch(() => {}); }}>Play preview</button><button type="button" disabled={Boolean(view.unresolved)} onClick={actions.cancelTest}>Cancel test</button></div> : <button type="button" disabled={blocked || editing || draft.state === "incomplete" || draft.state === "expired" || draft.state === "canceled"} onClick={() => { if (video.current) actions.test(video.current); }}>Test connection</button>}
       </section>}
       {view.saved && <><p>Your camera is saved. Current playback continues until you choose to watch it.</p><button class="primary-button" type="button" onClick={() => actions.watch(view.saved!.camera_id)}>Watch Camera</button></>}

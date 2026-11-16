@@ -15,6 +15,12 @@ import (
 	"github.com/goliatone/go-cam-stream/pkg/camstream"
 )
 
+type listener struct {
+	network string
+	port    int
+	address string
+}
+
 type worker struct {
 	cmd              *exec.Cmd
 	dir              string
@@ -127,16 +133,16 @@ func (b *Backend) launch(ctx context.Context, ingest bool, input Input) (*worker
 	}
 }
 func (b *Backend) listenersOwned(w *worker) error {
-	checks := []listener{{"tcp", w.api}}
+	checks := []listener{{"tcp", w.api, "127.0.0.1"}}
 	if w.rtsp != 0 {
-		checks = append(checks, listener{"tcp", w.rtsp})
+		checks = append(checks, listener{"tcp", w.rtsp, "127.0.0.1"})
 	}
 	if w.media != 0 {
 		if b.cfg.Network != "udp" {
-			checks = append(checks, listener{"tcp", w.media})
+			checks = append(checks, listener{"tcp", w.media, b.cfg.MediaAddress})
 		}
 		if b.cfg.Network != "tcp" {
-			checks = append(checks, listener{"udp", w.media})
+			checks = append(checks, listener{"udp", w.media, b.cfg.MediaAddress})
 		}
 	}
 	return ownsListeners(w.cmd.Process.Pid, checks)

@@ -9,7 +9,7 @@ package go2rtc
 #include <netinet/in.h>
 #include <stdlib.h>
 
-static int dev_owns_listener(int group, int pid, int tcp, int port) {
+static int dev_owns_listener(int group, int pid, int tcp, int port, uint32_t address) {
  struct proc_bsdinfo process;
  if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &process, sizeof(process)) != sizeof(process) || process.pbi_pgid != group) return 0;
  int size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
@@ -34,13 +34,18 @@ static int dev_owns_listener(int group, int pid, int tcp, int port) {
    if (socket.psi.soi_kind != SOCKINFO_IN || socket.psi.soi_protocol != IPPROTO_UDP) continue;
    inet = &socket.psi.soi_proto.pri_in;
   }
-  if ((inet->insi_vflag & INI_IPV4) && ntohs(inet->insi_lport) == port && ntohl(inet->insi_laddr.ina_46.i46a_addr4.s_addr) == INADDR_LOOPBACK) { owned = 1; break; }
+  if ((inet->insi_vflag & INI_IPV4) && ntohs(inet->insi_lport) == port && ntohl(inet->insi_laddr.ina_46.i46a_addr4.s_addr) == address) { owned = 1; break; }
  }
  free(fds);
  return owned;
 }
 */
 import "C"
+
+import (
+	"encoding/binary"
+	"net"
+)
 
 const nativeSocketInspection = true
 
@@ -49,5 +54,9 @@ func nativeListenerOwned(group, pid int, check listener) bool {
 	if check.network == "tcp" {
 		tcp = 1
 	}
-	return C.dev_owns_listener(C.int(group), C.int(pid), C.int(tcp), C.int(check.port)) == 1
+	ip := net.ParseIP(check.address).To4()
+	if ip == nil {
+		return false
+	}
+	return C.dev_owns_listener(C.int(group), C.int(pid), C.int(tcp), C.int(check.port), C.uint32_t(binary.BigEndian.Uint32(ip))) == 1
 }

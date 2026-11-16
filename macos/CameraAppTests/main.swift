@@ -62,7 +62,7 @@ model.saved = model.config
 _ = model.capture.start()
 check(model.canStop && !model.canSave && !model.canExport, "startup locks settings and secrets export but allows Stop")
 model.capture.status("streaming", frames: 30)
-check(model.canStop && !model.canStart && !model.canExport, "live controls remain consistent")
+check(model.canStop && !model.canStart && model.canExport, "live capture allows connection export while settings remain locked")
 model.capture.stop()
 check(!model.canStop && !model.canStart && !model.canExport, "cleanup blocks repeat actions")
 model.capture.stopped()
@@ -70,6 +70,43 @@ model.working = true
 check(!model.canSave && !model.canStart && !model.canExport, "pending device/config work cannot trigger capture")
 model.working = false
 check(model.canStart, "idle controls recover")
+
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let helper = FixtureCameraHelper()
+    let live = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory)
+    live.launch()
+    _ = live.capture.start()
+    live.capture.status("streaming", frames: 42)
+    let generation = live.capture.generation
+    check(live.canExport && live.exported.isEmpty, "live export available without previous export history")
+    live.export()
+    check(helper.methods.last == "export" && live.capture.phase == .streaming && live.capture.generation == generation, "live export preserves capture and generation")
+    helper.hold = "export"
+    live.export()
+    check(live.canStop && !live.canExport, "pending export allows explicit Stop and blocks duplicate export")
+    helper.deliver(["error": ["code": "export_failed", "message": "PRIVATE-DETAIL"]])
+    check(live.capture.phase == .streaming && live.capture.frames == 42 && live.canStop && live.canExport, "export failure leaves capture live and retryable")
+    check(live.notice != nil && !live.notice!.contains("PRIVATE-DETAIL"), "export failure uses safe notice")
+    for name in ["camstream-camera.yaml", "camstream-camera.env"] {
+        let path = directory.appendingPathComponent(name)
+        try Data("fixture".utf8).write(to: path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    }
+    let relaunched = CameraModel(directory: directory)
+    relaunched.saved = live.saved
+    check(relaunched.exported.count == 2, "existing private files can be revealed after relaunch without export")
+    let env = directory.appendingPathComponent("camstream-camera.env")
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: env.path)
+    check(relaunched.exported.isEmpty, "reveal rejects non-private exports")
+    try FileManager.default.removeItem(at: env)
+    try FileManager.default.createSymbolicLink(at: env, withDestinationURL: directory.appendingPathComponent("camstream-camera.yaml"))
+    check(relaunched.exported.isEmpty, "reveal rejects symlink exports")
+    check(!helper.methods.contains("stop"), "export never implicitly stops capture")
+    _ = live.quit()
+}
 
 let fixture = URL(fileURLWithPath: CommandLine.arguments[1])
 for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof", "exit-before-eof"] {
@@ -195,3 +232,8 @@ for mode in ["fragmented", "malformed", "partial", "cancel", "aged-payload", "qu
     try FileManager.default.removeItem(at: folder)
 }
 print("PASS: \(checks) total native checks including preview framing and lifecycle (no camera access)")
+
+try runAudioTests(repo: repo, check: { check($0, $1) })
+print("PASS: \(checks) native checks including T03 audio fixtures and microphone flows (capture off)")
+try runAudioTransportTests(fixture: fixture, check: { check($0, $1) })
+print("PASS: \(checks) total native checks including old/new helper audio negotiation (capture off)")

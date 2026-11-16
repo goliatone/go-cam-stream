@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"syscall"
 
 	"github.com/goliatone/go-admin/admin"
@@ -22,7 +23,7 @@ const developmentLogin = "local-developer"
 // NewDevelopment is available only in explicitly tagged development builds.
 // It grants local browser requests access to the configured catalog, without
 // weakening production containment or application CSRF requirements.
-type DevelopmentOptions struct{ Go2RTC, FFmpeg, WebcamDevice string }
+type DevelopmentOptions struct{ Go2RTC, FFmpeg, WebcamDevice, MediaAddress string }
 
 func NewDevelopment(cfg config.Config, logger admin.Logger, options ...DevelopmentOptions) (*Controller, error) {
 	cfg.Management.Enabled = true
@@ -44,6 +45,9 @@ func NewDevelopment(cfg config.Config, logger admin.Logger, options ...Developme
 	var opts DevelopmentOptions
 	if len(options) > 0 {
 		opts = options[0]
+	}
+	if opts.MediaAddress != "" && runtime.GOOS != "darwin" {
+		return nil, cs.NewError(cs.CodeUnsupported, nil)
 	}
 	controller, err := newDevelopmentController(cfg, logger, opts)
 	if err != nil {

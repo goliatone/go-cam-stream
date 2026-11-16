@@ -11,11 +11,6 @@ import (
 	"github.com/goliatone/go-cam-stream/pkg/camstream"
 )
 
-type listener struct {
-	network string
-	port    int
-}
-
 func ContainerBoundary(context.Context) error { return failure(camstream.CodeUnsupported, nil) }
 func lockDirectory(string) (*os.File, error)  { return nil, failure(camstream.CodeUnsupported, nil) }
 func processGroup(*exec.Cmd)                  {}

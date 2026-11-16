@@ -4,6 +4,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 
@@ -85,5 +87,27 @@ func TestValidateDevelopmentSource(t *testing.T) {
 				t.Fatal("unsafe or invalid device accepted")
 			}
 		})
+	}
+}
+
+func TestDevelopmentMediaAddress(t *testing.T) {
+	interfaces := func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.70"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	for _, tc := range []struct{ input, want string }{
+		{"", "127.0.0.1"}, {"127.0.0.1", "127.0.0.1"}, {"192.168.1.70", "192.168.1.70"},
+		{"0.0.0.0", ""}, {"8.8.8.8", ""}, {"192.168.1.71", ""}, {"224.0.0.1", ""},
+		{"localhost", ""}, {"::1", ""}, {"::ffff:192.168.1.70", ""}, {"192.168.1.70:35100", ""},
+		{"169.254.1.2", ""}, {"127.0.0.2", ""},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := developmentMediaAddress(tc.input, interfaces)
+			if got != tc.want || (err == nil) != (tc.want != "") {
+				t.Fatalf("got %q, %v", got, err)
+			}
+		})
+	}
+	if _, err := developmentMediaAddress("192.168.1.70", func() ([]net.Addr, error) { return nil, errors.New("inspection failed") }); err == nil {
+		t.Fatal("inspection failure accepted")
 	}
 }

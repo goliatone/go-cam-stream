@@ -69,7 +69,7 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindow
     func menuWillOpen(_ menu: NSMenu) { model.refreshPermission(); updateMenu() }
     private func updateMenu() {
         guard status != nil else { return }
-        stateItem.title = model.title
+        stateItem.title = model.statusSummary
         toggle.title = model.capture.active ? "Stop Camera" : "Start Camera"
         toggle.isEnabled = model.capture.active ? model.canStop : model.canStart
         appToggle.title = toggle.title
@@ -79,8 +79,8 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindow
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 17, weight: .regular))
         icon?.isTemplate = true
         status.button?.image = icon
-        status.button?.toolTip = "Camstream Camera: \(model.title)"
-        status.button?.setAccessibilityLabel("Camstream Camera: \(model.title)")
+        status.button?.toolTip = "Camstream Camera: \(model.statusSummary)"
+        status.button?.setAccessibilityLabel("Camstream Camera: \(model.statusSummary)")
     }
     private func showWindow() {
         window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)

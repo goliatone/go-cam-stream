@@ -27,8 +27,8 @@ import { compareImages, decodePng, encodePng } from "./snapshot-png.mjs";
 const USAGE = `Usage: npm run snapshots -- [options]
 
 Captures the preview's states at a git ref and in the working tree, and reports
-the views that differ. Exits 0 when no view differs, 1 when one does and 2 when
-the run fails.
+the views that differ. Exits 0 when no view differs, 1 when one does or the
+preview throws an error in one, and 2 when the run fails.
 
   --base <ref>          The version to compare with (default HEAD)
   --head <ref>          A second ref, instead of the working tree
@@ -106,17 +106,21 @@ const CHROME_FLAGS = [
  * Runs before the preview's own scripts. The clock stands still at 12:00:00 UTC on
  * 14 November 2026, and timers of a second or more never fire, so countdowns,
  * fading controls and the preview's own timed changes hold each state as first
- * drawn.
+ * drawn. Intl's formatters, given no date, still read the real clock.
  */
 const FREEZE = `(() => {
   const at = Date.UTC(2026, 10, 14, 12, 0, 0);
   const RealDate = Date;
-  globalThis.Date = new Proxy(RealDate, {
+  const now = () => at;
+  const FrozenDate = new Proxy(RealDate, {
     construct: (target, args, newTarget) =>
       Reflect.construct(target, args.length ? args : [at], newTarget),
     apply: () => new RealDate(at).toString(),
-    get: (target, key) => (key === "now" ? () => at : Reflect.get(target, key)),
+    get: (target, key) => (key === "now" ? now : Reflect.get(target, key)),
   });
+  // So that a date's constructor is the Date the page sees.
+  RealDate.prototype.constructor = FrozenDate;
+  globalThis.Date = FrozenDate;
   Performance.prototype.now = () => 100000;
   const timeout = setTimeout;
   const interval = setInterval;
@@ -283,9 +287,15 @@ function findChrome(choice) {
 }
 
 /**
+ * How long Chrome may take to answer a command before the run fails. The steps
+ * that can be slow have shorter limits of their own, with clearer messages.
+ */
+const ANSWER = 30000;
+
+/**
  * Starts Chrome with the DevTools protocol on a pipe. Returns the protocol's
- * commands and events, and `stop`, which closes the browser and resolves once it
- * has exited.
+ * commands and events, `stop`, which closes the browser and resolves once it has
+ * exited, and `kill`, for when the process is already exiting.
  */
 function startChrome(binary, profile) {
   const chrome = spawn(binary, [...CHROME_FLAGS, `--user-data-dir=${profile}`, "about:blank"], {
@@ -319,13 +329,16 @@ function startChrome(binary, profile) {
       start = end + 1;
       const message = JSON.parse(parts.join(""));
       parts = [];
-      const call = pending.get(message.id);
-      if (!call) for (const listener of listeners) listener(message);
-      else {
-        pending.delete(message.id);
-        if (message.error) call.reject(new Failure(`${call.method}: ${message.error.message}`));
-        else call.resolve(message.result);
+      if (message.id === undefined) {
+        for (const listener of listeners) listener(message);
+        continue;
       }
+      const call = pending.get(message.id);
+      // An answer that comes after its command has given up is dropped.
+      if (!call) continue;
+      pending.delete(message.id);
+      if (message.error) call.reject(new Failure(`${call.method}: ${message.error.message}`));
+      else call.resolve(message.result);
     }
     if (start < chunk.length) parts.push(chunk.slice(start));
   });
@@ -339,11 +352,22 @@ function startChrome(binary, profile) {
       if (broken) return Promise.reject(broken);
       return new Promise((resolve, reject) => {
         const id = ++next;
-        pending.set(id, { resolve, reject, method });
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Failure(`Chrome did not answer ${method} within ${ANSWER / 1000} s`));
+        }, ANSWER);
+        const answered = (finish) => (value) => {
+          clearTimeout(timer);
+          finish(value);
+        };
+        pending.set(id, { method, resolve: answered(resolve), reject: answered(reject) });
         commands.write(`${JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })}\0`);
       });
     },
     listen: (listener) => listeners.add(listener),
+    kill() {
+      if (chrome.exitCode === null && chrome.signalCode === null) chrome.kill("SIGKILL");
+    },
     async stop() {
       if (chrome.pid === undefined || chrome.exitCode !== null || chrome.signalCode !== null) return;
       chrome.kill();
@@ -362,17 +386,22 @@ async function openPage(browser) {
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
   const send = (method, params) => browser.send(method, params, sessionId);
   const loads = new Set();
-  const requests = new Set();
+  // The requests in flight, by id, and the addresses that once took longer than
+  // 10 s to load, which are not waited for again.
+  const loading = new Map();
+  const stuck = new Set();
+  const waiting = () => [...loading.values()].filter((url) => !stuck.has(url));
+  let origin = "";
+  const shorten = (url) => (origin && url.startsWith(`${origin}/`) ? url.slice(origin.length) : url);
   const idlers = new Set();
   const errors = [];
   browser.listen(({ method, params, sessionId: from }) => {
     if (from !== sessionId) return;
     if (method === "Runtime.exceptionThrown") errors.push(exception(params.exceptionDetails));
     else if (method === "Page.loadEventFired") for (const done of [...loads]) done();
-    else if (method === "Network.requestWillBeSent") requests.add(params.requestId);
+    else if (method === "Network.requestWillBeSent") loading.set(params.requestId, params.request.url);
     else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
-      requests.delete(params.requestId);
-      if (!requests.size) for (const done of [...idlers]) done(true);
+      if (loading.delete(params.requestId) && !waiting().length) for (const done of [...idlers]) done(true);
     }
   });
   for (const method of ["Page.enable", "Runtime.enable", "Network.enable"]) await send(method);
@@ -388,10 +417,10 @@ async function openPage(browser) {
     if (exceptionDetails) throw new Failure(`Could not drive the preview: ${exception(exceptionDetails)}`);
     return result.value;
   };
-  /** Resolves to true once nothing is loading, or to false after `ms`. */
+  /** Resolves to true once nothing that is waited for is loading, or to false after `ms`. */
   const idle = (ms) =>
     new Promise((resolve) => {
-      if (!requests.size) return resolve(true);
+      if (!waiting().length) return resolve(true);
       let timer;
       const done = (value) => {
         clearTimeout(timer);
@@ -403,29 +432,44 @@ async function openPage(browser) {
     });
   /**
    * Waits until nothing is loading and the document stays the same for two
-   * frames; resolves to whether it did. A lazily loaded part, such as the
-   * shortcuts dialog, can take longer to arrive than two frames.
+   * frames. Resolves to the reasons it did not, if any. A lazily loaded part,
+   * such as the shortcuts dialog, can take longer to arrive than two frames.
    */
   async function settle() {
-    for (let round = 0; round < 5; round++) {
+    const reasons = [];
+    for (let round = 1; ; round++) {
       const quiet = await evaluate(SETTLE);
-      if (!requests.size) return quiet;
-      if (!(await idle(10000))) return false;
+      if (!waiting().length) {
+        if (!quiet) reasons.push("the page kept changing");
+        break;
+      }
+      if (round === 5) {
+        reasons.push("requests kept starting");
+        break;
+      }
+      if (!(await idle(10000))) for (const url of waiting()) stuck.add(url);
     }
-    return false;
+    const left = [...new Set(loading.values())].map(shorten);
+    if (left.length) reasons.push(`${left.join(", ")} ${left.length === 1 ? "was" : "were"} still loading`);
+    return reasons;
   }
 
   return {
     errors,
     evaluate,
     settle,
-    /** Loads the preview afresh and lets it settle; resolves to whether it did. */
+    /** The addresses that took longer than 10 s to load. */
+    get stuck() {
+      return [...stuck].map(shorten);
+    },
+    /** Loads the preview afresh and lets it settle; resolves to the reasons it did not. */
     async load(url) {
-      requests.clear();
+      loading.clear();
+      origin = new URL(url).origin;
       let done;
       const loaded = new Promise((resolve) => loads.add((done = resolve)));
       try {
-        const { errorText } = await send("Page.navigate", { url });
+        const { errorText } = await within(send("Page.navigate", { url }), `Loading ${url}`);
         if (errorText) throw new Failure(`Could not load ${url}: ${errorText}`);
         await within(loaded, `Loading ${url}`);
       } finally {
@@ -459,6 +503,7 @@ async function openPage(browser) {
 
 /** Serves a version's preview with the working tree's Vite, without watching files or HMR. */
 async function serve({ root, allow }, cacheDir) {
+  const handlers = new Set(process.listeners("SIGTERM"));
   const server = await createServer({
     root,
     // Loads the version's own config without writing a bundled copy beside it.
@@ -487,14 +532,18 @@ async function serve({ root, allow }, cacheDir) {
     },
   });
   await server.listen();
+  // On SIGTERM, Vite closes its server and exits before this script has closed
+  // its browser and removed its temporary folder, so Vite's handler is taken off.
+  for (const handler of process.listeners("SIGTERM"))
+    if (!handlers.has(handler)) process.off("SIGTERM", handler);
   const { port } = server.httpServer.address();
   return { url: `http://127.0.0.1:${port}/preview.html`, close: () => server.close() };
 }
 
 /**
  * Captures one version's views into `dir`. Returns the files by scheme and name,
- * the views it could not show, those whose page threw and those still changing
- * when captured.
+ * the views it could not show, those whose page threw, those still changing when
+ * captured with the reasons, and the addresses that took too long to load.
  */
 async function captureVersion(page, version, cacheDir, dir, { schemes, only }) {
   const server = await serve(version, cacheDir);
@@ -513,7 +562,7 @@ async function captureVersion(page, version, cacheDir, dir, { schemes, only }) {
         name: `${extra.size}-${extra.scenario}-${extra.name}`,
       })),
     ].filter((view) => !only || view.name.includes(only));
-    const captured = { files: new Map(), missing: new Set(), failed: new Map(), unsettled: [] };
+    const captured = { files: new Map(), missing: new Set(), failed: new Map(), unsettled: new Map() };
     for (const scheme of schemes) {
       mkdirSync(path.join(dir, scheme), { recursive: true });
       for (const size of SIZES) {
@@ -522,25 +571,25 @@ async function captureVersion(page, version, cacheDir, dir, { schemes, only }) {
           const name = `${scheme}/${view.name}`;
           try {
             page.errors.length = 0;
-            let settled = await page.load(server.url);
+            const reasons = new Set(await page.load(server.url));
             if (!(await page.evaluate(choose(view.scenario)))) {
               captured.missing.add(name);
               continue;
             }
-            settled = (await page.settle()) && settled;
+            for (const reason of await page.settle()) reasons.add(reason);
             if (view.click) {
               if (!(await page.evaluate(click(view.click)))) {
                 captured.missing.add(name);
                 continue;
               }
-              settled = (await page.settle()) && settled;
+              for (const reason of await page.settle()) reasons.add(reason);
             }
             await page.evaluate(FINISH);
             if (page.errors.length) {
               captured.failed.set(name, page.errors.join("; "));
               continue;
             }
-            if (!settled) captured.unsettled.push(name);
+            if (reasons.size) captured.unsettled.set(name, [...reasons]);
             const file = path.join(dir, scheme, `${view.name}.png`);
             writeFileSync(file, await page.capture(size, size.fullPage && !view.click));
             captured.files.set(name, file);
@@ -551,7 +600,7 @@ async function captureVersion(page, version, cacheDir, dir, { schemes, only }) {
         }
       }
     }
-    return captured;
+    return { ...captured, stuck: page.stuck };
   } finally {
     await server.close();
   }
@@ -569,9 +618,9 @@ function describe(result, tolerance) {
     case "missing":
       return "could not be shown in either version";
     case "error":
-      return Object.entries(result.errors)
+      return `could not be captured: ${Object.entries(result.errors)
         .map(([side, error]) => `the ${side} threw ${error}`)
-        .join("; ");
+        .join("; ")}`;
   }
   const { differing, over, total, maxDelta, box } = result;
   if (!differing) return "identical";
@@ -579,7 +628,10 @@ function describe(result, tolerance) {
   return `${plural(differing, "pixel")} (${share}) differ by up to ${plural(maxDelta, "level")}, ${count(over)} by more than ${tolerance}, within ${box.left},${box.top} to ${box.right},${box.bottom}`;
 }
 
-function report(out, labels, { tolerance, area }, results) {
+const unfinished = (urls) =>
+  `${urls.join(", ")} took longer than 10 s to load, so later views did not wait for ${urls.length === 1 ? "it" : "them"}`;
+
+function report(out, labels, { tolerance, area }, results, stuck) {
   const differing = results.filter((result) => DIFFERS.has(result.status));
   const names = (status) => results.filter((result) => result.status === status).map((result) => result.view);
   const figure = (src, caption) =>
@@ -595,6 +647,21 @@ ${figure(result.base, `Base, ${labels.base}`)}${figure(result.head, `Head, ${lab
     )
     .join("\n");
   const missing = names("missing");
+  const changing = [
+    ...Object.entries(stuck)
+      .filter(([, urls]) => urls.length)
+      .map(([side, urls]) => `<p>In the ${side}, ${escape(unfinished(urls))}.</p>`),
+    ...results
+      .filter((result) => result.unsettled)
+      .map(
+        (result) =>
+          `<p>${escape(result.view)}: ${escape(
+            Object.entries(result.unsettled)
+              .map(([side, reasons]) => `in the ${side}, ${reasons.join(" and ")}`)
+              .join("; "),
+          )}</p>`,
+      ),
+  ];
   writeFileSync(
     path.join(out, "index.html"),
     `<!doctype html>
@@ -611,14 +678,14 @@ figcaption { font-size: 12px; color: #596b70; }
 <h1>Preview snapshots</h1>
 <p>Base: ${escape(labels.base)}. Head: ${escape(labels.head)}. A view differs when a pixel differs by more than ${tolerance} levels in a colour channel, or when more than ${count(area)} pixels differ at all. ${differing.length} of ${plural(results.length, "view")} ${differing.length === 1 ? "differs" : "differ"}.</p>
 ${sections}
-${missing.length ? `<h2>Not shown in either version</h2>\n<p>${missing.map(escape).join(", ")}</p>\n` : ""}<h2>Unchanged</h2>
+${missing.length ? `<h2>Not shown in either version</h2>\n<p>${missing.map(escape).join(", ")}</p>\n` : ""}${changing.length ? `<h2>Still changing when captured, so these may differ by chance</h2>\n${changing.join("\n")}\n` : ""}<h2>Unchanged</h2>
 <p>${names("same").map(escape).join(", ") || "None"}</p>
 </html>
 `,
   );
   writeFileSync(
     path.join(out, "report.json"),
-    `${JSON.stringify({ base: labels.base, head: labels.head, tolerance, area, views: results }, null, 2)}\n`,
+    `${JSON.stringify({ base: labels.base, head: labels.head, tolerance, area, stuck, views: results }, null, 2)}\n`,
   );
 }
 
@@ -718,12 +785,18 @@ async function main() {
       await browser.stop();
       run.browser = undefined;
     }
-    const { files, unsettled } = captured[side];
+    const { files, unsettled, stuck } = captured[side];
     console.log(
       `Captured ${plural(files.size, "view")} of ${labels[side]} in ${((Date.now() - started) / 1000).toFixed(0)} s`,
     );
-    if (unsettled.length)
-      console.log(`  Still changing when captured, so these may differ by chance: ${unsettled.join(", ")}`);
+    if (stuck.length) console.log(`  ${unfinished(stuck)}.`);
+    if (unsettled.size) {
+      console.log("  Still changing when captured, so these may differ by chance:");
+      const byReason = new Map();
+      for (const [name, reasons] of unsettled)
+        for (const reason of reasons) byReason.set(reason, [...(byReason.get(reason) ?? []), name]);
+      for (const [reason, names] of byReason) console.log(`    ${reason}: ${names.join(", ")}`);
+    }
   }
 
   const names = new Set();
@@ -739,9 +812,11 @@ async function main() {
       base: file("base") && path.relative(out, file("base")),
       head: file("head") && path.relative(out, file("head")),
     };
-    const errors = Object.fromEntries(
-      ["base", "head"].filter((side) => captured[side].failed.has(view)).map((side) => [side, captured[side].failed.get(view)]),
-    );
+    const bySide = (what) =>
+      Object.fromEntries(
+        ["base", "head"].filter((side) => captured[side][what].has(view)).map((side) => [side, captured[side][what].get(view)]),
+      );
+    const errors = bySide("failed");
     if (Object.keys(errors).length) Object.assign(result, { status: "error", errors });
     else if (!result.base && !result.head) result.status = "missing";
     else if (!result.base) result.status = "added";
@@ -766,9 +841,11 @@ async function main() {
         writeFileSync(path.join(out, result.diff), encodePng(compared.image));
       }
     }
+    const unsettled = bySide("unsettled");
+    if (Object.keys(unsettled).length) result.unsettled = unsettled;
     results.push(result);
   }
-  report(out, labels, { tolerance, area }, results);
+  report(out, labels, { tolerance, area }, results, { base: captured.base.stuck, head: captured.head.stuck });
   const differing = results.filter((result) => DIFFERS.has(result.status));
   for (const result of differing) console.log(`  ${result.view}: ${describe(result, tolerance)}`);
   const missing = results.filter((result) => result.status === "missing").map((result) => result.view);
@@ -781,6 +858,18 @@ async function main() {
   return differing.length ? 1 : 0;
 }
 
+/** Kills the browser if it is still running, and removes the temporary folder. */
+function clear() {
+  run.browser?.kill();
+  if (!run.scratch) return;
+  try {
+    rmSync(run.scratch, { recursive: true, force: true, maxRetries: 5 });
+  } catch (error) {
+    console.error(`Could not remove ${run.scratch}: ${error.message}`);
+  }
+  run.scratch = undefined;
+}
+
 let ending = false;
 
 /** Closes the browser and removes the temporary folder, then exits with `code`. */
@@ -789,17 +878,21 @@ async function end(code, error) {
   ending = true;
   if (error) console.error(error instanceof Failure ? error.message : error);
   await run.browser?.stop();
-  if (run.scratch) rmSync(run.scratch, { recursive: true, force: true, maxRetries: 5 });
+  clear();
   process.exit(code);
 }
 
 // A closed pipe, as with `| head`, must not stop the run halfway.
 process.stdout.on("error", () => {});
+// A second signal ends the run at once, and the exit handler still clears up.
 for (const [signal, code] of [
+  ["SIGHUP", 129],
   ["SIGINT", 130],
   ["SIGTERM", 143],
 ])
-  process.once(signal, () => end(code));
+  process.on(signal, () => (ending ? process.exit(code) : end(code)));
+// Should anything else end the process first, nothing is left behind.
+process.on("exit", clear);
 process.on("uncaughtException", (error) => end(2, error));
 process.on("unhandledRejection", (error) => end(2, error));
 main().then(

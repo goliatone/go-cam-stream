@@ -97,7 +97,12 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 	var frames atomic.Int64
 	audio := audioProgress{deadline: deadline}
 	preview := &previewManager{ctx: ctx, config: c, secret: secret, tool: s.Tools.FFmpeg, dir: dir, frames: &frames}
-	listener, err := s.control(ctx, c, &frames, &audio, cancel, dir, preview)
+	listener, err := s.control(ctx, c, &frames, &audio, cancel, dir, preview, func() (Exports, error) {
+		if exportErr := s.export(c, secret); exportErr != nil {
+			return Exports{}, exportErr
+		}
+		return s.exportPaths(), nil
+	})
 	if err != nil {
 		return err
 	}
@@ -110,7 +115,19 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 	return s.runMedia(ctx, c, secret, dir, configPath, &frames, &audio, deadline, out)
 }
 
-func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, audio *audioProgress, cancel context.CancelFunc, dir string, preview *previewManager) (net.Listener, error) {
+// Close waits for any in-flight export before the instance lock is released.
+type controlListener struct {
+	net.Listener
+	done chan struct{}
+}
+
+func (l *controlListener) Close() error {
+	err := l.Listener.Close()
+	<-l.done
+	return err
+}
+
+func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, audio *audioProgress, cancel context.CancelFunc, dir string, preview *previewManager, export func() (Exports, error)) (net.Listener, error) {
 	path := filepath.Join(dir, "control.sock")
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -120,19 +137,21 @@ func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, a
 	if err != nil {
 		return nil, err
 	}
+	owned := &controlListener{Listener: listener, done: make(chan struct{})}
 	go func() {
+		defer close(owned.done)
 		for {
 			conn, acceptErr := listener.Accept()
 			if acceptErr != nil {
 				return
 			}
-			serveControl(conn, c, frames, audio, cancel, preview)
+			serveControl(conn, c, frames, audio, cancel, preview, export)
 		}
 	}()
-	return listener, nil
+	return owned, nil
 }
 
-func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioProgress, cancel context.CancelFunc, preview *previewManager) {
+func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioProgress, cancel context.CancelFunc, preview *previewManager, export func() (Exports, error)) {
 	defer conn.Close() //nolint:errcheck // Response is bounded and connection is no longer used.
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return
@@ -146,19 +165,25 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioPro
 		state = "streaming"
 	}
 	var endpoint *PreviewEndpoint
-	if action == "preview_attach" {
+	var exports *Exports
+	switch {
+	case action == "export":
+		if result, err := export(); err == nil {
+			exports = &result
+		}
+	case action == "preview_attach":
 		if state == "streaming" {
 			endpoint, _ = preview.attach() //nolint:errcheck // Missing endpoint is the sanitized unavailable response.
 		}
-	} else if after, ok := strings.CutPrefix(action, "preview_detach:"); ok {
-		preview.detach(after)
-	} else if action == "stop" {
+	case strings.HasPrefix(action, "preview_detach:"):
+		preview.detach(strings.TrimPrefix(action, "preview_detach:"))
+	case action == "stop":
 		state = "stopping"
 		cancel()
-	} else if action != "status" {
+	case action != "status":
 		return
 	}
-	if err := json.NewEncoder(conn).Encode(Status{State: state, URL: c.URL(), Frames: frames.Load(), Preview: endpoint, Audio: audio.status(c, state)}); err != nil {
+	if err := json.NewEncoder(conn).Encode(Status{State: state, URL: c.URL(), Frames: frames.Load(), Preview: endpoint, Exports: exports, Audio: audio.status(c, state)}); err != nil {
 		return
 	}
 }

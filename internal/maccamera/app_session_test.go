@@ -258,7 +258,7 @@ func TestAppRequestRejectsAmbiguousOrUnsafeInput(t *testing.T) {
 	}
 }
 
-func TestAppSessionExportWaitsForOwnedCapture(t *testing.T) {
+func TestAppSessionExportDoesNotStopOwnedCapture(t *testing.T) {
 	s := testService(t)
 	started := make(chan struct{})
 	p := newSessionProbe(t, s, func(ctx context.Context) error {
@@ -270,8 +270,12 @@ func TestAppSessionExportWaitsForOwnedCapture(t *testing.T) {
 	p.request(t, "start", nil)
 	<-started // Capture is owned, but the supervisor has not acquired its instance lock yet.
 	r := p.request(t, "export", nil)
-	if r.Error == nil || r.Error.Code != "export_failed" {
-		t.Fatal("export accepted before owned capture stopped")
+	if r.Error != nil {
+		t.Fatal("export of saved settings refused during supervisor startup")
+	}
+	// Export neither replaces nor ends the owned capture, including the socket gap.
+	if r = p.request(t, "start", nil); r.Error == nil || r.Error.Code != "busy" {
+		t.Fatal("export released capture ownership")
 	}
 	p.request(t, "stop", nil)
 	if r = p.request(t, "export", nil); r.Error != nil {

@@ -11,6 +11,7 @@ struct CameraView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Camstream Camera").font(.title2.bold())
                     Text(model.title).foregroundStyle(.secondary).accessibilityIdentifier("camera-status")
+                    Text(model.microphoneSummary).font(.callout).foregroundStyle(model.capture.audioState == "live" ? Color.green : Color.secondary).accessibilityIdentifier("microphone-status")
                 }
                 Spacer()
                 if model.capture.active {
@@ -41,7 +42,7 @@ struct CameraView: View {
             }
             Spacer(minLength: 0)
             Divider()
-            Text("Video only · No microphone or recording. Closing this window keeps the app running. Use the camera icon in the menu bar or reopen from the Dock. Quit stops the camera.")
+            Text("Microphone audio is optional. No recording or local audio playback. Closing this window keeps the stream running; Stop or Quit ends camera and microphone capture.")
                 .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(24).frame(minWidth: 900, minHeight: 640)
     }
@@ -56,7 +57,7 @@ struct CameraView: View {
                     }
                     Spacer()
                     if model.permission == "not_determined" {
-                        Button("Allow Camera", action: model.requestPermission)
+                        Button("Allow Camera", action: model.requestPermission).disabled(!model.canEditSettings)
                     } else if model.permission != "authorized" {
                         Button("Open Camera Settings", action: model.openPrivacy)
                     } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Camera access allowed") }
@@ -80,22 +81,23 @@ struct CameraView: View {
                     Text("This name is the stream ID. Use letters, numbers, dashes or underscores.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(8)
-            }.disabled(model.capture.active || model.working)
+            }.disabled(!model.canEditSettings)
+            microphoneSettings
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("3. Choose who can connect").font(.headline)
+                    Text("4. Choose who can connect").font(.headline)
                     Picker("Access", selection: $model.draft.listen) {
                         Text("Only this Mac").tag("127.0.0.1")
                         Text("Private network").tag("0.0.0.0")
                     }.pickerStyle(.radioGroup)
-                    Text(model.draft.listen == "127.0.0.1" ? "Local testing only. A Camstream server on another computer cannot connect." : "Allows authenticated connections on this Mac’s network interfaces. Use a trusted LAN or VPN; do not expose this port to the internet.")
+                    Text(model.draft.listen == "127.0.0.1" ? "Only a server on this Mac can connect. Credentials are still required; get both files in Connection Details, even while the camera is live." : "Allows authenticated connections on this Mac’s network interfaces. Get both files in Connection Details. Use a trusted LAN or VPN; do not expose this port to the internet.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if model.draft.listen == "0.0.0.0" {
                         LabeledContent("Mac address") { TextField("IP address or hostname", text: $model.draft.host).labelsHidden().accessibilityLabel("Mac IP address or hostname") }
                     }
                     LabeledContent("RTSP port") { TextField("RTSP port", text: $model.portText).labelsHidden().accessibilityLabel("RTSP port") }
                 }.padding(8)
-            }.disabled(model.capture.active || model.working)
+            }.disabled(!model.canEditSettings)
             HStack {
                 if model.working { ProgressView().controlSize(.small); Text("Working…").font(.callout) }
                 else if let validation = model.validation { Text(validation).font(.caption).foregroundStyle(.secondary) }
@@ -103,6 +105,49 @@ struct CameraView: View {
                 Spacer()
                 Button("Save Settings", action: model.save).disabled(!model.canSave).keyboardShortcut("s", modifiers: .command)
             }
+        }
+    }
+    private var microphoneSettings: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("3. Optional microphone audio").font(.headline)
+                Toggle("Enable microphone", isOn: Binding(get: { model.draft.audioEnabled }, set: model.setMicrophoneEnabled))
+                    .accessibilityIdentifier("enable-microphone")
+                    .disabled(!model.canEditSettings || (!model.audioSupported && !model.draft.audioEnabled))
+                if !model.audioSupported {
+                    Text(model.ready ? "This helper does not support microphone audio. Use a complete current app to enable it. Video-only use remains available." : "Waiting for the camera helper to make microphone controls available.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else if model.draft.audioEnabled {
+                    Text(model.microphonePermissionText).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if model.microphonePermission == "not_determined" {
+                        Button("Allow Microphone", action: model.requestMicrophonePermission)
+                            .disabled(!model.canEditSettings).accessibilityIdentifier("allow-microphone")
+                    } else if model.microphonePermission == "denied" {
+                        Button("Open Microphone Settings", action: model.openMicrophonePrivacy).disabled(model.capture.active)
+                    }
+                    HStack {
+                        Picker("Microphone", selection: Binding(get: { MicrophoneID(model.draft.audioDeviceID) }, set: model.selectMicrophone)) {
+                            Text("Choose a microphone").tag(MicrophoneID(""))
+                            if !model.draft.audioDeviceID.isEmpty, !model.microphones.contains(where: { $0.matches(model.draft.audioDeviceID) }) {
+                                Text(model.microphonesLoaded ? "Saved microphone — unavailable" : "Saved microphone — refresh to check").tag(MicrophoneID(model.draft.audioDeviceID))
+                            }
+                            ForEach(model.microphones, id: \.selectionID) { device in Text(device.label(in: model.microphones)).tag(device.selectionID) }
+                        }.accessibilityIdentifier("microphone-selection")
+                            .disabled(!model.canEditSettings || model.microphonePermission != "authorized")
+                        Button("Refresh Microphones", action: model.refreshMicrophones)
+                            .disabled(!model.canEditSettings || model.microphonePermission != "authorized")
+                    }
+                    if model.microphonesLoaded && model.microphones.isEmpty {
+                        Text("No microphones are available. Reconnect a microphone and refresh, or disable microphone audio.")
+                            .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let problem = model.microphoneDiscoveryError {
+                        Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Text("The local preview is silent. Browser mute changes playback only; disable microphone audio here while stopped to stop transmitting sound on the next stream.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(8)
         }
     }
     private var permissionText: String {
@@ -117,13 +162,18 @@ struct CameraView: View {
         VStack(alignment: .leading, spacing: 18) {
             if let saved = model.saved {
                 Text(saved.path).font(.headline)
+                Text(saved.audioEnabled ? "Microphone audio enabled · Opus" : "Video only · Microphone off").font(.callout)
                 Text(saved.endpoint).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                     .accessibilityLabel("Camera endpoint: \(saved.endpoint)")
                 Button("Copy Endpoint", action: model.copyEndpoint)
                 Divider()
                 Text("Connect your Camstream server").font(.headline)
-                Text("Export the camera configuration and private credentials file. Merge the camera and access grant into your server configuration, set the exported environment values, then restart the server.")
+                Text("Export Connection Files → Show Files in Finder. In the web app, choose Add Camera → Import Mac files and select both camstream-camera.yaml and camstream-camera.env. Then Test connection → Save Camera → Watch Camera. Keep the camera running throughout.")
                     .fixedSize(horizontal: false, vertical: true)
+                if saved.audioEnabled {
+                    Text("Reload the updated audio-enabled profile on your server, then unmute the browser to hear microphone audio. Browser mute does not stop transmission; the local preview stays silent.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 if saved.listen == "127.0.0.1" {
                     Label("This endpoint is local to this Mac. Choose Private network in Settings to connect from another computer.", systemImage: "info.circle")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -132,7 +182,7 @@ struct CameraView: View {
                     Button("Export Connection Files", action: model.export).disabled(!model.canExport)
                     if !model.exported.isEmpty { Button("Show Files in Finder", action: model.revealExports) }
                 }
-                Text(model.capture.active ? "Stop the camera before exporting connection files." : "The .env file contains a password. Keep it private; the endpoint alone does not include credentials.")
+                Text("Export and Show Files in Finder do not stop capture or change credentials. The .env file contains a password required even on this Mac; the endpoint alone is not enough. Keep the file private.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if model.dirty { Text("Save your settings changes before exporting.").font(.callout).foregroundStyle(.orange) }
             } else {

@@ -40,6 +40,7 @@ func run() int {
 		controller, err := app.NewDevelopment(cfg, logger, app.DevelopmentOptions{
 			Go2RTC: os.Getenv("CAMSTREAM_DEV_GO2RTC"), FFmpeg: os.Getenv("CAMSTREAM_DEV_SOURCE_FFMPEG"),
 			WebcamDevice: os.Getenv("CAMSTREAM_DEV_WEBCAM_DEVICE"),
+			MediaAddress: os.Getenv("CAMSTREAM_DEV_MEDIA_ADDRESS"),
 		})
 		if err != nil {
 			return err

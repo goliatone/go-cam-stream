@@ -63,15 +63,19 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
     run("xcrun", "swiftc", "-swift-version", "5", "-target", "arm64-apple-macosx" + lock["target"]["minimum_macos"],
         "-framework", "AppKit", "-framework", "AVFoundation",
         *[str(p) for p in sources], "-o", str(contents / "MacOS" / executable))
+    permission_text = {"NSCameraUsageDescription": "Share the built-in webcam as a private RTSP camera while this app is running."}
+    if production:
+        permission_text["NSCameraUsageDescription"] = "Share the webcam in a private stream only when you choose Start Camera."
+        permission_text["NSMicrophoneUsageDescription"] = "Include microphone sound in your private stream only when you enable microphone audio and choose Start Camera."
     with (contents / "Info.plist").open("wb") as file:
         plistlib.dump({"CFBundleExecutable": executable,
             "CFBundleIdentifier": "com.goliatone.camstream.camera" + ("" if production else ".proof"),
             "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": False,
             "CFBundlePackageType": "APPL", "CFBundleVersion": version, "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": lock["target"]["minimum_macos"], "NSHighResolutionCapable": True,
-            "NSCameraUsageDescription": "Share the built-in webcam as a private RTSP camera while this app is running."
+            **permission_text
         }, file)
-    entitlements = str(root / "macos/CameraProof/entitlements.plist")
+    entitlements = str(root / ("macos/CameraApp/entitlements.plist" if production else "macos/CameraProof/entitlements.plist"))
     inspect_macho(contents / "MacOS" / executable, lock["target"])
     for binary in sorted((contents / "Helpers").iterdir()):
         inspect_macho(binary, lock["target"])

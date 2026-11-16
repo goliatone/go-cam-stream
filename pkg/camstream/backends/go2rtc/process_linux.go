@@ -15,11 +15,6 @@ import (
 	"time"
 )
 
-type listener struct {
-	network string
-	port    int
-}
-
 // ContainerBoundary requires this controller to be the direct child of the
 // container init. Launch it as the container command, not via an un-exec'd shell.
 // The host must use the tested dedicated --init container and restart ordering.

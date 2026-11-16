@@ -22,11 +22,6 @@ const DarwinARM64SHA256 = "d69780b0ed222866f2a9a8160537bae9936887ff467626ccba00b
 func supportedPlatform() bool  { return runtime.GOARCH == "arm64" && nativeSocketInspection }
 func executableSHA256() string { return DarwinARM64SHA256 }
 
-type listener struct {
-	network string
-	port    int
-}
-
 func ContainerBoundary(context.Context) error {
 	return fmt.Errorf("linux containment unavailable on Darwin")
 }
@@ -191,7 +186,7 @@ func ownsListeners(group int, checks []listener) error {
 			}
 		}
 		if !owned {
-			return fmt.Errorf("assigned loopback listener not owned by worker")
+			return fmt.Errorf("assigned listener not owned by worker")
 		}
 	}
 	return nil

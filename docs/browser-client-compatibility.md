@@ -99,11 +99,37 @@ keeps its ring on its own margin in both themes. With a light setting the 47
 captures are pixel-identical to T26's.
 Safari, iPhone and Firefox were not run; Firefox before 96 has no `color-scheme`,
 so there scrollbars stay light on a dark page.
-Firefox Developer Edition fails
-ICE in both the TCP-only and TCP+UDP local fixtures (owner-reported). Its exact
-version and cause are unverified; Firefox support is not established. The generic
-STUN suggestion in its diagnostic is not evidence that a STUN/TURN service is
-required. No relay, browser-policy override or broader port exposure was added.
+Firefox Developer Edition's localhost failure was reproduced on 2026-11-16 with
+the real Mac camera and authenticated RTSP input. Camera media reached the server,
+but `about:webrtc` showed only LAN local candidates against remote
+`127.0.0.1:35101` candidates, no ICE candidate pairs and no received video frames.
+Firefox excludes loopback ICE by default ([Mozilla explanation](https://bugzilla.mozilla.org/show_bug.cgi?id=1659672#c1)).
+Enabling `media.peerconnection.ice.loopback` and restarting was tested, but did
+not resolve this failure. After restart, Firefox reported the preference as true
+and continued gathering LAN-only candidates. A fresh import of both native
+connection files and an uninterrupted, visible test again received source media
+then timed out without browser playback. The restart also installed Developer
+Edition 161.0a2 (the prior update page reported 160.0), so this is not a controlled
+same-build comparison. Do not present this preference as a verified fix.
+
+Mozilla's implementation also restricts candidates based on capture permission
+([candidate filtering](https://github.com/mozilla/gecko-dev/blob/master/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp#L4055-L4078)).
+Which additional filter causes the post-restart failure remains unisolated.
+The verified fix is `./taskfile dev:serve PORT --media-address PRIVATE_IPV4`.
+It explicitly binds and advertises WebRTC media on one private IPv4 assigned to
+the Mac, preserving loopback-only HTTP and worker control. Wildcard, public,
+IPv6 and unassigned addresses are rejected. Without the flag, native development
+still forces loopback media. No STUN/TURN service or camera permission is needed.
+
+On 2026-11-16 Firefox Developer Edition 161.0a2 completed real Mac live export →
+import both files → decoded preview test/cleanup → save → Watch Camera on the
+patched native host. H.264 1280×720 playback used a selected UDP pair to
+192.168.1.70:35900; decoded frames advanced 932 → 1,759 over 27.6 seconds with
+zero dropped frames/lost packets. Native capture and localhost RTSP remained
+running throughout. The earlier authorized loopback preference remained true;
+the successful pair uses the non-loopback interface, and no additional browser
+policy change was made. This establishes this tested Mac/Firefox flow, not a
+new general minimum Firefox version or remote/network compatibility guarantee.
 ICE transport support varies ([connectivity guidance](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Connectivity)).
 
 Real Safari/iPhone behavior, EC70 codecs, remote Tailnet UDP/TCP and sustained target

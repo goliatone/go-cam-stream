@@ -22,6 +22,8 @@ type Service struct {
 	StartupDeadline time.Time
 }
 
+var errCameraBusy = errors.New("camera is already running or being configured")
+
 func DefaultDir() (string, error) {
 	home, err := os.UserHomeDir()
 	return filepath.Join(home, "Library", "Application Support", "camstream-camera"), err
@@ -58,7 +60,10 @@ func (s *Service) namedLock(name string) (*os.File, error) {
 	f := os.NewFile(uintptr(fd), name)
 	if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close() //nolint:errcheck // Preserve the lock-acquisition error.
-		return nil, errors.New("camera is already running or being configured")
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errCameraBusy
+		}
+		return nil, err
 	}
 	return f, nil
 }
@@ -77,6 +82,15 @@ type Exports struct {
 
 func (s *Service) Export() (Exports, error) {
 	lock, err := s.lock()
+	if errors.Is(err, errCameraBusy) {
+		// The supervisor owns the instance lock and the active configuration.
+		// Never bypass that lock or reload mutable settings beside live capture.
+		status, requestErr := s.request(context.Background(), "export")
+		if requestErr != nil || status.Exports == nil || *status.Exports != s.exportPaths() {
+			return Exports{}, errors.New("connection export unavailable; retry when the camera is ready")
+		}
+		return *status.Exports, nil
+	}
 	if err != nil {
 		return Exports{}, err
 	}
@@ -88,7 +102,11 @@ func (s *Service) Export() (Exports, error) {
 	if err = s.export(c, secret); err != nil {
 		return Exports{}, err
 	}
-	return Exports{Configuration: filepath.Join(s.Dir, "camstream-camera.yaml"), Environment: filepath.Join(s.Dir, "camstream-camera.env")}, nil
+	return s.exportPaths(), nil
+}
+
+func (s *Service) exportPaths() Exports {
+	return Exports{Configuration: filepath.Join(s.Dir, "camstream-camera.yaml"), Environment: filepath.Join(s.Dir, "camstream-camera.env")}
 }
 
 func (s *Service) runtimeDir() (string, error) {
@@ -208,6 +226,7 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 }
 
 type Status struct {
+	Exports *Exports         `json:"exports,omitempty"`
 	Audio   AudioStatus      `json:"audio"`
 	Preview *PreviewEndpoint `json:"preview,omitempty"`
 	State   string           `json:"state"`

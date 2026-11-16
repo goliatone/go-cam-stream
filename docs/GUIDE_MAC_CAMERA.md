@@ -10,6 +10,21 @@ It runs separately from the Linux camstream viewer/server. The exported folder
 includes FFmpeg, MediaMTX and their non-system libraries; target Macs need neither
 Homebrew nor Go. Keep the entire folder together. No microphone capture or recording.
 
+## Connect the native app to the web viewer
+
+Keep the camera live. Open **Connection Details → Export Connection Files →
+Show Files in Finder**, then select both files under **Add Camera → Import Mac
+files** in the web app. Choose **Test connection → Save Camera → Watch Camera**.
+
+For same-Mac Firefox playback, start the web development host with
+`./taskfile dev:serve 8087 --media-address YOUR_MAC_PRIVATE_IPV4`. Keep the
+companion on **Only this Mac** and import its localhost RTSP endpoint. The option
+changes only server-to-browser WebRTC media; HTTP and camera RTSP stay local.
+See [browser compatibility](browser-client-compatibility.md) for verified evidence.
+Export/reveal preserves the running stream and credentials. Only this Mac also
+requires credentials; Copy Endpoint alone is insufficient. This onboarding flow
+is video-only; see the Mac app guide for audio-enabled server configuration.
+
 ## Configure and run
 
 Extract the archive for your Mac architecture and open Terminal in that folder:

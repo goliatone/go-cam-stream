@@ -10,7 +10,10 @@ python3 macos/build-app.py
 
 Open `dist/Camstream Camera.app` in Finder. Allow camera access, select a webcam,
 choose a camera name (stream ID), and save settings. Saving never starts capture.
-Choose **Start Camera** explicitly. The camera icon in the menu bar offers Start/Stop,
+For sound, turn on **Enable microphone**, choose **Allow Microphone** if needed,
+select a microphone, and save. Microphone audio is off by default; permission
+grant, selection, Save and reopening never start capture. Denial leaves video-only
+use available by disabling microphone audio. Choose **Start Camera** explicitly. The camera icon in the menu bar offers Start/Stop,
 Connection Details, Settings and Quit. Closing the window leaves the menu-bar
 app running; the Dock entry and app menu also provide access to the controls.
 The icon is outlined while stopped and filled while live; its menu and accessibility label report the full capture state.
@@ -29,20 +32,28 @@ hostname. The listener uses all IPv4 interfaces, with authenticated readers; use
 a trusted LAN/VPN and keep the port off the public internet. Settings are locked
 while capture is starting, live or stopping.
 
-Connection Details shows a credential-free endpoint. While stopped, **Export
-Connection Files** creates mode-0600 YAML and environment files; **Show Files in
-Finder** reveals them without displaying the password in the app or clipboard.
-Merge the YAML camera/grant into the server config and supply the environment
-values separately. This does not automatically pair with or restart a server.
+Connection Details shows a credential-free endpoint. **Export Connection Files**
+creates mode-0600 YAML and environment files while stopped or live; it does not
+stop capture, change settings or rotate credentials. **Show Files in Finder**
+reveals existing private files, including after relaunch, without displaying the
+password in the app or clipboard. Both access modes require reader credentials.
+For video-only web onboarding, keep capture running and choose **Add Camera →
+Import Mac files**, select both files, then **Test connection → Save Camera →
+Watch Camera**. YAML-only import requires entering the private .env credentials.
+For startup YAML deployments, merge the camera/grant and supply environment values
+separately. Export does not automatically pair with or restart a server.
 
 The app identity is `com.goliatone.camstream.camera`. Settings and credentials
 live in `~/Library/Application Support/camstream-camera-app`, separate from the
 CLI and proof. Replacing the app preserves this directory and credentials;
 there is no automatic import of prototype settings. Permission is independent of
 Camstream Camera Proof. If denied, enable **Camstream Camera** in Privacy &
-Security → Camera. Follow any macOS **Quit & Reopen** prompt; if the app still
+Security → Camera or Microphone. Follow any macOS **Quit & Reopen** prompt; if the app still
 shows the old permission state, quit and reopen it before refreshing devices
-and choosing Start explicitly. Changing permission never starts capture.
+and choosing Start explicitly. Changing permission never starts capture. A missing
+saved microphone stays unavailable until it is reconnected or explicitly replaced;
+duplicate display names have stable distinguishing suffixes. Browser mute changes
+playback only. Local preview stays silent even when microphone audio is live.
 Errors remain visible until an explicit successful action; polling cannot hide
 capture failures. Unexpected helper exit requires quitting/reopening the app.
 
@@ -50,18 +61,36 @@ capture failures. Unexpected helper exit requires quitting/reopening the app.
 `--runtime-pack`, `--cache`, `--download`, `--output` and `--version` flags. The
 bundle is ad-hoc hardened and includes the pinned runtime, sources and notices.
 The local app is not a published release. Use the release packager below for a
-versioned DMG. Local Developer ID/notarized app, capture and signed replacement
-checks pass on macOS 26.7.1; hosted download and oldest-OS validation remain
-required before external distribution.
+versioned DMG. Earlier video-only Developer ID/notarized app, capture and replacement checks
+passed on macOS 26.7.1. The runtime-3 development app passes local assembly,
+154 native checks, permission denial/recovery, real mono Opus transport and
+WebRTC browser delivery through the validation server. Ten-minute packet continuity
+and native cleanup pass. Operator-confirmed audibility, physical A/V sync and final
+signed delivery remain T04. Hosted download and oldest-OS validation remain separate gates.
 
 Camera-free app state and transport checks:
 
 ```sh
 app_check_dir=$(mktemp -d)
-xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/PreviewReader.swift macos/CameraApp/PreviewController.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$app_check_dir/camera-app-tests"
+xcrun swiftc -swift-version 5 -module-cache-path "$app_check_dir/modules" \
+  macos/CameraApp/{CameraState,CameraPermissions,HelperClient,PreviewReader,PreviewController,CameraModel}.swift \
+  macos/CameraAppTests/{AudioFixtures,AudioTests,main}.swift -o "$app_check_dir/camera-app-tests"
 "$app_check_dir/camera-app-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
 rm -rf "$app_check_dir"
 ```
+
+The native tests use T03's shared audio JSON, fake permission/device providers,
+and fixture helpers; none can activate a sensor. Set `CAMSTREAM_NATIVE_HELPER` to
+a freshly built helper beside verified runtime tools to add read-only `config` /
+`status` integration checks. `CameraAppTests/AudioUI/main.swift` is an isolated
+SwiftUI composition for interactive review: it links only in-memory fixtures and
+never launches a helper or calls the system permission provider. It is not a
+production bundle or an end-to-end capture proof.
+
+`python3 -m unittest discover -s macos -p 'test_native_permissions.py' -v`
+checks production microphone usage text/entitlement selection through mocked
+assembly, preserving the camera-only proof identity. Production builds select
+`CameraApp/entitlements.plist`; no permission grant is requested by packaging.
 
 ## Minimum macOS validation
 
@@ -175,8 +204,9 @@ versions are hosted separately from app versions.
 [Runtime-1](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-1)
 is published for the historical signed 0.1.0/0.1.1 builds; its anonymous download
 passes the pinned hash and inventory checks. [Runtime-2](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-2)
-is published for preview-enabled builds and is selected by the current lock;
-never substitute runtime-1 for it.
+is published for historical preview-enabled builds. The current lock selects
+the local audio-capable runtime-3 pack, whose URL is unset; supply the locked
+archive or preseed the cache. Neither older pack satisfies the current lock.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
 
@@ -433,7 +463,7 @@ queue overflow, EOF/read failure, signal or output failure ends the session.
 | `start` | Acknowledges `starting`; poll `status` for actual readiness. Refuses an existing owned or external capture. |
 | `status` | `{state,url?,frames?,audio:{enabled,state,packets}}`; URL never contains credentials. Audio-on `streaming` requires video frames and actual audio packets. |
 | `stop` | Cancels and reaps capture owned by this session, then replies `stopped`. Does not stop another CLI owner's capture. |
-| `export` | Recreates private connection files while stopped; returns `{configuration,environment}` file paths, never their contents. |
+| `export` | Recreates private connection files while stopped or live, preserving capture and credentials; returns `{configuration,environment}` file paths, never their contents. |
 | `quit` | Same owned cleanup as stop, replies, then exits. Closing stdin may end the session before the queued reply; helper exit is the Quit completion boundary. |
 
 On open, the helper emits `{"version":1,"event":"ready","result":{"protocol":1,"preview":1,"audio":1}}`.
@@ -481,9 +511,10 @@ has no preview or recording and is independent of the mixed Kasa playback gate.
 
 ## Optional microphone backend (audio feature v1)
 
-The T03 backend is ready for native integration; the production settings UI and
-microphone permission presentation remain T05 work. Do not treat an older native
-shell paired with this helper as a completed audio app. No app starts capture at
+The T03 backend and T05 native controls implement audio feature v1. T04 development
+assembly, real microphone transport/browser delivery, continuity and cleanup pass;
+operator-confirmed audibility, physical sync and signed identity validation remain
+pending. No app starts capture at
 launch, Save, discovery or export. A saved opt-in requires a fresh explicit Start.
 
 `audio_enabled` defaults to false. `audio_device_id` is the exact opaque macOS UID,
@@ -517,12 +548,13 @@ wrong-version or duplicate-ID inventories fail as a whole. Full IDs appear only
 in private settings and explicit discovery/config replies, not failure messages.
 
 The ready event adds `audio:1` without changing protocol 1: the existing Swift
-transport reads ready fields additively. T05 must explicitly default absent config
-fields in Codable and gate audio controls/requests on this capability. Older helpers
+transport reads ready fields additively. The native shell explicitly defaults absent config
+fields in Codable and gates audio controls/requests on this capability. Older helpers
 omit it and reject unknown audio config fields, even when false; use the legacy
 request shape for audio-off or require a matching helper. Shared, synthetic-only
 examples are in [fixtures/audio-protocol.json](fixtures/audio-protocol.json).
-No native implementation is included in T03.
+T05 keeps microphone identity byte-exact in selection keys and config equality,
+including Unicode strings that Swift otherwise considers canonically equal.
 
 `audio.state` is `disabled`, `waiting`, `live`, `stopping`, `stopped` (enabled but
 inactive), or `failed`. Packets count actual increasing-timestamp Opus packets,
@@ -546,14 +578,29 @@ failure and stopped/failed audio state. Within that app session, subsequent stat
 replies retain the failure until explicit Stop, successful Configure or a new
 Start. Stop waits for and discards the old run's result before acknowledging, so a
 late failure cannot overwrite a newer session. A fresh helper starts stopped.
-Permission-required/denied labels remain native AVFoundation state in T05; a
+Permission-required/denied labels come from native AVFoundation state; a
 backend capture error alone cannot establish that permission was denied.
 
 The exported server profile has `audio: true` only for an enabled configuration.
 Reimport/reload that profile through the existing server configuration path, then
 explicitly unmute the browser. Export does not update a running server, and browser
-mute changes playback only. Final real microphone/browser and signed identity
-validation remain T04.
+mute changes playback only. Development delivery passes; operator-confirmed
+audibility, physical sync and signed identity validation remain T04.
+
+To update an existing server, stop capture only to change and save microphone
+settings. Export connection files before or after restarting capture. Use a server build with the `rtsp` provider; older
+EC70-only builds reject this camera. Merge the exported camera and its grant into
+the existing YAML, replacing `REPLACE_WITH_YOUR_SERVE_LOGIN` with the existing
+authorized operator. Supply the exported `MAC_CAMERA_USERNAME` and
+`MAC_CAMERA_PASSWORD` through the service's private environment file. Preserve
+other cameras, grants and secrets. Ensure `limits.max_sources` covers the resulting
+catalog and the configured backend port pools still cover those limits.
+
+Run `camstream config validate --config /path/to/config.yaml` before the controlled
+server restart. Validation checks configuration without connecting to the camera;
+it does not prove credential correctness or delivery. Start the Mac app explicitly,
+select its camera in the browser and choose **Unmute**. A previously imported
+`audio: false` profile remains video-only until it is updated and the server reloads.
 
 ### Downgrading to a video-only helper
 
@@ -648,14 +695,16 @@ that a remote Camstream server can reach this Mac.
 
 Runtime-2 adds bounded raw BGRA output for preview (up to 640×360 at 15 fps).
 Runtime-3 preserves those preview components and adds the verified Opus/UID/FIFO
-runtime. The pack alone does not add microphone configuration, readiness supervision
-or UI to Camstream Camera. The existing app assembly copies all locked tools but
-retains its current camera-only permission configuration; microphone app entitlements,
-usage text and final signed/browser validation remain the later audio integration tasks.
-Do not treat the development assembly as a completed microphone application.
+runtime. The pack alone does not add microphone configuration, supervision or UI.
+T03/T05 now supply those source changes and production permission metadata. The
+older runtime-check development assembly remains camera-only. The T04 local app
+includes microphone permissions and passes real transport/browser delivery;
+operator-confirmed audibility, physical sync and signed identity validation remain
+pending. Earlier
+video-only artifacts do not establish optional-audio delivery.
 
-For browser onboarding, stop capture, export the connection YAML and optional
-credentials file, then restart capture. In the native development viewer, choose
+For video-only browser onboarding, keep capture running and export or reveal both
+connection files in Connection Details. In the native development viewer, choose
 Add Camera and import those files. Review the endpoint, test preview, save, then
 choose Watch Camera. YAML alone requires entering credentials. Exported access
 grants are ignored; the saved camera belongs to the signed-in creator.

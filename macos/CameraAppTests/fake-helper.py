@@ -7,7 +7,11 @@ import subprocess
 
 state = Path(sys.argv[-1])
 mode = state.name
-print(json.dumps({'version': 1, 'event': 'ready', 'result': {'protocol': 1}}), flush=True)
+fixtures = json.loads((Path(__file__).parent.parent / 'fixtures/audio-protocol.json').read_text())
+ready = fixtures['ready'] if mode == 'audio-contract' else fixtures['legacy_ready']
+if mode == 'future-audio-contract':
+    ready['result']['audio'] = 2
+print(json.dumps(ready), flush=True)
 if mode == 'eof':
     sys.exit(0)
 if mode == 'exit-before-eof':
@@ -18,7 +22,21 @@ if mode == 'exit-before-eof':
     sys.exit(0)
 for line in sys.stdin:
     request = json.loads(line)
-    if mode == 'bad-version':
+    if mode in ('audio-contract', 'legacy-contract', 'future-audio-contract'):
+        if request['method'] == 'configure':
+            config = request['config']
+            if mode != 'audio-contract' and ('audio_enabled' in config or 'audio_device_id' in config):
+                sys.exit(90)
+            (state / 'received-config.json').write_text(json.dumps(config))
+            result = config
+        elif request['method'] == 'audio_devices':
+            if mode != 'audio-contract':
+                sys.exit(91)
+            result = fixtures['discovery_reply']['result']
+        else:
+            result = {'state': 'stopped'}
+        print(json.dumps({'version': 1, 'id': request['id'], 'result': result}), flush=True)
+    elif mode == 'bad-version':
         print(json.dumps({'version': 2}), flush=True)
     elif mode == 'wrong-id':
         print(json.dumps({'version': 1, 'id': 'other', 'result': {}}), flush=True)

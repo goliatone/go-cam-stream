@@ -147,8 +147,9 @@ both. The preview's own bar is hidden, so the app fills each size.
 
 The project's Vite serves both versions with the working tree's dependencies; the
 script notes when the ref's lock file differs. A local Chrome or Chromium captures
-them, headless, and closes when the run ends. Set `CHROME_PATH`, or pass
-`--chrome`, if Chrome is not in the usual place.
+them, headless. However the run ends, Ctrl-C included, the browser closes and the
+temporary folder is removed. Set `CHROME_PATH`, or pass `--chrome`, if Chrome is
+not in the usual place.
 
 To keep runs repeatable:
 
@@ -163,9 +164,11 @@ To keep runs repeatable:
 
 The report goes to `.snapshots/`, which Git ignores. `index.html` shows each
 differing view's two captures and a diff, with pixels over the tolerance in red
-and the others that differ in amber; `report.json` lists every view. The command
-exits 0 when no view differs, 1 when one does or a state throws, and 2 when it
-cannot run.
+and the others that differ in amber; `report.json` lists every view. Views still
+changing when captured are listed with the reasons, since they may differ by
+chance. An address that takes longer than 10 s to load is named, and later views
+do not wait for it. The command exits 0 when no view differs, 1 when one does or
+a state throws, and 2 when it cannot run.
 
 A view differs when a pixel differs by more than 3 levels in a colour channel, or
 when more than 1,000 pixels differ at all. From run to run, Chrome has drawn a
@@ -240,11 +243,17 @@ distinguishes tested behavior from pending target-browser/deployment gates.
 
 ## Add a camera
 
+For Firefox with the native Mac development host, use
+`./taskfile dev:serve PORT --media-address YOUR_MAC_PRIVATE_IPV4`. The browser
+page and same-Mac camera URL remain localhost; only WebRTC media uses the
+explicit private interface. [Verified flow and constraints](../docs/browser-client-compatibility.md).
+
 Enable the configured principal in [management settings](../config/README.md#managed-camera-state).
 The native development host enables its fixed local principal automatically.
 Choose **Add Camera**, enter an RTSP address and optional credentials, or import
 the Mac companion's exported YAML and optional credentials file. In the Mac app,
-stop capture before exporting, then start it before **Test connection**. YAML alone
+open **Connection Details → Export Connection Files → Show Files in Finder**
+while capture runs. Import both files; localhost also requires credentials. YAML alone
 requires entering credentials in **Edit details**. Exported grants are ignored.
 
 Review the address and access guidance, test until decoded live video is verified
