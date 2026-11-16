@@ -401,12 +401,10 @@ func TestConcurrentAuthorizedCreateAndCanceledNegotiation(t *testing.T) {
 	var wg sync.WaitGroup
 	failures := make(chan error, 4)
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err := s.CreateSession(actor("alice"), "room1", "default", api.CreateSessionRequest{Offer: api.SDPOffer{Type: "offer", SDP: "v=0\r\n"}})
 			failures <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(failures)

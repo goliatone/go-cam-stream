@@ -25,17 +25,15 @@ func TestCatalogPublicationPreservesReadsAndAdmission(t *testing.T) {
 		t.Fatal("manager not admitted")
 	}
 	var wg sync.WaitGroup
-	for k := 0; k < 8; k++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
+	for range 8 {
+		wg.Go(func() {
+			for range 100 {
 				list, e := service.List(manager)
 				if e != nil || list.Revision == nil || list.Revision.RuntimeEpoch != "epoch" {
 					t.Error("inconsistent generation", e)
 				}
 			}
-		}()
+		})
 	}
 	for generation := uint64(2); generation < 20; generation++ {
 		if err := service.PublishCatalog(catalog, api.CatalogRevision{RuntimeEpoch: "epoch", Generation: generation}, []string{"new-manager"}, nil); err != nil {

@@ -20,7 +20,7 @@ func TestExpiredDraftDestroysPrivateCredential(t *testing.T) {
 	defer resolver.Close()
 	service := &CameraManagementService{gate: make(chan struct{}, 1), options: ManagementOptions{Policy: policy, Secrets: resolver}, epoch: "epoch", drafts: map[string]*cameraDraft{}, operations: map[string]*managementOperation{}, identities: NewIdentityIndex()}
 	actor := WithPrincipal(context.Background(), "manager")
-	review, err := service.CreateDraft(actor, api.CreateDraftRequest{Mutation: api.Mutation{OperationKey: strings.Repeat("a", 32), RuntimeEpoch: "epoch"}, DraftInput: api.DraftInput{Name: "Camera", Endpoint: "rtsp://localhost:18556/macbook", Authentication: api.AuthenticationCredentials, Credentials: &api.Credentials{Username: "camera", Password: "private"}}})
+	review, err := service.CreateDraft(actor, api.CreateDraftRequest{OperationKey: strings.Repeat("a", 32), RuntimeEpoch: "epoch", Name: "Camera", Endpoint: "rtsp://localhost:18556/macbook", Authentication: api.AuthenticationCredentials, Credentials: &api.Credentials{Username: "camera", Password: "private"}})
 	if err != nil {
 		t.Fatal(err)
 	}

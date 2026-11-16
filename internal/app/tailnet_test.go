@@ -101,7 +101,7 @@ func TestT09Tailnet(t *testing.T) {
 		session api.Session
 	}
 	var peers []*remotePeer
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		engine := pion.SettingEngine{}
 		engine.SetNetworkTypes([]pion.NetworkType{network})
 		if ip := net.ParseIP(os.Getenv("CAMSTREAM_T09_CLIENT_IP")); ip != nil {

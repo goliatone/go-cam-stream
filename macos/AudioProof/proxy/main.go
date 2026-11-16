@@ -31,7 +31,7 @@ func adapt(args []string, s selection) ([]string, error) {
 		return nil, errors.New("invalid audio selection")
 	}
 	out := []string{}
-	for i := 0; i < len(args); i++ {
+	for i := range args {
 		if args[i] == "-an" {
 			continue
 		}

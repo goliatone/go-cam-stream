@@ -141,8 +141,7 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 			r, decodeErr := decodeAppRequest(line)
 			if decodeErr != nil {
 				reply := AppReply{Version: 1, Error: appError("invalid_request")}
-				var audioErr audioError
-				if errors.As(decodeErr, &audioErr) {
+				if _, ok := errors.AsType[audioError](decodeErr); ok {
 					reply.ID = r.ID
 					reply.Error = CaptureFailure(decodeErr)
 				}
@@ -304,8 +303,7 @@ func (a *appSession) configure(ctx context.Context, c Config) (any, *AppError) {
 		return nil, appError("busy")
 	}
 	if err := (ConfigureHandler{Service: a.service}).Execute(ctx, Configure{Config: c}); err != nil {
-		var audioErr audioError
-		if errors.As(err, &audioErr) {
+		if _, ok := errors.AsType[audioError](err); ok {
 			return nil, CaptureFailure(err)
 		}
 		return nil, appError("configuration_failed")

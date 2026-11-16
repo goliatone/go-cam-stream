@@ -37,8 +37,7 @@ func audioFailure(code string) error { return audioError(code) }
 // CaptureFailure crosses the worker boundary using only allowlisted codes and
 // fixed text, never runtime diagnostics, private device IDs or credentials.
 func CaptureFailure(err error) *AppError {
-	var e audioError
-	if errors.As(err, &e) {
+	if e, ok := errors.AsType[audioError](err); ok {
 		return &AppError{Code: string(e), Message: e.Error()}
 	}
 	return appError("capture_failed")

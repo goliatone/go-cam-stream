@@ -285,13 +285,11 @@ func TestServiceConcurrentAdmission(t *testing.T) {
 	s := testService(t, b, cs.ServiceOptions{MaxViewers: 8, PerSourceViewers: 4})
 	var wg sync.WaitGroup
 	results := make(chan error, 40)
-	for i := 0; i < 40; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 40 {
+		wg.Go(func() {
 			_, err := s.CreateSession(context.Background(), testCamera("alias", "one"), "main", cs.Offer{SDP: "offer"})
 			results <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
@@ -407,7 +405,7 @@ func TestServiceFaultLatchRequiresOperatorReset(t *testing.T) {
 	if err = s.CloseSession(context.Background(), v.ID); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err = s.CreateSession(context.Background(), testCamera("hall", "one"), "main", cs.Offer{SDP: "offer"})
 		code(t, err, cs.CodeSourceUnavailable)
 	}

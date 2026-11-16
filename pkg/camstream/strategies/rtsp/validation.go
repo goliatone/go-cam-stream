@@ -23,7 +23,7 @@ func normalizeHost(host string) (string, bool) {
 	if len(host) == 0 || len(host) > 253 {
 		return "", false
 	}
-	for _, label := range strings.Split(host, ".") {
+	for label := range strings.SplitSeq(host, ".") {
 		if !validHostLabel(label) {
 			return "", false
 		}

@@ -31,8 +31,7 @@ func (b *Backend) monitor() {
 			default:
 				continue
 			}
-			wg.Add(1)
-			go func() { defer wg.Done(); defer leave(s); b.poll(s) }()
+			wg.Go(func() { ; defer leave(s); b.poll(s) })
 		}
 		wg.Wait()
 	}

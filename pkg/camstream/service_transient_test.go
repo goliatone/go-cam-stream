@@ -42,7 +42,7 @@ func TestTransientRetirementBoundsMetadataAndPreservesViewers(t *testing.T) {
 	if err = s.RetireTransientSource(ctx, ordinary, "main"); err == nil {
 		t.Fatal("ordinary source retired")
 	}
-	for n := 0; n < 20; n++ {
+	for n := range 20 {
 		camera := testCamera(fmt.Sprintf("test-%d", n), fmt.Sprintf("device-%d", n))
 		test, err := s.CreateTransientSession(ctx, camera, "main", cs.Offer{SDP: "offer"})
 		if err != nil {

@@ -368,9 +368,7 @@ func (s *Service) pollService() {
 		default:
 			continue
 		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			defer serviceLeave(src)
 			ctx, cancel := context.WithTimeout(s.runtime, s.options.CleanupTimeout)
 			defer cancel()
@@ -378,7 +376,7 @@ func (s *Service) pollService() {
 				_ = s.observeViewer(ctx, v) //nolint:errcheck // Errors retain unknown state; polling is not a media retry.
 			}
 			_ = s.observeSource(ctx, src) //nolint:errcheck // Unknown state withholds admission until a later observation.
-		}()
+		})
 	}
 	workers.Wait()
 }

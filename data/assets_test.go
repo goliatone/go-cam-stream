@@ -2,6 +2,7 @@ package data
 
 import (
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,9 +64,7 @@ func TestMissingOrCorruptAssetsFailConstruction(t *testing.T) {
 	}
 	for _, name := range []string{"index.html", "manifest.json"} {
 		broken := fstest.MapFS{}
-		for k, v := range original {
-			broken[k] = v
-		}
+		maps.Copy(broken, original)
 		delete(broken, name)
 		if _, err = webHandler(broken, http.NotFoundHandler()); err == nil {
 			t.Fatal("accepted missing", name)
@@ -76,9 +75,7 @@ func TestMissingOrCorruptAssetsFailConstruction(t *testing.T) {
 			continue
 		}
 		broken := fstest.MapFS{}
-		for k, v := range original {
-			broken[k] = v
-		}
+		maps.Copy(broken, original)
 		delete(broken, name)
 		if _, err = webHandler(broken, http.NotFoundHandler()); err == nil {
 			t.Fatal("accepted missing", name)

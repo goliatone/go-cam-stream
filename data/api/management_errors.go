@@ -106,8 +106,7 @@ func managementErrorBody(code ManagementErrorCode) ManagementErrorBody {
 	}
 }
 func ManagementPublicError(err error) ManagementErrorResponse {
-	var managed *ManagementError
-	if errors.As(err, &managed) {
+	if managed, ok := errors.AsType[*ManagementError](err); ok {
 		return ManagementErrorResponse{managementErrorBody(managed.Code)}
 	}
 	e := PublicError(err).Error

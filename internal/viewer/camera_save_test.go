@@ -47,9 +47,7 @@ func TestManagementSaveConcurrentReplayRestartAndDisabledAccess(t *testing.T) {
 	d, r := testedDraft(t, s, ctx)
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			saved, err := s.SaveCamera(ctx, r)
 			if err != nil {
 				if api.ManagementPublicError(err).Error.Code == string(api.CodeOperationInProgress) {
@@ -61,7 +59,7 @@ func TestManagementSaveConcurrentReplayRestartAndDisabledAccess(t *testing.T) {
 			if saved.CameraID != d.CandidateID {
 				t.Error("duplicate save identity")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	saved, err := s.SaveCamera(ctx, r)

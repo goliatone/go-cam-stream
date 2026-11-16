@@ -29,7 +29,7 @@ func TestManagementExpiredPatchNeverRecoversAsSuccess(t *testing.T) {
 	backend.resetFailure = true
 	backend.mu.Unlock()
 	viewer.ExpireManagementDraftForTest(s, d.ID)
-	patch := api.PatchDraftRequest{Mutation: mutation(3), ExpectedRevision: d.Revision, DraftInput: api.DraftInput{Name: "Edited", Endpoint: d.Endpoint, Authentication: api.AuthenticationAnonymous}}
+	patch := api.PatchDraftRequest{Mutation: mutation(3), ExpectedRevision: d.Revision, Name: "Edited", Endpoint: d.Endpoint, Authentication: api.AuthenticationAnonymous}
 	if _, err := s.PatchDraft(ctx, d.ID, patch); err == nil {
 		t.Fatal("expected expiry cleanup failure")
 	}

@@ -99,7 +99,7 @@ func importCamera(request api.ImportDraftRequest) (api.DraftInput, error) {
 	out := api.DraftInput{Name: camera.Name, Endpoint: u.String(), Authentication: api.AuthenticationCredentials}
 	if request.Env != "" {
 		values := map[string]string{}
-		for _, line := range strings.Split(strings.ReplaceAll(request.Env, "\r\n", "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.ReplaceAll(request.Env, "\r\n", "\n"), "\n") {
 			if line == "" {
 				continue
 			}

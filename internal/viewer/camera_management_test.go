@@ -68,7 +68,7 @@ func mutation(n int) api.Mutation {
 	return api.Mutation{OperationKey: fmt.Sprintf("%032x", n), RuntimeEpoch: "epoch"}
 }
 func draftRequest(n int) api.CreateDraftRequest {
-	return api.CreateDraftRequest{Mutation: mutation(n), DraftInput: api.DraftInput{Name: "Camera", Endpoint: "rtsp://localhost:18556/macbook", Authentication: api.AuthenticationAnonymous}}
+	return api.CreateDraftRequest{Mutation: mutation(n), Name: "Camera", Endpoint: "rtsp://localhost:18556/macbook", Authentication: api.AuthenticationAnonymous}
 }
 func TestManagementDraftIdempotencyAndOwnership(t *testing.T) {
 	service, ctx, _ := managementFixture(t)
@@ -78,15 +78,13 @@ func TestManagementDraftIdempotencyAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	for j := 0; j < 12; j++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 12 {
+		wg.Go(func() {
 			result, err := service.CreateDraft(ctx, request)
 			if err != nil || result.ID != first.ID {
 				t.Error("duplicate operation allocated draft", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	request.Name = "Changed"
@@ -99,7 +97,7 @@ func TestManagementDraftIdempotencyAndOwnership(t *testing.T) {
 	if _, err = service.CreateDraft(viewer.WithPrincipal(ctx, "viewer"), draftRequest(2)); err == nil {
 		t.Fatal("viewer can manage")
 	}
-	patch := api.PatchDraftRequest{Mutation: mutation(2), ExpectedRevision: first.Revision, DraftInput: api.DraftInput{Name: "Edited", Endpoint: first.Endpoint, Authentication: api.AuthenticationAnonymous}}
+	patch := api.PatchDraftRequest{Mutation: mutation(2), ExpectedRevision: first.Revision, Name: "Edited", Endpoint: first.Endpoint, Authentication: api.AuthenticationAnonymous}
 	edited, err := service.PatchDraft(ctx, first.ID, patch)
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +167,7 @@ func TestManagementPreviewEvidenceAndAliasReservation(t *testing.T) {
 	if remaining != 0 {
 		t.Fatal("probe metadata retained")
 	}
-	patch := api.PatchDraftRequest{Mutation: mutation(7), ExpectedRevision: draft.Revision, DraftInput: api.DraftInput{Name: "Edited", Endpoint: draft.Endpoint, Authentication: api.AuthenticationAnonymous}}
+	patch := api.PatchDraftRequest{Mutation: mutation(7), ExpectedRevision: draft.Revision, Name: "Edited", Endpoint: draft.Endpoint, Authentication: api.AuthenticationAnonymous}
 	changed, err := service.PatchDraft(ctx, draft.ID, patch)
 	if err != nil || changed.Test != nil || changed.State != api.DraftReady {
 		t.Fatal("edit retained pass", err)

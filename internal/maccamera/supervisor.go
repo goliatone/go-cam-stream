@@ -144,8 +144,8 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioPro
 	var endpoint *PreviewEndpoint
 	if action == "preview_attach" && state == "streaming" {
 		endpoint, _ = preview.attach() //nolint:errcheck // Missing endpoint is the sanitized unavailable response.
-	} else if strings.HasPrefix(action, "preview_detach:") {
-		preview.detach(strings.TrimPrefix(action, "preview_detach:"))
+	} else if after, ok := strings.CutPrefix(action, "preview_detach:"); ok {
+		preview.detach(after)
 	} else if action == "stop" {
 		state = "stopping"
 		cancel()
