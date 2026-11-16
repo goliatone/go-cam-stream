@@ -4,9 +4,12 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"syscall"
 
 	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/config"
@@ -45,6 +48,19 @@ func NewDevelopment(cfg config.Config, logger admin.Logger, options ...Developme
 		return nil, err
 	}
 	controller.server.Handler = developmentIngress(controller.server.Handler, cfg)
+	controller.onListen = func(err error) {
+		if logger == nil {
+			return
+		}
+		switch {
+		case errors.Is(err, syscall.EADDRINUSE):
+			logger.Error(fmt.Sprintf("Cannot start development server: %s is already in use. Choose another port (./taskfile dev:serve 8087) or stop the process using it.", cfg.Listen))
+		case err != nil:
+			logger.Error(fmt.Sprintf("Cannot bind development server to %s: %v", cfg.Listen, err))
+		default:
+			logger.Info(fmt.Sprintf("Development server: http://%s (local access without login)", cfg.Listen))
+		}
+	}
 	return controller, nil
 }
 

@@ -5,14 +5,16 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/goliatone/go-cam-stream/config"
 	"github.com/goliatone/go-cam-stream/internal/app"
 	"github.com/goliatone/go-cam-stream/internal/transport/cli"
+	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
 	"github.com/goliatone/go-cam-stream/pkg/camstream/backends/go2rtc"
 	"github.com/goliatone/go-logger/glog"
 )
@@ -26,10 +28,13 @@ func main() {
 func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	logger := glog.NewLogger(glog.WithWriter(os.Stderr)).WithLevel("warn")
+	logger := glog.NewLogger(glog.WithWriter(os.Stderr)).WithLevel("info")
 	return cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, func(ctx context.Context, path string) error {
 		cfg, err := config.Load(ctx, path)
 		if err != nil {
+			return err
+		}
+		if err = overridePort(&cfg, os.Getenv("CAMSTREAM_DEV_PORT")); err != nil {
 			return err
 		}
 		controller, err := app.NewDevelopment(cfg, logger, app.DevelopmentOptions{
@@ -39,7 +44,29 @@ func run() int {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Development server: http://%s (local access without login)\n", cfg.Listen)
 		return controller.Run(ctx)
 	})
+}
+
+// The task passes its port override only to this development executable. Keep
+// the configured loopback host and validate the resulting config normally.
+func overridePort(cfg *config.Config, port string) error {
+	if port == "" {
+		return nil
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return cs.NewError(cs.CodeInvalidArgument, nil)
+		}
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 {
+		return cs.NewError(cs.CodeInvalidArgument, nil)
+	}
+	host, _, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return cs.NewError(cs.CodeInvalidArgument, nil)
+	}
+	cfg.Listen = net.JoinHostPort(host, strconv.FormatUint(n, 10))
+	return nil
 }

@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -13,7 +14,42 @@ import (
 	"testing"
 
 	"github.com/goliatone/go-cam-stream/data/api"
+	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
+	"github.com/goliatone/go-logger/glog"
 )
+
+func TestDevelopmentOccupiedPort(t *testing.T) {
+	cfg := testConfig(t)
+	listener, err := new(net.ListenConfig).Listen(t.Context(), "tcp", cfg.Listen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := listener.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	var output bytes.Buffer
+	logger := glog.NewLogger(glog.WithWriter(&output)).WithLevel("info")
+	c, err := NewDevelopment(cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Run(t.Context()); cs.DescribeError(err).Code != cs.CodeServerUnavailable {
+		t.Fatal("expected public server_unavailable", err)
+	}
+	message := output.String()
+	if !strings.Contains(message, cfg.Listen+" is already in use") || !strings.Contains(message, "dev:serve 8087") || strings.Contains(message, "Development server: http://") {
+		t.Fatal("missing actionable failure or premature success", message)
+	}
+	lock, err := acquireInstallation(cfg.Backend.RuntimeDir, cfg.InstallationID)
+	if err != nil {
+		t.Fatal("failed binding retained installation lock", err)
+	}
+	if err = lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDevelopmentBrowserAccess(t *testing.T) {
 	cfg := testConfig(t)

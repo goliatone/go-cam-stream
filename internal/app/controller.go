@@ -46,6 +46,8 @@ type Controller struct {
 	ready    atomic.Bool
 	started  atomic.Bool
 	closeMu  sync.Mutex
+	// Optional local development console reporting; production leaves this unset.
+	onListen func(error)
 }
 
 func NewDefault(cfg config.Config, logger admin.Logger) (*Controller, error) {
@@ -118,6 +120,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	c.lock = lock
 	listener, err := new(net.ListenConfig).Listen(runtimeCtx, "tcp", c.cfg.Listen)
+	if c.onListen != nil {
+		c.onListen(err)
+	}
 	if err != nil {
 		cancel()
 		cleanup, done := context.WithTimeout(context.Background(), c.cfg.OperationTimeout)
