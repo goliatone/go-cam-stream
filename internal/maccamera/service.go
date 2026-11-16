@@ -18,6 +18,8 @@ import (
 type Service struct {
 	Dir   string
 	Tools Tools
+	// StartupDeadline is passed only to the private worker by Start.
+	StartupDeadline time.Time
 }
 
 func DefaultDir() (string, error) {
@@ -119,6 +121,9 @@ func (s *Service) Configure(ctx context.Context, c Config) error {
 	if err != nil {
 		return err
 	}
+	if err = s.validateAudio(ctx, c); err != nil {
+		return err
+	}
 	secretPath := filepath.Join(s.Dir, "credentials.json")
 	var secret credentials
 	if err = readJSON(secretPath, &secret); errors.Is(err, os.ErrNotExist) {
@@ -159,17 +164,26 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "__supervise", "--dir", s.Dir) //nolint:noctx // Cancellation closes the lifetime pipe so the supervisor can reap its children.
+	cmd := exec.Command(exe, "__supervise", "--dir", s.Dir, "--start-deadline", fmt.Sprint(time.Now().Add(audioStartupTimeout).UnixNano()), "--report-error") //nolint:noctx // Cancellation closes the lifetime pipe so the supervisor can reap its children.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	pipe, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
+	report, workerReport, err := os.Pipe()
+	if err != nil {
+		_ = pipe.Close()
+		return err
+	}
+	defer report.Close()
+	defer workerReport.Close()
+	cmd.ExtraFiles = []*os.File{workerReport}
 	cmd.Stdout, cmd.Stderr = out, stderr
 	if err = cmd.Start(); err != nil {
 		_ = pipe.Close() //nolint:errcheck // EOF, including a previously closed pipe, terminates the supervisor.
 		return err
 	}
+	_ = workerReport.Close()
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -182,12 +196,19 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 	err = cmd.Wait()
 	_ = pipe.Close() //nolint:errcheck // EOF, including a previously closed pipe, terminates the supervisor.
 	if err != nil {
+		var failure AppError
+		if json.NewDecoder(io.LimitReader(report, 4096)).Decode(&failure) == nil {
+			if _, ok := audioMessages[failure.Code]; ok {
+				return audioFailure(failure.Code)
+			}
+		}
 		return errors.New("camera stopped with an error; see the supervisor message")
 	}
 	return nil
 }
 
 type Status struct {
+	Audio   AudioStatus      `json:"audio"`
 	Preview *PreviewEndpoint `json:"preview,omitempty"`
 	State   string           `json:"state"`
 	URL     string           `json:"url,omitempty"`
@@ -205,7 +226,7 @@ func (s *Service) request(ctx context.Context, action string) (Status, error) {
 	conn, err := d.DialContext(ctx, "unix", filepath.Join(dir, "control.sock"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-			return Status{State: "stopped"}, nil
+			return s.stoppedStatus("stopped"), nil
 		}
 		return Status{}, err
 	}
@@ -246,4 +267,29 @@ func (s *Service) Stop(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (s *Service) stoppedStatus(state string) Status {
+	c, _ := s.Configuration()
+	return Status{State: "stopped", Audio: (*audioProgress)(nil).status(c, state)}
+}
+
+// ExportLegacy writes a separate video-only configuration for a stopped
+// downgrade. It does not overwrite active settings or rotate credentials.
+func (s *Service) ExportLegacy() (string, error) {
+	lock, err := s.lock()
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close() //nolint:errcheck // Release configuration lock.
+	c, _, err := load(s.Dir)
+	if err != nil {
+		return "", err
+	}
+	legacy := map[string]any{"device": c.Device, "listen": c.Listen, "host": c.Host, "port": c.Port, "path": c.Path, "width": c.Width, "height": c.Height, "fps": c.FPS}
+	path := filepath.Join(s.Dir, "camera-legacy.json")
+	if err = writeJSON(path, legacy); err != nil {
+		return "", err
+	}
+	return path, nil
 }

@@ -20,14 +20,16 @@ import (
 const MediaMTXVersion = "v1.21.3"
 
 type Config struct {
-	Device string `json:"device"`
-	Listen string `json:"listen"`
-	Host   string `json:"host"`
-	Port   int    `json:"port"`
-	Path   string `json:"path"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	FPS    int    `json:"fps"`
+	AudioEnabled  bool   `json:"audio_enabled"`
+	AudioDeviceID string `json:"audio_device_id"`
+	Device        string `json:"device"`
+	Listen        string `json:"listen"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	Path          string `json:"path"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
+	FPS           int    `json:"fps"`
 }
 
 func DefaultConfig() Config {
@@ -39,7 +41,7 @@ var hostName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$`)
 
 func (c Config) Validate() error {
 	if c.Device == "" || len(c.Device) > 200 || strings.ContainsAny(c.Device, ":\r\n\x00") || strings.Contains(strings.ToLower(c.Device), "capture screen") {
-		return errors.New("choose a named webcam; screen and audio capture are not supported")
+		return errors.New("choose a named webcam; screen capture is not supported")
 	}
 	// IPv4 binding keeps the local publisher endpoint unambiguous.
 	if c.Listen != "127.0.0.1" && c.Listen != "0.0.0.0" {
@@ -50,6 +52,11 @@ func (c Config) Validate() error {
 	}
 	if c.Port < 1024 || c.Port > 65535 || !safeID.MatchString(c.Path) {
 		return errors.New("use port 1024–65535 and a simple alphanumeric stream path")
+	}
+	if c.AudioEnabled || c.AudioDeviceID != "" {
+		if !validAudioID(c.AudioDeviceID) {
+			return audioFailure("audio_selection_invalid")
+		}
 	}
 	return c.validateVideo()
 }
@@ -165,10 +172,10 @@ cameras:
       username_ref: env://MAC_CAMERA_USERNAME
       password_ref: env://MAC_CAMERA_PASSWORD
       profiles:
-        - {id: default, path: /%s, audio: false}
+        - {id: default, path: /%s, audio: %t}
 access:
   - login: REPLACE_WITH_YOUR_SERVE_LOGIN
     grants:
       - {camera_id: %s, streams: [default], view: true, diagnose: true, reconnect: true}
-`, c.Path, c.Path, c.Host, c.Port, c.Path, c.Path))
+`, c.Path, c.Path, c.Host, c.Port, c.Path, c.AudioEnabled, c.Path))
 }

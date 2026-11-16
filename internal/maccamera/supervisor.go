@@ -51,6 +51,11 @@ func (c *child) stop() {
 // Supervise is the private foreground-owner worker. It never detaches from its
 // lifetime pipe and it does not accept arbitrary executable paths from clients.
 func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writer) error {
+	started := time.Now()
+	deadline := s.StartupDeadline
+	if deadline.IsZero() {
+		deadline = started.Add(audioStartupTimeout)
+	}
 	lock, err := s.lock()
 	if err != nil {
 		return err
@@ -66,6 +71,13 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 		_, _ = io.Copy(io.Discard, lifetime) //nolint:errcheck // EOF or read failure both end ownership.
 		cancel()
 	}()
+	if err = s.audioPreflight(ctx, c, deadline); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+
 	dir, err := s.runtimeDir()
 	if err != nil {
 		return err
@@ -83,17 +95,18 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 	}
 	defer os.Remove(configPath) //nolint:errcheck // Runtime secrets are also replaced on the next owned start.
 	var frames atomic.Int64
+	audio := audioProgress{deadline: deadline}
 	preview := &previewManager{ctx: ctx, config: c, secret: secret, tool: s.Tools.FFmpeg, dir: dir, frames: &frames}
 	defer preview.close()
-	listener, err := s.control(ctx, c, &frames, cancel, dir, preview)
+	listener, err := s.control(ctx, c, &frames, &audio, cancel, dir, preview)
 	if err != nil {
 		return err
 	}
 	defer listener.Close() //nolint:errcheck // Owned Unix listener also removes its socket.
-	return s.runMedia(ctx, c, configPath, &frames, out)
+	return s.runMedia(ctx, c, secret, dir, configPath, &frames, &audio, deadline, out)
 }
 
-func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, cancel context.CancelFunc, dir string, preview *previewManager) (net.Listener, error) {
+func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, audio *audioProgress, cancel context.CancelFunc, dir string, preview *previewManager) (net.Listener, error) {
 	path := filepath.Join(dir, "control.sock")
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -109,13 +122,13 @@ func (s *Service) control(ctx context.Context, c Config, frames *atomic.Int64, c
 			if acceptErr != nil {
 				return
 			}
-			serveControl(conn, c, frames, cancel, preview)
+			serveControl(conn, c, frames, audio, cancel, preview)
 		}
 	}()
 	return listener, nil
 }
 
-func serveControl(conn net.Conn, c Config, frames *atomic.Int64, cancel context.CancelFunc, preview *previewManager) {
+func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioProgress, cancel context.CancelFunc, preview *previewManager) {
 	defer conn.Close() //nolint:errcheck // Response is bounded and connection is no longer used.
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return
@@ -125,11 +138,11 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, cancel context.
 		return
 	}
 	state := "starting"
-	if frames.Load() > 0 {
+	if frames.Load() > 0 && (!c.AudioEnabled || audio.ready()) {
 		state = "streaming"
 	}
 	var endpoint *PreviewEndpoint
-	if action == "preview_attach" {
+	if action == "preview_attach" && state == "streaming" {
 		endpoint, _ = preview.attach() //nolint:errcheck // Missing endpoint is the sanitized unavailable response.
 	} else if strings.HasPrefix(action, "preview_detach:") {
 		preview.detach(strings.TrimPrefix(action, "preview_detach:"))
@@ -139,42 +152,35 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, cancel context.
 	} else if action != "status" {
 		return
 	}
-	if err := json.NewEncoder(conn).Encode(Status{State: state, URL: c.URL(), Frames: frames.Load(), Preview: endpoint}); err != nil {
+	if err := json.NewEncoder(conn).Encode(Status{State: state, URL: c.URL(), Frames: frames.Load(), Preview: endpoint, Audio: audio.status(c, state)}); err != nil {
 		return
 	}
 }
 
-func (s *Service) runMedia(ctx context.Context, c Config, config string, frames *atomic.Int64, out io.Writer) error {
-	versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	b, err := exec.CommandContext(versionCtx, s.Tools.MediaMTX, "--version").Output()
-	cancel()
-	if err != nil || strings.TrimSpace(string(b)) != MediaMTXVersion {
-		return errors.New("unsupported MediaMTX runtime; use the pinned exported folder")
+func (s *Service) runMedia(ctx context.Context, c Config, secret credentials, dir, config string, frames *atomic.Int64, audio *audioProgress, deadline time.Time, out io.Writer) error {
+	startupCtx := ctx
+	stopStartup := func() {}
+	if c.AudioEnabled {
+		startupCtx, stopStartup = context.WithDeadline(ctx, deadline)
 	}
-	serverCmd := exec.Command(s.Tools.MediaMTX, config) //nolint:noctx // Owned child cleanup uses bounded interrupt/kill and reap.
-	serverOutput, err := serverCmd.StdoutPipe()
+	defer stopStartup()
+	server, err := s.startServer(startupCtx, config)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if c.AudioEnabled && startupCtx.Err() != nil {
+			return audioFailure("audio_startup_timeout")
+		}
 		return err
-	}
-	server, err := startChild(serverCmd)
-	if err != nil {
-		return errors.New("could not launch MediaMTX")
 	}
 	defer server.stop()
-	ready := make(chan struct{}, 1)
-	go func() {
-		scanner := bufio.NewScanner(serverOutput)
-		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), "[RTSP] started with listeners") {
-				select {
-				case ready <- struct{}{}:
-				default:
-				}
-			}
-		}
-	}()
-	if err = waitServer(ctx, server, ready); err != nil {
-		return err
+
+	if ctx.Err() != nil {
+		return nil
+	}
+	if c.AudioEnabled && !time.Now().Before(deadline) {
+		return audioFailure("audio_startup_timeout")
 	}
 	cmd := exec.Command(s.Tools.FFmpeg, ffmpegArgs(c)...) //nolint:noctx // Owned child cleanup uses bounded interrupt/kill and reap.
 	progress, err := cmd.StdoutPipe()
@@ -187,10 +193,10 @@ func (s *Service) runMedia(ctx context.Context, c Config, config string, frames 
 	}
 	defer producer.stop()
 	go readProgress(progress, frames)
-	if _, err := fmt.Fprintln(out, "Camera starting; waiting for published video frames. Ctrl-C or camstream-camera stop ends capture."); err != nil {
+	if _, err := fmt.Fprintln(out, "Capture starting; waiting for published media. Ctrl-C or camstream-camera stop ends capture."); err != nil {
 		return err
 	}
-	return monitor(ctx, c, server, producer, frames, out)
+	return s.monitor(ctx, c, secret, dir, server, producer, frames, audio, deadline, out)
 }
 
 func waitServer(ctx context.Context, server *child, ready <-chan struct{}) error {
@@ -219,8 +225,14 @@ func readProgress(r io.Reader, frames *atomic.Int64) {
 	}
 }
 
-func monitor(ctx context.Context, c Config, server, producer *child, frames *atomic.Int64, out io.Writer) error {
-	startup := time.NewTimer(45 * time.Second)
+func (s *Service) monitor(ctx context.Context, c Config, secret credentials, dir string, server, producer *child, frames *atomic.Int64, audio *audioProgress, deadline time.Time, out io.Writer) error {
+	wait := 45 * time.Second
+	if c.AudioEnabled {
+		wait = time.Until(deadline)
+	}
+	startup := time.NewTimer(wait)
+	watch := &audioWatch{service: s, config: c, secret: secret, dir: dir, progress: audio}
+	defer watch.close()
 	defer startup.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -231,19 +243,66 @@ func monitor(ctx context.Context, c Config, server, producer *child, frames *ato
 			return nil
 		case <-server.done:
 			return errors.New("RTSP server stopped; camera capture has been stopped")
+		case err := <-watch.observed:
+			return err
 		case <-producer.done:
+			if c.AudioEnabled {
+				return audioFailure("audio_capture_failed")
+			}
 			return errors.New("camera capture stopped; check macOS camera permission, device availability and resolution/fps")
 		case <-startup.C:
-			if !ready {
+			if !ready && !(frames.Load() > 0 && (!c.AudioEnabled || audio.ready())) {
+				if c.AudioEnabled {
+					return audioFailure("audio_startup_timeout")
+				}
 				return errors.New("no video frames within 45 seconds; grant camera access and retry")
 			}
 		case <-ticker.C:
-			if !ready && frames.Load() > 0 {
+			if err := watch.tick(frames.Load()); err != nil {
+				return err
+			}
+			if !ready && frames.Load() > 0 && (!c.AudioEnabled || audio.ready()) {
 				ready = true
-				if _, err := fmt.Fprintln(out, "Streaming video at "+c.URL()+" (authenticated RTSP/TCP)"); err != nil {
+				if _, err := fmt.Fprintln(out, "Streaming configured media at "+c.URL()+" (authenticated RTSP/TCP)"); err != nil {
 					return err
 				}
 			}
 		}
 	}
+}
+
+func (s *Service) startServer(ctx context.Context, config string) (*child, error) {
+	versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	b, err := boundedOutput(versionCtx, s.Tools.MediaMTX, 16384, "--version")
+	cancel()
+	if err != nil || strings.TrimSpace(string(b)) != MediaMTXVersion {
+		return nil, errors.New("unsupported MediaMTX runtime; use the pinned exported folder")
+	}
+	cmd := exec.Command(s.Tools.MediaMTX, config) //nolint:noctx // Caller owns bounded interrupt/kill and reap.
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	server, err := startChild(cmd)
+	if err != nil {
+		closePreviewIO(output)
+		return nil, errors.New("could not launch MediaMTX")
+	}
+	ready := make(chan struct{}, 1)
+	go func() {
+		scanner := bufio.NewScanner(output)
+		for scanner.Scan() {
+			if strings.Contains(scanner.Text(), "[RTSP] started with listeners") {
+				select {
+				case ready <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	if err = waitServer(ctx, server, ready); err != nil {
+		server.stop()
+		return nil, err
+	}
+	return server, nil
 }

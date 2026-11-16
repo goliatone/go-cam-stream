@@ -33,6 +33,9 @@ type AppReply struct {
 }
 
 func appError(code string) *AppError {
+	if message, ok := audioMessages[code]; ok {
+		return &AppError{Code: code, Message: message}
+	}
 	messages := map[string]string{
 		"preview_unavailable":  "Preview unavailable; retry while the camera is streaming.",
 		"invalid_request":      "Unsupported or malformed camera request.",
@@ -75,7 +78,7 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 		return r, errors.New("unexpected preview generation")
 	}
 	switch r.Method {
-	case "preview_attach", "preview_detach", "devices", "config", "configure", "start", "status", "stop", "export", "quit":
+	case "preview_attach", "preview_detach", "audio_devices", "devices", "config", "configure", "start", "status", "stop", "export", "quit":
 		return r, nil
 	default:
 		return r, errors.New("unknown method")
@@ -88,6 +91,7 @@ type appSession struct {
 	run     func(context.Context) error
 	running <-chan error
 	stop    context.CancelFunc
+	failure *AppError
 }
 
 // AppSession binds all owned capture to the native parent's stdin pipe. EOF,
@@ -110,7 +114,7 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	defer in.Close() //nolint:errcheck // Unblock the protocol reader on shutdown.
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	if err = a.encoder.Encode(AppReply{Version: 1, Event: "ready", Result: map[string]int{"protocol": 1, "preview": 1}}); err != nil {
+	if err = a.encoder.Encode(AppReply{Version: 1, Event: "ready", Result: map[string]int{"protocol": 1, "preview": 1, "audio": 1}}); err != nil {
 		return err
 	}
 	for {
@@ -121,9 +125,11 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 			a.stop()
 			a.running = nil
 			a.stop = nil
-			r := AppReply{Version: 1, Event: "capture_stopped", Result: Status{State: "stopped"}}
+			r := AppReply{Version: 1, Event: "capture_stopped", Result: a.service.stoppedStatus("stopped")}
 			if captureErr != nil {
-				r.Error = appError("capture_failed")
+				r.Error = CaptureFailure(captureErr)
+				a.failure = r.Error
+				r.Result = a.service.stoppedStatus("failed")
 			}
 			if err = a.encoder.Encode(r); err != nil {
 				return err
@@ -134,7 +140,13 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 			}
 			r, decodeErr := decodeAppRequest(line)
 			if decodeErr != nil {
-				if err = a.encoder.Encode(AppReply{Version: 1, Error: appError("invalid_request")}); err != nil {
+				reply := AppReply{Version: 1, Error: appError("invalid_request")}
+				var audioErr audioError
+				if errors.As(decodeErr, &audioErr) {
+					reply.ID = r.ID
+					reply.Error = CaptureFailure(decodeErr)
+				}
+				if err = a.encoder.Encode(reply); err != nil {
 					return err
 				}
 				continue
@@ -183,7 +195,8 @@ func (a *appSession) startOwned(ctx context.Context) (any, *AppError) {
 	if a.running != nil {
 		return nil, appError("busy")
 	}
-	if _, err := a.service.Configuration(); err != nil {
+	c, err := a.service.Configuration()
+	if err != nil {
 		return nil, appError("not_configured")
 	}
 	status, err := a.service.Status(ctx)
@@ -193,12 +206,13 @@ func (a *appSession) startOwned(ctx context.Context) (any, *AppError) {
 	if status.State != "stopped" {
 		return nil, appError("busy")
 	}
+	a.failure = nil
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	a.running = done
 	a.stop = cancel
 	go func() { done <- a.run(ctx) }()
-	return Status{State: "starting"}, nil
+	return Status{State: "starting", Audio: (&audioProgress{}).status(c, "starting")}, nil
 }
 
 func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError) {
@@ -210,6 +224,12 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 	switch r.Method {
 	case "preview_attach", "preview_detach":
 		return a.dispatchPreview(ctx, r)
+	case "audio_devices":
+		v, err := a.service.AudioDevices(ctx)
+		if err != nil {
+			return nil, CaptureFailure(err)
+		}
+		return v, nil
 	case "devices":
 		v, err := a.service.Devices(ctx)
 		if err != nil {
@@ -223,26 +243,20 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 		}
 		return v, nil
 	case "configure":
-		if a.running != nil {
-			return nil, appError("busy")
-		}
-		if err := (ConfigureHandler{Service: a.service}).Execute(ctx, Configure{Config: *r.Config}); err != nil {
-			return nil, appError("configuration_failed")
-		}
-		v, err := a.service.Configuration()
-		if err != nil {
-			return nil, appError("configuration_failed")
-		}
-		return v, nil
+		return a.configure(ctx, *r.Config)
 	case "status":
 		v, err := a.service.Status(ctx)
 		if err != nil {
 			return nil, appError("status_unavailable")
 		}
+		if v.State == "stopped" && a.failure != nil {
+			return a.service.stoppedStatus("failed"), a.failure
+		}
 		return v, nil
 	case "stop", "quit":
 		a.stopOwned()
-		return Status{State: "stopped"}, nil
+		a.failure = nil
+		return a.service.stoppedStatus("stopped"), nil
 	case "export":
 		return a.exportStopped()
 	default:
@@ -283,4 +297,23 @@ func (a *appSession) dispatchPreview(ctx context.Context, r AppRequest) (any, *A
 	default:
 		return nil, appError("invalid_request")
 	}
+}
+
+func (a *appSession) configure(ctx context.Context, c Config) (any, *AppError) {
+	if a.running != nil {
+		return nil, appError("busy")
+	}
+	if err := (ConfigureHandler{Service: a.service}).Execute(ctx, Configure{Config: c}); err != nil {
+		var audioErr audioError
+		if errors.As(err, &audioErr) {
+			return nil, CaptureFailure(err)
+		}
+		return nil, appError("configuration_failed")
+	}
+	a.failure = nil
+	v, err := a.service.Configuration()
+	if err != nil {
+		return nil, appError("configuration_failed")
+	}
+	return v, nil
 }

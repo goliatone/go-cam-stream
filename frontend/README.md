@@ -141,12 +141,14 @@ Each state is captured at three sizes, in light and in dark:
 - a 375×812 phone's whole page;
 - a 667×330 phone held sideways.
 
-The shortcuts dialog, the collapsed rail and the camera sheet are captured too.
-That makes 134 views of each version, in about a minute for both.
+The shortcuts dialog and the collapsed rail are captured too, and the camera sheet
+at all three sizes. That makes 136 views of each version, in about a minute for
+both. The preview's own bar is hidden, so the app fills each size.
 
 The project's Vite serves both versions with the working tree's dependencies; the
 script notes when the ref's lock file differs. A local Chrome or Chromium captures
-them. Set `CHROME_PATH`, or pass `--chrome`, if Chrome is not in the usual place.
+them, headless, and closes when the run ends. Set `CHROME_PATH`, or pass
+`--chrome`, if Chrome is not in the usual place.
 
 To keep runs repeatable:
 
@@ -154,16 +156,23 @@ To keep runs repeatable:
 - the time zone is UTC and the locale en-US;
 - animations and transitions are off, and reduced motion is set;
 - colours are sRGB, and one device pixel is one CSS pixel;
-- the page is left to settle after it loads, after the state is chosen and after
-  each click;
+- after the page loads, after the state is chosen and after each click, the
+  script waits until nothing is loading and two frames in a row pass without a
+  change to the page;
 - each version runs in a browser of its own.
 
 The report goes to `.snapshots/`, which Git ignores. `index.html` shows each
-differing view's two captures and its changed pixels in red; `report.json` lists
-every view. The command exits 0 when no view differs, 1 when one does and 2 when
-it cannot run. Chrome draws large blurred shadows and gradients up to three levels
-differently from run to run, which the eye cannot see, so differences of up to
-three levels in a colour channel are ignored; `--tolerance 0` compares exactly.
+differing view's two captures and a diff, with pixels over the tolerance in red
+and the others that differ in amber; `report.json` lists every view. The command
+exits 0 when no view differs, 1 when one does or a state throws, and 2 when it
+cannot run.
+
+A view differs when a pixel differs by more than 3 levels in a colour channel, or
+when more than 1,000 pixels differ at all. From run to run, Chrome has drawn a
+large blurred shadow or a gradient a level differently in up to about 750 pixels,
+and an anti-aliased corner up to 3 levels differently; the eye can see neither.
+`--tolerance` and `--area` change these limits, and `--tolerance 0` compares
+exactly.
 
 ## Ownership and recovery
 

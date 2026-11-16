@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-type Tools struct{ FFmpeg, MediaMTX string }
+type Tools struct{ FFmpeg, MediaMTX, FFprobe string }
 
 func ResolveTools() (Tools, error) {
 	exe, err := os.Executable()
@@ -53,7 +53,9 @@ func resolveToolsAt(exe string, lookPath func(string) (string, error)) (Tools, e
 	if err != nil {
 		return Tools{}, errors.New("mediamtx missing; use the complete exported camera folder")
 	}
-	return Tools{FFmpeg: f, MediaMTX: m}, nil
+	// Optional for legacy video-only folders; audio-on validates it before capture.
+	p, _ := find("ffprobe")
+	return Tools{FFmpeg: f, MediaMTX: m, FFprobe: p}, nil
 }
 
 type Device struct {
@@ -135,10 +137,19 @@ func mediaConfig(c Config, secret credentials) ([]byte, error) {
 }
 
 func ffmpegArgs(c Config) []string {
-	return []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-progress", "pipe:1",
-		"-f", "avfoundation", "-framerate", fmt.Sprint(c.FPS), "-video_size", fmt.Sprintf("%dx%d", c.Width, c.Height), "-i", c.Device + ":none",
-		"-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-tune", "zerolatency", "-g", fmt.Sprint(c.FPS * 2),
-		"-b:v", "2000k", "-f", "rtsp", "-rtsp_transport", "tcp", "rtsp://" + net.JoinHostPort(publisherHost(c), fmt.Sprint(c.Port)) + "/" + c.Path}
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-progress", "pipe:1",
+		"-f", "avfoundation", "-framerate", fmt.Sprint(c.FPS), "-video_size", fmt.Sprintf("%dx%d", c.Width, c.Height)}
+	if c.AudioEnabled {
+		args = append(args, "-camstream_audio_uid", c.AudioDeviceID)
+	}
+	args = append(args, "-i", c.Device+":none")
+	if c.AudioEnabled {
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-c:a", "libopus", "-ac", "1", "-ar", "48000", "-b:a", "64k", "-frame_duration", "20")
+	} else {
+		args = append(args, "-an")
+	}
+	return append(args, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-tune", "zerolatency", "-g", fmt.Sprint(c.FPS*2),
+		"-b:v", "2000k", "-f", "rtsp", "-rtsp_transport", "tcp", "rtsp://"+net.JoinHostPort(publisherHost(c), fmt.Sprint(c.Port))+"/"+c.Path)
 }
 
 func publisherHost(c Config) string {

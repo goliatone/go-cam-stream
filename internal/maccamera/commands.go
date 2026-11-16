@@ -43,3 +43,17 @@ func (Stop) Validate() error { return nil }
 type StopHandler struct{ Service *Service }
 
 func (h StopHandler) Execute(ctx context.Context, _ Stop) error { return h.Service.Stop(ctx) }
+
+type ExportLegacy struct{}
+
+func (ExportLegacy) Type() string { return "camera.export-legacy.v1" }
+
+type ExportLegacyHandler struct{ Service *Service }
+
+func (h ExportLegacyHandler) Run(_ context.Context, _ ExportLegacy) (string, error) {
+	return h.Service.ExportLegacy()
+}
+func (h ExportLegacyHandler) Execute(ctx context.Context, m ExportLegacy) error {
+	_, err := h.Run(ctx, m)
+	return err
+}
