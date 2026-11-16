@@ -4,6 +4,16 @@ This package implements `camstream.Backend`, `Runtime` and `SourceResetter` with
 
 See `ExampleNew` for external package construction. Supply a provider-owned `camstream.SourceEncoder[go2rtc.Input]`; `Input.URL` is private backend syntax, never application JSON. For the default EC70 pairing, inject `kasa.NewEncoder(secretResolver)` from the optional `go2rtc/kasa` subpackage; see the [EC70 integration instructions](../../strategies/ec70/README.md). No implicit encoder registration occurs.
 
+## macOS development builds
+
+`darwin && camstream_dev` adds an Apple Silicon development path using the pinned
+macOS executable in [runtime metadata](../../../../data/runtime/go2rtc.lock.json).
+Use `cmd/camstream-dev`, which implements the private worker entry point. Each
+worker group has an owner-lifetime pipe and retains the runtime lock through
+cleanup; native libproc socket inspection verifies assigned loopback listeners.
+This requires CGO/Xcode tools. Ordinary builds keep the Linux-only target and
+digest checks below. See [local development](../../../../README.md#development-server).
+
 ## Host responsibilities
 
 1. Install the stock executable separately and configure its absolute path. `Start` copies it into a private generation directory and verifies SHA256 `af416f22b21a24ab83b8d78642190b4932ae695b4e386853f11d1b0319781763` before executing that snapshot. Imports and `New` do no I/O. Other runtime platforms currently return `unsupported_capability`.

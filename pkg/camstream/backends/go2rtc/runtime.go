@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/goliatone/go-cam-stream/pkg/camstream"
@@ -26,7 +25,7 @@ func (b *Backend) Start(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
+	if !supportedPlatform() {
 		return failure(camstream.CodeUnsupported, nil)
 	}
 	if err := b.cfg.VerifyBoundary(ctx); err != nil {
@@ -106,7 +105,7 @@ func (b *Backend) copyExecutable() error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if hex.EncodeToString(hash.Sum(nil)) != LinuxARM64SHA256 {
+	if hex.EncodeToString(hash.Sum(nil)) != executableSHA256() {
 		return failure(camstream.CodeInvalidArgument, nil)
 	}
 	return nil

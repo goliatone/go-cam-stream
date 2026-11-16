@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && (!darwin || !camstream_dev)
 
 package go2rtc
 

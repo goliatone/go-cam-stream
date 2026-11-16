@@ -16,7 +16,7 @@ import type {
   State,
   StreamRef,
 } from "./services/contracts";
-import { errorCopy } from "./components/status";
+import { errorCopy } from "./services/copy";
 import samples from "../../data/api/examples.json";
 
 afterEach(cleanup);

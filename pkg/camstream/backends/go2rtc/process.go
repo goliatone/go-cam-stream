@@ -20,6 +20,7 @@ type worker struct {
 	dir              string
 	api, rtsp, media int
 	reaped           bool
+	lifetime         *os.File
 }
 
 func address(host string, port int) string { return net.JoinHostPort(host, strconv.Itoa(port)) }
@@ -106,8 +107,8 @@ func (b *Backend) launch(ctx context.Context, ingest bool, input Input) (*worker
 	w.cmd.Dir = w.dir
 	w.cmd.Stdout = io.Discard
 	w.cmd.Stderr = io.Discard
-	processGroup(w.cmd)
-	if err = w.cmd.Start(); err != nil {
+	w.lifetime, err = launchProcess(w.cmd, b.lock)
+	if err != nil {
 		w.cmd = nil
 		return w, failure(camstream.CodeBackendUnavailable, err)
 	}
@@ -149,6 +150,12 @@ func (b *Backend) stop(ctx context.Context, w *worker) error {
 			return failure(camstream.CodeCleanupIncomplete, err)
 		}
 		w.reaped = true
+	}
+	if w.lifetime != nil {
+		if err := w.lifetime.Close(); err != nil {
+			return failure(camstream.CodeCleanupIncomplete, err)
+		}
+		w.lifetime = nil
 	}
 	if err := os.RemoveAll(w.dir); err != nil {
 		return failure(camstream.CodeCleanupIncomplete, err)

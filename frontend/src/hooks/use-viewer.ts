@@ -241,74 +241,64 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [api]);
-  let viewer: ViewerInput | undefined;
-  if (snapshot)
-    viewer = {
-      selection: snapshot.selection,
-      ...(snapshot.status ? { status: snapshot.status } : {}),
-      ...(snapshot.statusAt !== undefined
-        ? { statusAt: snapshot.statusAt }
-        : {}),
-      ...(snapshot.observingSince !== undefined
-        ? { observingSince: snapshot.observingSince }
-        : {}),
-      presentation: {
-        state: snapshot.state,
-        ...(snapshot.recoverBy !== undefined
-          ? { recoverBy: snapshot.recoverBy }
-          : {}),
-        ...(snapshot.retryAt !== undefined ? { retryAt: snapshot.retryAt } : {}),
-        ...(snapshot.error ? { error: snapshot.error } : {}),
-        ...(snapshot.transport ? { transport: snapshot.transport } : {}),
-        needsPlay,
-        paused,
-        reloadRequired: snapshot.reloadRequired ?? false,
-        controls,
-        videoRef: bindVideo,
-        actions: {
-          // The controller reports progress through snapshots and publishes
-          // connecting at once, so the player's pending action ends here
-          // rather than holding every control until media arrives.
-          onRetry: () => {
-            void controller.retry();
-          },
-          // Ends this page's session; the stopped view offers Play (retry).
-          onStop: () => controller.stop(),
-          // Media keeps arriving while paused; the pause event shows Play.
-          onPause: () => video.current?.pause(),
-          onPlay: async () => {
-            const node = video.current;
-            if (!node) return;
-            const media = node.srcObject;
-            await node.play();
-            if (alive.current && video.current === node && node.srcObject === media)
-              setNeedsPlay(false);
-          },
-          onMute: async (muted) => {
-            const node = video.current;
-            if (!node) return;
-            node.muted = muted;
-            try {
-              await node.play();
-            } catch {
-              node.muted = true;
-              throw new Error("playback_not_allowed");
-            }
-          },
-          onFullscreen: (target) =>
-            video.current
-              ? fullscreen(video.current, target)
-              : Promise.resolve(),
-          onPictureInPicture: () =>
-            video.current ? pictureInPicture(video.current) : Promise.resolve(),
+  const viewer: ViewerInput | undefined = snapshot && {
+    selection: snapshot.selection,
+    status: snapshot.status,
+    statusAt: snapshot.statusAt,
+    observingSince: snapshot.observingSince,
+    presentation: {
+      state: snapshot.state,
+      recoverBy: snapshot.recoverBy,
+      retryAt: snapshot.retryAt,
+      error: snapshot.error,
+      transport: snapshot.transport,
+      needsPlay,
+      paused,
+      reloadRequired: snapshot.reloadRequired ?? false,
+      controls,
+      videoRef: bindVideo,
+      actions: {
+        // The controller reports progress through snapshots and publishes
+        // connecting at once, so the player's pending action ends here
+        // rather than holding every control until media arrives.
+        onRetry: () => {
+          void controller.retry();
         },
+        // Ends this page's session; the stopped view offers Play (retry).
+        onStop: () => controller.stop(),
+        // Media keeps arriving while paused; the pause event shows Play.
+        onPause: () => video.current?.pause(),
+        onPlay: async () => {
+          const node = video.current;
+          if (!node) return;
+          const media = node.srcObject;
+          await node.play();
+          if (alive.current && video.current === node && node.srcObject === media)
+            setNeedsPlay(false);
+        },
+        onMute: async (muted) => {
+          const node = video.current;
+          if (!node) return;
+          node.muted = muted;
+          try {
+            await node.play();
+          } catch {
+            node.muted = true;
+            throw new Error("playback_not_allowed");
+          }
+        },
+        onFullscreen: (target) =>
+          video.current ? fullscreen(video.current, target) : Promise.resolve(),
+        onPictureInPicture: () =>
+          video.current ? pictureInPicture(video.current) : Promise.resolve(),
       },
-    };
+    },
+  };
   return {
     catalog,
     loading,
-    ...(error ? { error } : {}),
-    ...(viewer ? { viewer } : {}),
+    error,
+    viewer,
     initialSelection,
     onSelect,
     onReload: reload,

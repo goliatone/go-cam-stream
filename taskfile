@@ -113,7 +113,7 @@ function dev:env:load {
 }
 
 ## dev:build
-## Install locked frontend dependencies, type-check/build/embed assets, and compile Go.
+## Install locked frontend dependencies, build/embed assets, and compile normal/dev binaries.
 function dev:build() (
     cd "${SCRIPT_DIR}" || exit "$?"
     local tool
@@ -126,14 +126,57 @@ function dev:build() (
 
     ./scripts/build-web.sh || return "$?"
     mkdir -p bin || return "$?"
-    go build -o bin/camstream ./cmd/camstream
+    go build -o bin/camstream ./cmd/camstream || return "$?"
+    go build -tags camstream_dev -o bin/camstream-dev ./cmd/camstream-dev
 )
 
-## dev:serve [--config FILE]
+## dev:webcams
+## List Mac webcams and their indices for dev:serve --webcam=INDEX, without capture.
+function dev:webcams {
+    case "${1:-}" in
+        -h|--help) echo "Usage: $0 dev:webcams (uses CAMSTREAM_DEV_FFMPEG or ffmpeg on PATH)"; return 0 ;;
+        "") ;;
+        *) echo "Unknown dev:webcams argument: $1" >&2; return 2 ;;
+    esac
+    if [ "$(uname -s)" != Darwin ]; then
+        echo "dev:webcams requires macOS (AVFoundation)." >&2
+        return 2
+    fi
+    local ffmpeg listing devices
+    ffmpeg=$(command -v "${CAMSTREAM_DEV_FFMPEG:-ffmpeg}") || {
+        echo "Install FFmpeg (brew install ffmpeg) or set CAMSTREAM_DEV_FFMPEG to its executable." >&2
+        return 1
+    }
+    # FFmpeg exits nonzero after a successful enumeration because no input is opened.
+    listing=$("${ffmpeg}" -hide_banner -nostdin -f avfoundation -list_devices true -i "" 2>&1) || :
+    if [[ "${listing}" != *"AVFoundation video devices:"* || "${listing}" != *"AVFoundation audio devices:"* ]]; then
+        printf 'Unable to list webcams with FFmpeg.\n%s\n' "${listing}" >&2
+        return 1
+    fi
+    devices=$(printf '%s\n' "${listing}" | awk '
+        /AVFoundation video devices:/ { video = 1; next }
+        /AVFoundation audio devices:/ { video = 0 }
+        video && /\] \[[0-9]+\] / {
+            sub(/^[^]]*\] \[/, "")
+            indexEnd = index($0, "] ")
+            deviceIndex = substr($0, 1, indexEnd - 1)
+            name = substr($0, indexEnd + 2)
+            if (name !~ /^Capture screen [0-9]+$/) printf "  %s\t%s\n", deviceIndex, name
+        }
+    ')
+    if [ -z "${devices}" ]; then
+        echo "No webcams found. Connect a camera and check Camera access for your terminal/app."
+        return 0
+    fi
+    printf 'INDEX\tWEBCAM\n%s\n\nUse: ./taskfile dev:serve --webcam=INDEX\n' "${devices}"
+}
+
+## dev:serve [--config FILE] [--webcam[=INDEX]]
 ## Build and serve with config/dev.yaml; override with --config or CAMSTREAM_CONFIG.
 ## Re-run after source changes. Ctrl-C gracefully stops the server.
 function dev:serve {
     local config="${CAMSTREAM_CONFIG:-${SCRIPT_DIR}/config/dev.yaml}"
+    local webcam=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --config)
@@ -145,9 +188,20 @@ function dev:serve {
                 shift 2
                 ;;
             --config=*) config="${1#*=}"; shift ;;
+            --webcam) webcam=0; shift ;;
+            --webcam=*)
+                webcam="${1#*=}"
+                if ! [[ "${webcam}" =~ ^[0-9]{1,5}$ ]] || (( 10#${webcam} > 65535 )); then
+                    echo "--webcam requires a video device index between 0 and 65535 (for example --webcam=0)." >&2
+                    return 2
+                fi
+                shift
+                ;;
             -h|--help)
-                echo "Usage: $0 dev:serve [--config FILE]"
+                echo "Usage: $0 dev:serve [--config FILE] [--webcam[=INDEX]]"
                 echo "Default: config/dev.yaml; override with CAMSTREAM_CONFIG or --config."
+                echo "Mac bundled config: --webcam uses video device 0; --webcam=INDEX selects another. No audio."
+                echo "List camera indices with: $0 dev:webcams"
                 return 0
                 ;;
             *) echo "Unknown dev:serve argument: $1" >&2; return 2 ;;
@@ -158,16 +212,47 @@ function dev:serve {
         return 2
     fi
 
+    if [ -n "${webcam}" ] && { [ "$(uname -s)" != Darwin ] || [ ! "${config}" -ef "${SCRIPT_DIR}/config/dev.yaml" ]; }; then
+        echo "--webcam requires macOS and the bundled config/dev.yaml (omit custom --config/CAMSTREAM_CONFIG)." >&2
+        return 2
+    fi
+    # A previous invocation or environment cannot opt into camera capture.
+    unset CAMSTREAM_DEV_SOURCE_FFMPEG CAMSTREAM_DEV_WEBCAM_DEVICE
+
+    if [ "$(uname -s)" = Darwin ]; then
+        if [ "$(go env CGO_ENABLED)" != 1 ]; then
+            echo "Native Mac dev playback requires CGO_ENABLED=1 and Xcode command-line tools." >&2
+            return 1
+        fi
+        CAMSTREAM_DEV_GO2RTC=$(python3 "${SCRIPT_DIR}/scripts/dev-runtime.py") || return "$?"
+        export CAMSTREAM_DEV_GO2RTC
+        # Only the bundled config opts into local video. Custom configs dial their sources.
+        if [ "${config}" -ef "${SCRIPT_DIR}/config/dev.yaml" ]; then
+            CAMSTREAM_DEV_SOURCE_FFMPEG=$(command -v "${CAMSTREAM_DEV_FFMPEG:-ffmpeg}") || {
+                echo "Install FFmpeg (brew install ffmpeg) or set CAMSTREAM_DEV_FFMPEG to its executable." >&2
+                return 1
+            }
+            export CAMSTREAM_DEV_SOURCE_FFMPEG
+            if [ -n "${webcam}" ]; then
+                export CAMSTREAM_DEV_WEBCAM_DEVICE="${webcam}"
+                echo "Webcam ${webcam} selected (video only). Allow Camera access for your launching app if macOS prompts."
+            fi
+        fi
+    fi
     dev:build || return "$?"
     if [ "${config}" -ef "${SCRIPT_DIR}/config/dev.yaml" ]; then
         # The development template gets a checkout-local absolute runtime path.
         # Keep application config loading strict and custom configs unchanged.
-        node - "${SCRIPT_DIR}" <<'NODE' || return "$?"
+        node - "${SCRIPT_DIR}" "${webcam}" <<'NODE' || return "$?"
 const fs = require('node:fs');
 const path = require('node:path');
 const root = process.argv[2];
 const dir = path.join(root, '.cache/dev');
-const template = fs.readFileSync(path.join(root, 'config/dev.yaml'), 'utf8');
+let template = fs.readFileSync(path.join(root, 'config/dev.yaml'), 'utf8');
+if (process.argv[3] !== '') {
+    template = template.replace('name: Development test pattern', 'name: Mac webcam ' + process.argv[3])
+        .replace('name: Moving test pattern', 'name: Webcam video');
+}
 const config = template.replace('runtime_dir: @RUNTIME_DIR@', 'runtime_dir: ' + JSON.stringify(path.join(dir, 'runtime')));
 fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 fs.writeFileSync(path.join(dir, 'config.yaml'), config, { mode: 0o600 });
@@ -175,9 +260,9 @@ NODE
         config="${SCRIPT_DIR}/.cache/dev/config.yaml"
     fi
     "${SCRIPT_DIR}/bin/camstream" config validate --config "${config}" || return "$?"
-    echo "Starting camstream; open the HTTPS origin configured in ${config}."
+    echo "Starting local development server..."
     # Replace the task runner so signals reach the server without a go-run wrapper.
-    exec "${SCRIPT_DIR}/bin/camstream" serve --config "${config}"
+    exec "${SCRIPT_DIR}/bin/camstream-dev" serve --config "${config}"
 }
 
 ##

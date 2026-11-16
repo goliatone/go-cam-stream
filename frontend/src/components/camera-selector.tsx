@@ -1,12 +1,8 @@
 import type { CameraSummary, StreamRef } from "../services/contracts";
+import { stateLabels } from "../services/copy";
 import { linkFor } from "../services/links";
 import { CameraIcon } from "./icon";
-import {
-  describeView,
-  StatusBadge,
-  stateLabels,
-  type ViewState,
-} from "./status";
+import { describeView, StatusBadge, type ViewState } from "./status";
 
 // Rows are real links to each camera's view. A plain click switches in place;
 // modified and middle clicks keep the browser's behavior and open a new tab,

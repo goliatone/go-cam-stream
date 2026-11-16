@@ -127,6 +127,40 @@ describe("same-origin API and package CSRF", () => {
     );
     await expect(new APIClient(request).list()).rejects.toThrow();
   });
+  it("accepts only listed states and error codes, not inherited names", async () => {
+    const [camera] = samples.catalog.cameras;
+    const request = vi.fn<typeof fetch>();
+    const api = new APIClient(request);
+    request.mockResolvedValueOnce(
+      response({ cameras: [{ ...camera, availability: "failed" }] }),
+    );
+    await expect(api.list()).resolves.toMatchObject({
+      cameras: [{ availability: "failed" }],
+    });
+    for (const name of ["toString", "constructor", "__proto__"]) {
+      request.mockResolvedValueOnce(
+        response({ cameras: [{ ...camera, availability: name }] }),
+      );
+      await expect(api.list()).rejects.toMatchObject({
+        body: { code: "server_unavailable" },
+      });
+      request.mockResolvedValueOnce(
+        response({ error: { code: name, message: "", retryable: false } }, 403),
+      );
+      await expect(api.list()).rejects.toMatchObject({
+        body: { code: "server_unavailable", retryable: true },
+      });
+    }
+    request.mockResolvedValueOnce(
+      response(
+        { error: { code: "access_denied", message: "", retryable: false } },
+        403,
+      ),
+    );
+    await expect(api.list()).rejects.toMatchObject({
+      body: { code: "access_denied", retryable: false },
+    });
+  });
   it("projects the catalog and status without unexpected private fields", async () => {
     const request = vi
       .fn<typeof fetch>()
@@ -152,7 +186,9 @@ describe("same-origin API and package CSRF", () => {
     const assertion = expect(promise).rejects.toMatchObject({
       body: { code: "deadline_exceeded", message: "" },
     });
-    await vi.advanceTimersByTimeAsync(60);
+    await vi.advanceTimersByTimeAsync(49);
+    expect(request.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(11);
     await assertion;
     expect(request).toHaveBeenCalledOnce();
   });

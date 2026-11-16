@@ -49,31 +49,71 @@ Start with the included [development config](config/dev.yaml):
 ./taskfile dev:serve
 ```
 
+Open <http://127.0.0.1:8081/> (or <http://localhost:8081/>). No Tailscale or
+authentication setup is needed in this development mode.
+
 Each invocation installs locked frontend dependencies, type-checks and builds the
-viewer, embeds its assets, compiles `bin/camstream`, validates the configuration,
+viewer, embeds its assets, compiles `bin/camstream` and `bin/camstream-dev`, validates the configuration,
 and starts the server in the foreground. Ctrl-C shuts it down; rerun after source
 changes. `./taskfile dev:build` performs only the build steps.
 
-The default binds `127.0.0.1:8081`, with a local RTSP source at
-`rtsp://127.0.0.1:8554/cam` and the development login `developer@example.test`.
+On an Apple Silicon Mac, the default plays a labeled 1280×720 moving test pattern
+through real H.264/WebRTC. No camera is opened. The task downloads and verifies
+the pinned macOS go2rtc into `.cache/dev-tools`; FFmpeg must be on PATH
+(`brew install ffmpeg`) or selected with `CAMSTREAM_DEV_FFMPEG=/absolute/path/to/ffmpeg`.
+Use Go with CGO enabled and Xcode command-line tools for native socket inspection.
+The default binds `127.0.0.1:8081`.
 The task renders the config to ignored `.cache/dev/config.yaml`, expanding its
 runtime path to this checkout's `.cache/dev/runtime`; no privileged directory is
 needed. Check startup with `curl http://127.0.0.1:8081/healthz`.
 
-For your own cameras and Serve origin, use the [configuration guide](config/README.md)
+To use your Mac webcam instead of the test pattern:
+
+```sh
+./taskfile dev:serve --webcam       # video device 0, no microphone
+./taskfile dev:serve --webcam=1     # another AVFoundation video device
+```
+
+Open the same local URL; the selected **Mac webcam** starts playing automatically.
+Allow Camera access for the launching terminal/app if macOS prompts (System
+Settings → Privacy & Security → Camera). Opening/selecting the camera or pressing
+Play starts capture. Stop releases your viewer session; capture ends after the
+last viewer stops. Ctrl-C stops all helpers. The webcam must support 1280×720 at
+30 fps.
+List available webcams and their device indices without starting capture or
+building the app:
+
+```sh
+./taskfile dev:webcams
+./taskfile dev:serve --webcam=INDEX
+```
+
+The list excludes microphone and screen inputs and honors `CAMSTREAM_DEV_FFMPEG`.
+Indices come from AVFoundation; rerun the list after connecting/disconnecting devices.
+The webcam option requires macOS and the bundled config; omit it to return to the
+test pattern. Custom configurations cannot be combined with `--webcam`.
+
+For your own network cameras, use the [configuration guide](config/README.md)
 and run `./taskfile dev:serve --config /absolute/path/to/dev.yaml`, or set
 `CAMSTREAM_CONFIG` in the environment or ignored `.taskenv` in your working
 directory. Precedence is `--config`, then `CAMSTREAM_CONFIG`, then the bundled
 default. Relative custom config paths resolve from your working directory.
 
-The default HTTPS origin `https://camstream-dev.example.test` and login are
-placeholders for authenticated ingress; opening the loopback URL directly does
-not bypass authentication. Configure your actual Serve origin/login for the viewer.
+`camstream-dev` is compiled with the `camstream_dev` tag and grants the fixed
+local developer access to all configured cameras. It accepts only loopback peers
+and the local host/port, rejects cross-origin browser requests, and retains CSRF
+checks. Its configured HTTPS origin is internal to the normal handler; the browser
+uses the local HTTP URL. Normal `camstream serve` and release builds retain Serve
+authentication and configured access grants; no environment or config switch
+enables anonymous access in those builds.
 
-The task uses the normal authentication and runtime settings. On macOS or outside
-the supported Linux process boundary, HTTP diagnostics can run but playback stays
-unready; see [controller requirements](internal/app/README.md). For frontend hot
-reload or the synthetic preview/prototype, use the separate
+macOS dev playback runs its own media worker groups. Stop releases the page's
+session; Ctrl-C stops the server and helpers. An owner-lifetime pipe also stops
+helpers after an abrupt server exit, and inherited locks block unsafe restart
+cleanup. Custom configs use their actual RTSP/Kasa sources; Mac media candidates
+are loopback-only. Production playback still requires its supported Linux
+boundary; see [controller requirements](internal/app/README.md). For frontend
+hot reload or the presentation-only preview/prototype, use the separate
 [Vite development workflow](frontend/README.md#run-locally).
 
 ## Release

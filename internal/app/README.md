@@ -1,5 +1,16 @@
 # Controller and transports
 
+For local browser development, `./taskfile dev:serve` builds the separate
+`camstream-dev` command with the `camstream_dev` tag. Open
+<http://127.0.0.1:8081/> without Serve/login setup. This tagged adapter admits
+only local host/port and loopback peers, supplies one developer identity with
+catalog-wide grants, and preserves CSRF checks. On Apple Silicon it uses native
+owned go2rtc worker groups, owner-death pipes and inherited runtime locks; the
+default generates video with FFmpeg. `--webcam[=INDEX]` opts into video-only
+AVFoundation capture for the bundled config. No Linux runtime is needed.
+The tagged native path is excluded from normal builds; the production behavior
+below remains unchanged. See the [development setup](../../README.md#development-server).
+
 Build the CLI/server with Go 1.27.4 and CGO enabled:
 
 ```sh

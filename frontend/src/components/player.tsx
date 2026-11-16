@@ -13,6 +13,7 @@ import type {
   StreamSummary,
 } from "../services/contracts";
 import { fullscreenElement } from "../services/browser-media";
+import { errorCopy } from "../services/copy";
 import { useShortcuts } from "../services/shortcuts";
 import {
   CameraIcon,
@@ -28,7 +29,6 @@ import {
 import {
   describeView,
   ErrorDetails,
-  errorCopy,
   resumable,
   StatusBadge,
   useTick,
@@ -52,17 +52,17 @@ export interface PlayerActions {
   onPictureInPicture?: () => void | Promise<void>;
 }
 export interface PlayerPresentation {
-  transport?: "tcp" | "udp";
+  transport?: "tcp" | "udp" | undefined;
   needsPlay?: boolean;
   /** The video element is paused while media keeps arriving. */
   paused?: boolean;
   reloadRequired?: boolean;
   /** While a dropped connection may recover: when it fails (performance.now()). */
-  recoverBy?: number;
+  recoverBy?: number | undefined;
   /** After a lost connection: when it is tried again on its own (performance.now()). */
-  retryAt?: number;
+  retryAt?: number | undefined;
   state: State;
-  error?: ErrorBody;
+  error?: ErrorBody | undefined;
   controls?: PlayerControls;
   actions?: PlayerActions;
   videoRef?: Ref<HTMLVideoElement>;

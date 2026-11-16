@@ -6,6 +6,12 @@
     "linux/arm64": {
       "url": "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_linux_arm64",
       "sha256": "af416f22b21a24ab83b8d78642190b4932ae695b4e386853f11d1b0319781763"
+    },
+    "darwin/arm64": {
+      "url": "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_mac_arm64.zip",
+      "archive_sha256": "d0cf858a71803dce2377423bc830639137ee96c335f88e9912e7f7898374266d",
+      "sha256": "d69780b0ed222866f2a9a8160537bae9936887ff467626ccba00b8840c609266",
+      "development_only": true
     }
   }
 }

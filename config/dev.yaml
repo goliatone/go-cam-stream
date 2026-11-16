@@ -1,6 +1,10 @@
 # Default for ./taskfile dev:serve. The task expands @RUNTIME_DIR@ below to
 # this checkout's ignored .cache/dev/runtime directory before loading it.
-# No camera credentials or external camera connections are configured.
+# On macOS dev:serve generates moving video for this source using FFmpeg.
+# --webcam[=INDEX] opts into video-only Mac webcam capture instead.
+# Custom configs use their actual sources; default mode opens no capture device.
+# camstream-dev uses local HTTP and supplies its fixed developer identity.
+# The HTTPS origin/access below apply only if this config is used by camstream.
 installation_id: camstream-dev
 origin: https://camstream-dev.example.test
 listen: 127.0.0.1:8081
@@ -15,14 +19,14 @@ backend:
   media_ports: {first: 35100, last: 35131}
 cameras:
   - id: dev-camera
-    name: Development RTSP camera
+    name: Development test pattern
     physical_id: dev-camera
     strategy: rtsp
     config:
       host: 127.0.0.1
       port: 8554
       profiles:
-        - {id: default, name: Local RTSP, path: /cam, audio: false}
+        - {id: default, name: Moving test pattern, path: /cam, audio: false}
     streams: [default]
 access:
   - login: developer@example.test

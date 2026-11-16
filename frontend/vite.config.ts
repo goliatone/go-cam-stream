@@ -44,5 +44,7 @@ export default defineConfig({
       : {}),
   },
   preview: { host: "127.0.0.1" },
-  build: { target: "es2022" },
+  // The viewer ships as one module chunk with nothing to preload, so the
+  // modulepreload polyfill would only add bytes.
+  build: { target: "es2022", modulePreload: { polyfill: false } },
 });

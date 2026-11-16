@@ -176,6 +176,21 @@ describe("owned viewer lifecycle", () => {
       body: { code: "cleanup_incomplete" },
     });
   });
+  it("requires a page reload when ownership is denied after a lost connection", async () => {
+    const { controller, api, peers, last } = setup();
+    await controller.select(one, capabilities);
+    api.close.mockRejectedValue(new PlaybackError("access_denied", false));
+    peers[0]!.connect("failed");
+    await flush();
+    expect(last()).toMatchObject({
+      state: "failed",
+      reloadRequired: true,
+      error: { code: "cleanup_incomplete", retryable: false },
+    });
+    await expect(controller.dispose()).rejects.toMatchObject({
+      body: { code: "cleanup_incomplete" },
+    });
+  });
   it("stops tracks and closes only this page's session on removal", async () => {
     const { controller, api, peers } = setup();
     await controller.select(one, capabilities);

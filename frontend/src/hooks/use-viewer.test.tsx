@@ -139,6 +139,7 @@ describe("live media binding", () => {
         recoverBy: now + 9000,
         statusAt: now,
         observingSince: now - 1000,
+        transport: "udp",
         status: {
           stream_id: "default",
           state: "playing",
@@ -149,10 +150,22 @@ describe("live media binding", () => {
     );
     expect(await screen.findByText("Updated just now")).toBeTruthy();
     expect(document.querySelector(".countdown")!.textContent).toBe("9 s");
-    // Without them, no countdown and no update yet.
+    expect(document.querySelector(".media-transport")!.textContent).toBe(
+      " · WebRTC UDP",
+    );
+    // Without them, no countdown, no transport and no update yet.
     act(() => control.changed!(snapshot("reconnecting")));
     expect(await screen.findByText("No update yet")).toBeTruthy();
     expect(document.querySelector(".countdown")).toBeNull();
+    expect(document.querySelector(".media-transport")).toBeNull();
+    // Asking for status a whole window without an answer warns.
+    act(() =>
+      control.changed!({
+        ...snapshot("reconnecting"),
+        observingSince: performance.now() - 11000,
+      }),
+    );
+    expect(await screen.findByText("No update for 11 s")).toBeTruthy();
     // A lost connection that is tried again on its own counts down too.
     act(() =>
       control.changed!({
@@ -166,6 +179,19 @@ describe("live media binding", () => {
     expect(
       document.querySelector(".player-message h2 + p")!.textContent,
     ).toBe("Trying again automatically in 3 s.");
+  });
+  it("shows a catalog that failed to load, and loads it again on Try again", async () => {
+    api.list.mockRejectedValueOnce(new Error("private detail"));
+    render(<Live />);
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByRole("heading").textContent).toBe(
+      "Can't reach camstream",
+    );
+    expect(alert.textContent).not.toContain("private detail");
+    fireEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(await screen.findByLabelText("Selected camera player")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(api.list).toHaveBeenCalledTimes(2);
   });
   it("starts without observation in a page opened in the background", async () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);

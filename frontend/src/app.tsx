@@ -19,28 +19,27 @@ import {
   describeView,
   duration,
   ErrorDetails,
-  errorCopy,
-  stateLabels,
   useTick,
 } from "./components/status";
+import { errorCopy, stateLabels } from "./services/copy";
 import { linkFor, resolveSelection } from "./services/links";
 import { pageTitle, showPageState } from "./services/page-meta";
 import { closeDialog, openDialog, useShortcuts } from "./services/shortcuts";
 
 export interface ViewerInput {
   selection: StreamRef;
-  status?: StreamStatus;
+  status?: StreamStatus | undefined;
   /** When this page last received a newer observation (performance.now()). */
-  statusAt?: number;
+  statusAt?: number | undefined;
   /** Since when this page has asked for status; unset while it does not. */
-  observingSince?: number;
+  observingSince?: number | undefined;
   presentation: PlayerPresentation;
 }
 export interface AppProps {
   catalog: CameraList;
   loading?: boolean;
-  error?: ErrorBody;
-  viewer?: ViewerInput;
+  error?: ErrorBody | undefined;
+  viewer?: ViewerInput | undefined;
   /** Selection requested by the page address; resolved like any other request. */
   initialSelection?: Partial<StreamRef>;
   onReload?: () => void;
