@@ -171,6 +171,22 @@ describe("same-origin API and package CSRF", () => {
     const api = new APIClient(request);
     expect(await api.list()).toEqual(samples.catalog);
     expect(await api.status(ref)).toEqual(samples.unknown_status);
+    // A status's error keeps the code and drops the server's message.
+    request.mockResolvedValueOnce(
+      response({
+        ...samples.unknown_status,
+        error: {
+          code: "source_unavailable",
+          message: "private",
+          retryable: false,
+        },
+      }),
+    );
+    expect((await api.status(ref)).error).toEqual({
+      code: "source_unavailable",
+      message: "",
+      retryable: false,
+    });
   });
   it("sanitizes network errors and bounds reads without repeating them", async () => {
     vi.useFakeTimers();

@@ -27,6 +27,11 @@ statistics, and playing state comes from the media element.
 | Source failure | Safe source error; viewer retry never performs operator reconnect or clears a source latch. |
 | Page exit | Best-effort keepalive release plus immediate peer close; backend peer-loss handling provides bounded cleanup when delivery is unavailable. |
 
+The supported browsers are current Safari and Chrome on macOS and Safari on iPhone.
+The viewer's script uses ES2022 private class methods, so it does not run at all
+before Safari 15, Chrome 85 or Firefox 90. Its layout uses dynamic viewport units
+and a container query where available and falls back without them.
+
 Capability detection is runtime-based, not a user-agent compatibility promise.
 The [play API](https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/play)
 requires handling promise rejection. [Fullscreen](https://developer.mozilla.org/en-US/docs/Web/API/Element/requestFullscreen)
@@ -69,6 +74,10 @@ the synthetic preview; interaction tests cover the refresh, its schedule across
 visibility changes, failed refreshes, closing the page and a reload overtaking a
 refresh, and Go tests cover the server's summary. Statuses from a live server were
 not exercised in a browser.
+T25's smaller production bundle was loaded in a desktop Chromium browser with a
+stubbed API: the camera list, a session's creation and release, a failed
+connection's view and a dimmed camera row behaved as before, with no console
+errors. Older Safari, Chrome and Firefox versions were not run.
 Firefox Developer Edition fails
 ICE in both the TCP-only and TCP+UDP local fixtures (owner-reported). Its exact
 version and cause are unverified; Firefox support is not established. The generic

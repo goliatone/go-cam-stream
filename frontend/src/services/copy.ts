@@ -1,7 +1,8 @@
 import type { ErrorCode, State } from "./contracts";
 
 // Reviewed copy for each state and error code. Their keys are also the states
-// and codes that the API client accepts from the server.
+// and codes that the API client accepts from the server, so keep each table
+// complete: a state or code without an entry is rejected.
 export const stateLabels: Record<State, string> = {
   unknown: "Status unknown",
   idle: "Ready",

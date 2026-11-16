@@ -145,7 +145,9 @@ peer immediately, and relies on bounded server peer-loss cleanup if exit deliver
 or an expired token prevents confirmation. Back-forward cache entry releases the
 viewer; restoration reloads authorized scope.
 
-The UI uses fixed error copy and projected public fields. It never displays raw
+The UI uses fixed error copy and projected public fields. The copy for each state
+and error code lives in `src/services/copy.ts`, and the API client rejects a
+state or code without an entry there. It never displays raw
 server messages, SDP, candidates, private source URLs or secret references; a
 failure's details line shows only its safe error code, the camera and stream
 names and the time it was first shown. The

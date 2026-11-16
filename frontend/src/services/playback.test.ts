@@ -191,6 +191,20 @@ describe("owned viewer lifecycle", () => {
       body: { code: "cleanup_incomplete" },
     });
   });
+  it("requires a page reload when ownership is denied during a stop", async () => {
+    const { controller, api, last } = setup();
+    await controller.select(one, capabilities);
+    api.close.mockRejectedValue(new PlaybackError("access_denied", false));
+    await controller.stop();
+    expect(last()).toMatchObject({
+      state: "failed",
+      reloadRequired: true,
+      error: { code: "cleanup_incomplete", retryable: false },
+    });
+    await expect(controller.dispose()).rejects.toMatchObject({
+      body: { code: "cleanup_incomplete" },
+    });
+  });
   it("stops tracks and closes only this page's session on removal", async () => {
     const { controller, api, peers } = setup();
     await controller.select(one, capabilities);
@@ -266,7 +280,12 @@ describe("owned viewer lifecycle", () => {
     expect(api.create).toHaveBeenCalledOnce();
     peers[0]!.connect("failed");
     await flush();
-    expect(last()!.error!.code).toBe("media_connection_failed");
+    // A lost connection can be tried again.
+    expect(last()!.error).toEqual({
+      code: "media_connection_failed",
+      message: "",
+      retryable: true,
+    });
     expect(api.close).toHaveBeenCalledOnce();
     expect(api.create).toHaveBeenCalledOnce();
     await controller.dispose();
@@ -622,7 +641,11 @@ describe("automatic retry of lost connections", () => {
     controller.playing();
     controller.mediaError();
     await flush();
-    expect(last()!.error!.code).toBe("media_connection_failed");
+    expect(last()!.error).toEqual({
+      code: "media_connection_failed",
+      message: "",
+      retryable: true,
+    });
     expect(last()!.retryAt).toBeUndefined();
     // Nor is a peer that reports closed: only this page closes its peers.
     await controller.retry();

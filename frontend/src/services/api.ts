@@ -37,7 +37,10 @@ const id = (v: unknown): v is string =>
 const listed = <K extends string>(
   table: Record<K, unknown>,
   v: unknown,
-): v is K => typeof v === "string" && Object.hasOwn(table, v);
+): v is K =>
+  typeof v === "string" &&
+  // Not Object.hasOwn, which Safari 15.0–15.3 lack.
+  Object.prototype.hasOwnProperty.call(table, v);
 const state = (v: unknown): v is State => listed(stateLabels, v);
 function fail(): never {
   throw new PlaybackError("server_unavailable");
