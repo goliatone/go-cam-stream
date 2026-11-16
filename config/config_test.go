@@ -175,3 +175,16 @@ func TestInjectedProviderAndEmptyCatalog(t *testing.T) {
 		t.Fatal("duplicate decoder accepted")
 	}
 }
+
+func TestManagementConfiguration(t *testing.T) {
+	for _, m := range []config.Management{{}, {Enabled: true, Principals: []string{"manager"}, StateDir: "/private/managed", DestinationCIDRs: []string{"203.0.113.0/24"}}} {
+		if m.Validate() != nil {
+			t.Fatal("valid management policy rejected")
+		}
+	}
+	for _, m := range []config.Management{{Enabled: true}, {StateDir: "relative"}, {Principals: []string{"*"}}, {Principals: []string{"same", "same"}}, {DestinationCIDRs: []string{"bad"}}, {DestinationCIDRs: []string{"203.0.113.1/24"}}} {
+		if m.Validate() == nil {
+			t.Fatal("invalid management policy accepted")
+		}
+	}
+}

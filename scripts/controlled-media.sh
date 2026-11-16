@@ -2,15 +2,18 @@
 # Disposable local Linux arm64 validation. No host caches, services or cameras.
 set -eu
 usage() {
-    echo 'Usage: ./scripts/controlled-media.sh [--fresh] [--output NEW_DIRECTORY]'
+    echo 'Usage: ./scripts/controlled-media.sh [--fresh] [--management-probes|--management-host] [--output NEW_DIRECTORY]'
     echo 'Requires Docker (Linux arm64 execution), tar, and network access for build dependencies.'
     echo '--fresh disables Docker build-layer reuse; evidence is retained, runtime resources are removed.'
 }
 fresh=false
+test_name=TestT05ProductionRTSP
 output=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --fresh) fresh=true; shift ;;
+        --management-probes) test_name=TestManagementProbes; shift ;;
+        --management-host) test_name=TestManagementHost; shift ;;
         --output) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; output=$2; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -130,7 +133,7 @@ done
 docker create --init --name "$app" --label "$label=$run" \
     --network "container:$origin" --cpus 2 --memory 768m \
     -e CAMSTREAM_RTSP_T05=1 "$image" \
-    -test.run '^TestT05ProductionRTSP$' -test.v -test.timeout 60s > /dev/null
+    -test.run "^${test_name}$" -test.v -test.timeout 90s > /dev/null
 docker start "$app" > /dev/null
 echo 'Running production RTSP/API media checks…'
 docker wait "$app" > "$output/container-exit.txt" &
@@ -140,5 +143,5 @@ child=
 docker logs "$app" > "$output/api.log" 2>&1
 cat "$output/api.log"
 [ "$(cat "$output/container-exit.txt")" = 0 ] || exit 1
-grep -q '^--- PASS: TestT05ProductionRTSP ' "$output/api.log" || { echo 'Required live test did not pass' >&2; exit 1; }
+grep -q "^--- PASS: ${test_name} " "$output/api.log" || { echo 'Required live test did not pass' >&2; exit 1; }
 result=PASS

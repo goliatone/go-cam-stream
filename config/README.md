@@ -120,3 +120,36 @@ deployment example uses `room2/default`.
 The controlled fixture establishes RTSP media and host behavior, not support for
 every IP camera, Pi model or real EC70 firmware. Exact-device mixed playback and
 representative Pi capacity remain separate hardware gates.
+
+## Managed camera state
+
+The `management` startup settings define `enabled` (default false), `principals`,
+optional `destination_cidrs`, and an absolute `state_dir`. Enabled management needs
+at least one exact principal. It grants no access to existing cameras. CIDRs extend
+initial-address admission; unspecified, multicast and link-local addresses remain
+forbidden. Stock go2rtc redirects are trusted; these settings are not an egress
+sandbox. Saved numeric pins stay fixed across DNS changes and reconnects.
+
+Private state uses a versioned envelope, exclusive installation-bound directory
+lock, 0700 directory and 0600 regular files. Use a canonical path with no symlink
+components, outside worker generation directories; the parent must already exist.
+The state is plaintext and contains credentials. Mount it persistently and protect
+backups equally. File/directory sync and atomic same-directory rename are required;
+readable bytes alone never establish successful persistence. Corrupt, incompatible
+or differently owned state fails closed. Disabling management must retain loaded
+cameras and creator grants. With no `state_dir`, the host uses
+`<backend.runtime_dir>/managed-state`, alongside `workers`. Existing read-only
+installations without state create no store until management is enabled. An
+explicit state directory must be outside `workers`; its parent must exist.
+
+```yaml
+management:
+  enabled: true
+  principals: [operator@example.com]
+  state_dir: /var/lib/camstream/cameras
+```
+
+Only these principals can add cameras. Each addition grants its creator view,
+diagnose and reconnect access; enabling management grants no existing-camera
+access. Remove management permission without removing the state directory to keep
+saved playback. Never remove a store to work around a startup validation error.

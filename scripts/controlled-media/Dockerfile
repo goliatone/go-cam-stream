@@ -43,6 +43,7 @@ RUN test "$(cat .golangci-lint-version)" = v2.14.0 \
 RUN ffmpeg -hide_banner -loglevel error \
       -f lavfi -i testsrc2=size=640x360:rate=15 \
       -t 4 -an -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency -g 15 /fixture/clip.mkv \
+    && ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=320x240:rate=10 -t 2 -an -c:v mpeg4 /fixture/unsupported.mkv \
     && { go version; golangci-lint version; go2rtc -version; ffmpeg -version; dpkg-query -W ffmpeg; \
          sha256sum /fixture/app.test /fixture/clip.mkv /usr/local/bin/go2rtc; } > /fixture/versions.txt
 COPY scripts/controlled-media/origin.yaml scripts/controlled-media/other.yaml /fixture/

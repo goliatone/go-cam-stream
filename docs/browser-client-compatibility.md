@@ -14,9 +14,10 @@ statistics, and playing state comes from the media element.
 | Stop | Releases this page's session through the controller's serialized cleanup and keeps the selection, also while a Play or Try again is still connecting; the stopped view offers Play video, which negotiates a new session. A failed release shows the cleanup error and keeps the session for an explicit retry. Nothing restarts on its own within the page; a reload or a back-forward cache restore starts the view again, as a fresh page load does. |
 | Fullscreen | The viewer root (video, controls and overlays) through the standard element API, then the WebKit-prefixed one, so fullscreen persists when cameras switch; otherwise Safari video fullscreen once metadata has loaded, disabled again when the media is removed. Exit uses the matching API. Standard API rejections remain visible; the older WebKit-prefixed request reports failure only by event, which the viewer does not surface. |
 | Picture in picture | Standard API or supported Safari presentation mode, only after live video arrives. Unsupported cases explain why. |
-| Overlay controls | Fade after 3 s of playback without pointer, touch or keyboard activity, and stay while paused, connecting, failed, a hint shows, a mouse or pen rests on the toolbar or it holds keyboard focus. Touch leaves `:hover` behind and does not hold them. Hidden controls take no pointer events, so the first tap or pointer move reveals them. Unavailable controls stay focusable and say why when pressed. |
+| Overlay controls | Fade after 3 s of playback without pointer, touch or keyboard activity, and stay while paused, connecting, failed, a hint shows, a mouse or pen rests on the toolbar or it holds keyboard focus. Touch leaves `:hover` behind and does not hold them. Hidden controls take no pointer events, so the first tap or pointer move reveals them. Unavailable controls stay focusable and say why when pressed. A solid shade behind the icons and a dark halo around the focus ring keep both visible on a bright frame. |
 | Keyboard shortcuts | Single keys without Ctrl, Alt or Meta; held keys do not repeat. Ignored while a form field has focus or a dialog is open, and Space still activates a focused button. R starts a stopped view and otherwise says when there is nothing to retry. Layouts that need AltGr or Option for `[` and `]` cannot use those two; the rail and the camera sheet still switch cameras. |
 | Phone layouts | Portrait pins the player under the top bar. Landscape on touch screens at 500 px height or less fills the screen, pads for safe areas (`viewport-fit=cover`), scrolls a long message above the controls and opens cameras and the stream choice in a modal sheet. The camera name stays the page heading for screen readers. A zoomed or short desktop window keeps the regular layout, which scrolls instead of clipping. |
+| Light or dark | The page follows the system's appearance setting, as do scrollbars and the browser's other parts. The video stage and its overlays look the same in both; a dark page draws a line around the stage. There is no toggle, and nothing is stored. |
 | Selection change | Detach/pause old video, close peer/stop tracks, confirm server release, then negotiate the latest selection. |
 | Brief transport loss | A compact Reconnecting badge over the last frame counts down the 15 s recovery window while native ICE recovers; a media stall without a peer disconnection shows no countdown. The seconds are visual only; a status region that is always in the page announces the reconnect and any automatic retry. A sustained disconnection or failed peer releases the viewer. Video that played is then tried again on its own, up to twice, 3 s and then 10 s after each loss, while the page is visible; Try again starts at once and Stop ends the wait. Other failures offer explicit retry. |
 | Status freshness | Timed on this device, with page-local time, from when each status answer with a newer observation of a known state arrives. The server's observation time is only compared with its earlier values, never with the device clock, so a stale server observation counts as no update. After 10 s of asking without an update, the stream details warn "No update for N s". |
@@ -78,6 +79,26 @@ T25's smaller production bundle was loaded in a desktop Chromium browser with a
 stubbed API: the camera list, a session's creation and release, a failed
 connection's view and a dimmed camera row behaved as before, with no console
 errors. Older Safari, Chrome and Firefox versions were not run.
+T26's tokens were compared rule by rule with the previous stylesheet. The preview's
+21 states were captured in headless Chromium at 1440×900 and 375×812 before and
+after, and the pixel differences are the intended ones: shades merged within one
+just-noticeable difference, the select's text, the 18 px narrow title, the toolbar
+shade, the prompt's backing, an unplayable camera's darker name and, at phone
+width, toolbar icons 3 px further from the stage's edges. Short desktop windows
+keep the previous page and stage sizes. Over a simulated white frame, the prompt,
+failure copy, toolbar icons and keyboard focus ring were compared before and
+after; on a phone the focus ring's halo stays inside the stage. A dialog's
+backdrop takes its colour from a token set on `::backdrop` itself, because Safari
+before 17.4, Chrome before 122 and Firefox before 120 do not pass custom
+properties to a backdrop; those versions were not run. Real video frames, Safari
+and iPhone were not exercised.
+T27's dark theme was captured the same way, with Chrome started in dark mode, and
+the browser pane's dark emulation showed the built page, the stream select and its
+focus ring. With touch emulation at 667×330, a focused skip link over the video
+keeps its ring on its own margin in both themes. With a light setting the 47
+captures are pixel-identical to T26's.
+Safari, iPhone and Firefox were not run; Firefox before 96 has no `color-scheme`,
+so there scrollbars stay light on a dark page.
 Firefox Developer Edition fails
 ICE in both the TCP-only and TCP+UDP local fixtures (owner-reported). Its exact
 version and cause are unverified; Firefox support is not established. The generic

@@ -20,6 +20,7 @@ import (
 )
 
 type Config struct {
+	Management       Management    `koanf:"management"`
 	InstallationID   string        `koanf:"installation_id"`
 	Origin           string        `koanf:"origin"`
 	Listen           string        `koanf:"listen"`
@@ -115,6 +116,16 @@ func ValidLogin(value string) bool {
 }
 
 func (c Config) Validate() error {
+	if err := c.Management.Validate(); err != nil {
+		return err
+	}
+	if c.Management.StateDir != "" {
+		workerRoot := filepath.Join(c.Backend.RuntimeDir, "workers")
+		rel, err := filepath.Rel(workerRoot, c.Management.StateDir)
+		if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return invalid()
+		}
+	}
 	if !ValidID(c.InstallationID) || c.OperationTimeout <= 0 {
 		return invalid()
 	}

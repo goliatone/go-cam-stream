@@ -6,3 +6,4 @@ webrtc:
   listen: ""
 streams:
   t05-other-private: "exec:ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /fixture/clip.mkv -c copy -rtsp_transport tcp -f rtsp {output}"
+  t05-unsupported-private: "exec:ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /fixture/unsupported.mkv -c copy -rtsp_transport tcp -f rtsp {output}"
