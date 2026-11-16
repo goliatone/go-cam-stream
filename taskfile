@@ -171,14 +171,33 @@ function dev:webcams {
     printf 'INDEX\tWEBCAM\n%s\n\nUse: ./taskfile dev:serve --webcam=INDEX\n' "${devices}"
 }
 
-## dev:serve [--config FILE] [--webcam[=INDEX]]
+## dev:serve [PORT | --port PORT] [--config FILE] [--webcam[=INDEX]]
 ## Build and serve with config/dev.yaml; override with --config or CAMSTREAM_CONFIG.
 ## Re-run after source changes. Ctrl-C gracefully stops the server.
 function dev:serve {
     local config="${CAMSTREAM_CONFIG:-${SCRIPT_DIR}/config/dev.yaml}"
     local webcam=""
+    local port="" port_set=false
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --port)
+                if [ "$#" -lt 2 ]; then
+                    echo "--port requires a port between 1 and 65535." >&2
+                    return 2
+                fi
+                if [ "${port_set}" = true ]; then
+                    echo "Specify the development port only once." >&2
+                    return 2
+                fi
+                port="$2"; port_set=true; shift 2
+                ;;
+            --port=*|[0-9]*)
+                if [ "${port_set}" = true ]; then
+                    echo "Specify the development port only once." >&2
+                    return 2
+                fi
+                port="${1#--port=}"; port_set=true; shift
+                ;;
             --config)
                 if [ "$#" -lt 2 ] || [ -z "$2" ]; then
                     echo "--config requires a file path." >&2
@@ -198,8 +217,9 @@ function dev:serve {
                 shift
                 ;;
             -h|--help)
-                echo "Usage: $0 dev:serve [--config FILE] [--webcam[=INDEX]]"
+                echo "Usage: $0 dev:serve [PORT | --port PORT] [--config FILE] [--webcam[=INDEX]]"
                 echo "Default: config/dev.yaml; override with CAMSTREAM_CONFIG or --config."
+                echo "Port defaults to the config listen port (bundled: 8081). Example: $0 dev:serve 8087"
                 echo "Mac bundled config: --webcam uses video device 0; --webcam=INDEX selects another. No audio."
                 echo "List camera indices with: $0 dev:webcams"
                 return 0
@@ -207,6 +227,13 @@ function dev:serve {
             *) echo "Unknown dev:serve argument: $1" >&2; return 2 ;;
         esac
     done
+    if [ "${port_set}" = true ]; then
+        if ! [[ "${port}" =~ ^[0-9]{1,5}$ ]] || (( 10#${port} < 1 || 10#${port} > 65535 )); then
+            echo "Development port must be between 1 and 65535." >&2
+            return 2
+        fi
+        port=$((10#${port}))
+    fi
     if [ -z "${config}" ] || [ ! -f "${config}" ]; then
         echo "Set CAMSTREAM_CONFIG or pass --config with an existing startup YAML file." >&2
         return 2
@@ -262,7 +289,7 @@ NODE
     "${SCRIPT_DIR}/bin/camstream" config validate --config "${config}" || return "$?"
     echo "Starting local development server..."
     # Replace the task runner so signals reach the server without a go-run wrapper.
-    exec "${SCRIPT_DIR}/bin/camstream-dev" serve --config "${config}"
+    CAMSTREAM_DEV_PORT="${port}" exec "${SCRIPT_DIR}/bin/camstream-dev" serve --config "${config}"
 }
 
 ##

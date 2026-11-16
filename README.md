@@ -52,6 +52,16 @@ Start with the included [development config](config/dev.yaml):
 Open <http://127.0.0.1:8081/> (or <http://localhost:8081/>). No Tailscale or
 authentication setup is needed in this development mode.
 
+If port 8081 is occupied, choose another port:
+
+```sh
+./taskfile dev:serve 8087          # or: ./taskfile dev:serve --port 8087
+```
+
+Open the printed URL (for example, <http://127.0.0.1:8087/>). The port override
+works with `--config` and `--webcam` and does not edit the configuration file.
+Startup reports an occupied port explicitly; it never stops the other process.
+
 Each invocation installs locked frontend dependencies, type-checks and builds the
 viewer, embeds its assets, compiles `bin/camstream` and `bin/camstream-dev`, validates the configuration,
 and starts the server in the foreground. Ctrl-C shuts it down; rerun after source
