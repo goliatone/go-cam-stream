@@ -91,7 +91,10 @@ func TestAudioAdmissionAndConfigure(t *testing.T) {
 	const inventory = `{"version":1,"devices":[{"id":"b","name":"Mic"},{"id":"a","name":"Mic"},{"id":"prefix","name":"Mic Pro"}]}`
 	s := testService(t)
 	s.Tools = audioFixtureTools(t, inventory, "exit 90")
-	c, secret, _ := load(s.Dir)
+	c, secret, loadErr := load(s.Dir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
 	c.AudioEnabled, c.AudioDeviceID = true, "a"
 	if err := (ConfigureHandler{Service: s}).Execute(context.Background(), Configure{Config: c}); err != nil {
 		t.Fatal(err)
@@ -147,7 +150,10 @@ func TestAudioDiscoveryExecutionBounds(t *testing.T) {
 
 func TestAudioLegacyDowngrade(t *testing.T) {
 	s := testService(t)
-	c, secret, _ := load(s.Dir)
+	c, secret, loadErr := load(s.Dir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
 	c.AudioEnabled, c.AudioDeviceID = true, "a"
 	if err := writeJSON(filepath.Join(s.Dir, "camera.json"), c); err != nil {
 		t.Fatal(err)
@@ -178,7 +184,7 @@ func TestAudioLegacyDowngrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer closePreviewIO(lock)
 	if _, err := s.ExportLegacy(); err == nil {
 		t.Fatal("export while active")
 	}
@@ -203,19 +209,22 @@ func TestAudioPacketValidation(t *testing.T) {
 
 func TestAudioHelperContractAndFailure(t *testing.T) {
 	s := testService(t)
-	c, _, _ := load(s.Dir)
+	c, _, loadErr := load(s.Dir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
 	c.AudioEnabled, c.AudioDeviceID = true, "a"
 	if err := writeJSON(filepath.Join(s.Dir, "camera.json"), c); err != nil {
 		t.Fatal(err)
 	}
 	p := newSessionProbe(t, s, func(context.Context) error { return audioFailure("audio_stalled") })
 	ready := p.receive(t)
-	b, _ := json.Marshal(ready.Result)
+	b := fixtureJSON(t, ready.Result)
 	if !bytes.Contains(b, []byte(`"audio":1`)) {
 		t.Fatal(string(b))
 	}
 	r := p.request(t, "start", nil)
-	b, _ = json.Marshal(r.Result)
+	b = fixtureJSON(t, r.Result)
 	if !bytes.Contains(b, []byte(`"state":"waiting"`)) {
 		t.Fatal(string(b))
 	}
@@ -223,7 +232,7 @@ func TestAudioHelperContractAndFailure(t *testing.T) {
 	if stopped.Event != "capture_stopped" || stopped.Error.Code != "audio_stalled" {
 		t.Fatal(stopped)
 	}
-	b, _ = json.Marshal(stopped.Result)
+	b = fixtureJSON(t, stopped.Result)
 	if !bytes.Contains(b, []byte(`"state":"failed"`)) {
 		t.Fatal(string(b))
 	}
@@ -243,7 +252,10 @@ func TestAudioRemovalBeforeOpenAndStartupDeadline(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s := testService(t)
 			s.Tools = audioFixtureTools(t, `{"version":1,"devices":[{"id":"a","name":"Mic"}]}`, "exit 91")
-			c, _, _ := load(s.Dir)
+			c, _, loadErr := load(s.Dir)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
 			c.AudioEnabled, c.AudioDeviceID = true, "a"
 			if err := writeJSON(filepath.Join(s.Dir, "camera.json"), c); err != nil {
 				t.Fatal(err)
@@ -254,8 +266,8 @@ func TestAudioRemovalBeforeOpenAndStartupDeadline(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 			defer cancel()
 			in, out := io.Pipe()
-			defer in.Close()
-			defer out.Close()
+			defer closePreviewIO(in)
+			defer closePreviewIO(out)
 			err := s.Supervise(ctx, in, io.Discard)
 			wanted := "audio_capture_failed"
 			if mode == "deadline" {
@@ -265,10 +277,95 @@ func TestAudioRemovalBeforeOpenAndStartupDeadline(t *testing.T) {
 			if !errors.As(err, &ae) || string(ae) != wanted {
 				t.Fatal(err)
 			}
-			dir, _ := s.runtimeDir()
+			dir, dirErr := s.runtimeDir()
+			if dirErr != nil {
+				t.Fatal(dirErr)
+			}
 			if _, err := os.Stat(filepath.Join(dir, "mediamtx.json")); !os.IsNotExist(err) {
 				t.Fatal("credentials retained")
 			}
 		})
+	}
+}
+
+func fixtureJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	b, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestAudioSharedProtocolFixtures(t *testing.T) {
+	b, err := os.ReadFile("../../macos/fixtures/audio-protocol.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		LegacyReady    AppReply          `json:"legacy_ready"`
+		Ready          AppReply          `json:"ready"`
+		LegacyConfig   Config            `json:"legacy_config"`
+		DisabledConfig Config            `json:"disabled_config"`
+		Requests       []json.RawMessage `json:"requests"`
+		DiscoveryReply AppReply          `json:"discovery_reply"`
+		Statuses       []Status          `json:"statuses"`
+		FailureEvent   AppReply          `json:"failure_event"`
+	}
+	if err = json.Unmarshal(b, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range fixture.Requests {
+		if _, err = decodeAppRequest(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fixture.LegacyConfig.AudioEnabled || fixture.LegacyConfig.AudioDeviceID != "" || fixture.DisabledConfig.AudioEnabled {
+		t.Fatal("legacy/off fixture enables audio")
+	}
+	if fixture.FailureEvent.Error.Message != audioMessages[fixture.FailureEvent.Error.Code] {
+		t.Fatal("error fixture drift")
+	}
+	if len(fixture.Statuses) != 6 {
+		t.Fatal("missing presentation state")
+	}
+}
+
+func TestAudioLateStartDoesNotSurviveStop(t *testing.T) {
+	s := testService(t)
+	p := newSessionProbe(t, s, func(ctx context.Context) error { <-ctx.Done(); return audioFailure("audio_startup_timeout") })
+	p.receive(t)
+	p.request(t, "start", nil)
+	if r := p.request(t, "stop", nil); r.Error != nil {
+		t.Fatal(r)
+	}
+	// No stale capture_stopped event or failed status may override this Stop.
+	if r := p.request(t, "status", nil); r.Error != nil {
+		t.Fatal(r)
+	}
+	p.request(t, "start", nil)
+	p.request(t, "quit", nil)
+	p.finished(t)
+}
+
+func TestAudioReadinessDeadline(t *testing.T) {
+	now := time.Now()
+	progress := audioProgress{deadline: now}
+	late := now.Add(time.Millisecond)
+	progress.first.Store(&late)
+	progress.packets.Store(1)
+	c := DefaultConfig()
+	c.AudioEnabled = true
+	if mediaReady(c, 10, &progress) {
+		t.Fatal("late audio admitted as streaming")
+	}
+	early := now.Add(-time.Millisecond)
+	progress.first.Store(&early)
+	if !mediaReady(c, 10, &progress) {
+		t.Fatal("timely silent audio rejected")
+	}
+	progress.packets.Store(0)
+	if mediaReady(c, 10, &progress) {
+		t.Fatal("video-only progress admitted")
 	}
 }

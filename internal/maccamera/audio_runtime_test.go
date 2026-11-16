@@ -27,7 +27,7 @@ func TestAudioActualRuntime(t *testing.T) {
 	}
 	root := t.TempDir()
 	helper := filepath.Join(root, "camstream-camera")
-	build := exec.Command("go", "build", "-o", helper, "../../cmd/camstream-camera")
+	build := exec.CommandContext(context.Background(), "go", "build", "-o", helper, "../../cmd/camstream-camera")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
 	}
@@ -43,17 +43,24 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Port = listener.Addr().(*net.TCPAddr).Port
-	_ = listener.Close()
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatal("expected TCP listener")
+	}
+	c.Port = addr.Port
+	closePreviewIO(listener)
 	c.AudioEnabled, c.AudioDeviceID = mode != "video-only", "synthetic: mic"
 	if err = writeJSON(filepath.Join(s.Dir, "camera.json"), c); err != nil {
 		t.Fatal(err)
 	}
-	runtimeDir, _ := s.runtimeDir()
+	runtimeDir, dirErr := s.runtimeDir()
+	if dirErr != nil {
+		t.Fatal(dirErr)
+	}
 	fixtureTools := filepath.Join(root, "tools")
 	if err = os.MkdirAll(fixtureTools, 0700); err != nil {
 		t.Fatal(err)
@@ -112,13 +119,13 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 	}()
 	finished := false
 	defer func() {
-		_ = stdin.Close()
+		closePreviewIO(stdin)
 		if !finished {
 			select {
-			case <-done:
+			case <-done: //nolint:errcheck // Failure-path cleanup only; success path checks the exit.
 			case <-time.After(12 * time.Second):
-				_ = cmd.Process.Kill()
-				<-done
+				_ = cmd.Process.Kill() //nolint:errcheck // Exit races are confirmed by Wait and child PID checks.
+				<-done                 //nolint:errcheck // Forced failure cleanup.
 				t.Error("helper cleanup timeout")
 			}
 		}
@@ -136,7 +143,7 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 		}
 	}
 	send := func(method string) {
-		if err := json.NewEncoder(stdin).Encode(AppRequest{Version: 1, ID: method, Method: method}); err != nil {
+		if err = json.NewEncoder(stdin).Encode(AppRequest{Version: 1, ID: method, Method: method}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,8 +171,8 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 				t.Fatalf("capture ended before readiness: %+v error=%+v", r, r.Error)
 			default:
 			}
-			status, err := s.Status(ctx)
-			if err == nil && status.State == "streaming" {
+			status, statusErr := s.Status(ctx)
+			if statusErr == nil && status.State == "streaming" {
 				break
 			}
 			if ctx.Err() != nil {
@@ -173,25 +180,25 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
-		status, err := s.Status(ctx)
-		if err != nil {
-			t.Fatal(err)
+		status, statusErr := s.Status(ctx)
+		if statusErr != nil {
+			t.Fatal(statusErr)
 		}
 		if c.AudioEnabled && (status.Audio.State != "live" || status.Audio.Packets == 0) {
 			t.Fatal(status)
 		}
 		t.Logf("%s ready in %s, audio packets=%d", mode, time.Since(start).Round(time.Millisecond), status.Audio.Packets)
 		if mode == "silence-stop" {
-			endpoint, err := s.AttachPreview(ctx)
-			if err != nil {
-				t.Fatal(err)
+			endpoint, attachErr := s.AttachPreview(ctx)
+			if attachErr != nil {
+				t.Fatal(attachErr)
 			}
-			conn, err := net.Dial("unix", endpoint.Socket)
-			if err != nil {
-				t.Fatal(err)
+			conn, dialErr := (&net.Dialer{}).DialContext(ctx, "unix", endpoint.Socket)
+			if dialErr != nil {
+				t.Fatal(dialErr)
 			}
 			readPreviewFrame(t, conn, endpoint.Generation)
-			_ = conn.Close()
+			closePreviewIO(conn)
 			if err = s.DetachPreview(ctx, endpoint.Generation); err != nil {
 				t.Fatal(err)
 			}
@@ -223,7 +230,7 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 		}
 	}
 	if mode == "owner-loss" {
-		_ = cmd.Process.Kill()
+		_ = cmd.Process.Kill() //nolint:errcheck // Exit races are confirmed by Wait and child PID checks.
 	} else {
 		send("stop")
 		if r := receive(); r.ID != "stop" || r.Error != nil {
@@ -252,7 +259,10 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 			if readErr != nil {
 				continue
 			}
-			pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(b)))
+			if parseErr != nil || pid <= 0 {
+				t.Fatal("invalid child PID")
+			}
 			if syscall.Kill(pid, 0) == nil {
 				alive = true
 			}
@@ -270,9 +280,9 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 			t.Fatal("private runtime resource retained", name, err)
 		}
 	}
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", c.Port), 200*time.Millisecond)
+	conn, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(c.Port)))
 	if err == nil {
-		_ = conn.Close()
+		closePreviewIO(conn)
 		t.Fatal("listener survived")
 	}
 	if mode == "video-only" {

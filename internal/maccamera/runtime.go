@@ -54,7 +54,7 @@ func resolveToolsAt(exe string, lookPath func(string) (string, error)) (Tools, e
 		return Tools{}, errors.New("mediamtx missing; use the complete exported camera folder")
 	}
 	// Optional for legacy video-only folders; audio-on validates it before capture.
-	p, _ := find("ffprobe")
+	p, _ := find("ffprobe") //nolint:errcheck // Optional for video-only; validateAudio rejects a missing observer.
 	return Tools{FFmpeg: f, MediaMTX: m, FFprobe: p}, nil
 }
 

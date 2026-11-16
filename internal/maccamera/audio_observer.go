@@ -32,13 +32,13 @@ func (s *Service) observeAudio(c Config, secret credentials, dir string, progres
 	cmd := exec.Command(s.Tools.FFprobe, "-v", "error", "-protocol_whitelist", "file,tcp,rtsp,rtp,udp", "-f", "concat", "-safe", "0", "-i", source, "-select_streams", "a:0", "-show_packets", "-show_entries", "packet=codec_type,pts_time,duration_time:packet_side_data=", "-of", "compact=p=0") //nolint:noctx // Supervisor owns bounded stop/kill/reap, including on startup failure.
 	raw, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = os.Remove(source)
+		_ = os.Remove(source) //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
 		return nil, audioFailure("audio_observer_failed")
 	}
 	reader, err := startChild(cmd)
 	if err != nil {
-		_ = raw.Close()
-		_ = os.Remove(source)
+		_ = raw.Close()       //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
+		_ = os.Remove(source) //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
 		return nil, audioFailure("audio_observer_failed")
 	}
 	o := &audioObserver{child: reader, source: source, done: make(chan error, 1)}
@@ -88,6 +88,10 @@ func audioPacketTime(line string) (float64, bool) {
 		}
 		values[key] = value
 	}
+	return packetTiming(values)
+}
+
+func packetTiming(values map[string]string) (float64, bool) {
 	pts, e1 := strconv.ParseFloat(values["pts_time"], 64)
 	duration, e2 := strconv.ParseFloat(values["duration_time"], 64)
 	return pts, values["codec_type"] == "audio" && e1 == nil && e2 == nil && !math.IsNaN(pts) && !math.IsInf(pts, 0) && duration > 0 && duration <= 0.12

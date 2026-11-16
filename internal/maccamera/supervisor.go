@@ -138,7 +138,7 @@ func serveControl(conn net.Conn, c Config, frames *atomic.Int64, audio *audioPro
 		return
 	}
 	state := "starting"
-	if frames.Load() > 0 && (!c.AudioEnabled || audio.ready()) {
+	if mediaReady(c, frames.Load(), audio) {
 		state = "streaming"
 	}
 	var endpoint *PreviewEndpoint
@@ -246,22 +246,16 @@ func (s *Service) monitor(ctx context.Context, c Config, secret credentials, dir
 		case err := <-watch.observed:
 			return err
 		case <-producer.done:
-			if c.AudioEnabled {
-				return audioFailure("audio_capture_failed")
-			}
-			return errors.New("camera capture stopped; check macOS camera permission, device availability and resolution/fps")
+			return producerFailure(c)
 		case <-startup.C:
-			if !ready && !(frames.Load() > 0 && (!c.AudioEnabled || audio.ready())) {
-				if c.AudioEnabled {
-					return audioFailure("audio_startup_timeout")
-				}
-				return errors.New("no video frames within 45 seconds; grant camera access and retry")
+			if !ready && !(mediaReady(c, frames.Load(), audio)) {
+				return startupFailure(c)
 			}
 		case <-ticker.C:
 			if err := watch.tick(frames.Load()); err != nil {
 				return err
 			}
-			if !ready && frames.Load() > 0 && (!c.AudioEnabled || audio.ready()) {
+			if !ready && mediaReady(c, frames.Load(), audio) {
 				ready = true
 				if _, err := fmt.Fprintln(out, "Streaming configured media at "+c.URL()+" (authenticated RTSP/TCP)"); err != nil {
 					return err
@@ -305,4 +299,20 @@ func (s *Service) startServer(ctx context.Context, config string) (*child, error
 		return nil, err
 	}
 	return server, nil
+}
+
+func mediaReady(c Config, frames int64, audio *audioProgress) bool {
+	return frames > 0 && (!c.AudioEnabled || audio.ready())
+}
+func producerFailure(c Config) error {
+	if c.AudioEnabled {
+		return audioFailure("audio_capture_failed")
+	}
+	return errors.New("camera capture stopped; check macOS camera permission, device availability and resolution/fps")
+}
+func startupFailure(c Config) error {
+	if c.AudioEnabled {
+		return audioFailure("audio_startup_timeout")
+	}
+	return errors.New("no video frames within 45 seconds; grant camera access and retry")
 }

@@ -97,8 +97,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if reportError && err != nil {
 		report := os.NewFile(3, "capture-result")
 		if report != nil {
-			_ = json.NewEncoder(report).Encode(maccamera.CaptureFailure(err))
-			_ = report.Close()
+			_ = json.NewEncoder(report).Encode(maccamera.CaptureFailure(err)) //nolint:errcheck,errchkjson // Worker exit still reports failure if the owner closed the result pipe.
+			_ = report.Close()                                                //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
 		}
 	}
 	return err

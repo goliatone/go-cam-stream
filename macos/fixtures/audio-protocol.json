@@ -1,0 +1,160 @@
+{
+  "legacy_ready": {
+    "version": 1,
+    "event": "ready",
+    "result": {
+      "protocol": 1,
+      "preview": 1
+    }
+  },
+  "ready": {
+    "version": 1,
+    "event": "ready",
+    "result": {
+      "protocol": 1,
+      "preview": 1,
+      "audio": 1
+    }
+  },
+  "legacy_config": {
+    "device": "MacBook Pro Camera",
+    "listen": "127.0.0.1",
+    "host": "localhost",
+    "port": 8554,
+    "path": "macbook",
+    "width": 1280,
+    "height": 720,
+    "fps": 30
+  },
+  "disabled_config": {
+    "device": "MacBook Pro Camera",
+    "listen": "127.0.0.1",
+    "host": "localhost",
+    "port": 8554,
+    "path": "macbook",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "audio_enabled": false,
+    "audio_device_id": "fixture: mic-1"
+  },
+  "requests": [
+    {
+      "version": 1,
+      "id": "discover-audio",
+      "method": "audio_devices"
+    },
+    {
+      "version": 1,
+      "id": "save-audio",
+      "method": "configure",
+      "config": {
+        "device": "MacBook Pro Camera",
+        "listen": "127.0.0.1",
+        "host": "localhost",
+        "port": 8554,
+        "path": "macbook",
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "audio_enabled": true,
+        "audio_device_id": "fixture: mic-1"
+      }
+    },
+    {
+      "version": 1,
+      "id": "save-legacy",
+      "method": "configure",
+      "config": {
+        "device": "MacBook Pro Camera",
+        "listen": "127.0.0.1",
+        "host": "localhost",
+        "port": 8554,
+        "path": "macbook",
+        "width": 1280,
+        "height": 720,
+        "fps": 30
+      }
+    }
+  ],
+  "discovery_reply": {
+    "version": 1,
+    "id": "discover-audio",
+    "result": [
+      {
+        "id": "fixture: mic-1",
+        "name": "Microphone"
+      },
+      {
+        "id": "fixture: mic-2",
+        "name": "Microphone"
+      }
+    ]
+  },
+  "statuses": [
+    {
+      "state": "stopped",
+      "audio": {
+        "enabled": false,
+        "state": "disabled",
+        "packets": 0
+      }
+    },
+    {
+      "state": "starting",
+      "audio": {
+        "enabled": true,
+        "state": "waiting",
+        "packets": 0
+      }
+    },
+    {
+      "state": "streaming",
+      "audio": {
+        "enabled": true,
+        "state": "live",
+        "packets": 73
+      }
+    },
+    {
+      "state": "stopping",
+      "audio": {
+        "enabled": true,
+        "state": "stopping",
+        "packets": 73
+      }
+    },
+    {
+      "state": "stopped",
+      "audio": {
+        "enabled": true,
+        "state": "stopped",
+        "packets": 0
+      }
+    },
+    {
+      "state": "stopped",
+      "audio": {
+        "enabled": true,
+        "state": "failed",
+        "packets": 0
+      }
+    }
+  ],
+  "failure_event": {
+    "version": 1,
+    "event": "capture_stopped",
+    "result": {
+      "state": "stopped",
+      "audio": {
+        "enabled": true,
+        "state": "failed",
+        "packets": 0
+      }
+    },
+    "error": {
+      "code": "audio_stalled",
+      "message": "Microphone audio stopped progressing for 5 seconds; check the device, then explicitly restart."
+    }
+  }
+}

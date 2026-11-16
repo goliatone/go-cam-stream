@@ -244,14 +244,7 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 	case "configure":
 		return a.configure(ctx, *r.Config)
 	case "status":
-		v, err := a.service.Status(ctx)
-		if err != nil {
-			return nil, appError("status_unavailable")
-		}
-		if v.State == "stopped" && a.failure != nil {
-			return a.service.stoppedStatus("failed"), a.failure
-		}
-		return v, nil
+		return a.status(ctx)
 	case "stop", "quit":
 		a.stopOwned()
 		a.failure = nil
@@ -312,6 +305,17 @@ func (a *appSession) configure(ctx context.Context, c Config) (any, *AppError) {
 	v, err := a.service.Configuration()
 	if err != nil {
 		return nil, appError("configuration_failed")
+	}
+	return v, nil
+}
+
+func (a *appSession) status(ctx context.Context) (any, *AppError) {
+	v, err := a.service.Status(ctx)
+	if err != nil {
+		return nil, appError("status_unavailable")
+	}
+	if v.State == "stopped" && a.failure != nil {
+		return a.service.stoppedStatus("failed"), a.failure
 	}
 	return v, nil
 }

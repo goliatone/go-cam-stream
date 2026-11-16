@@ -172,18 +172,18 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 	}
 	report, workerReport, err := os.Pipe()
 	if err != nil {
-		_ = pipe.Close()
+		_ = pipe.Close() //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
 		return err
 	}
-	defer report.Close()
-	defer workerReport.Close()
+	defer report.Close()       //nolint:errcheck // Closing the owned pipe is final cleanup.
+	defer workerReport.Close() //nolint:errcheck // Closing the owned pipe is final cleanup.
 	cmd.ExtraFiles = []*os.File{workerReport}
 	cmd.Stdout, cmd.Stderr = out, stderr
 	if err = cmd.Start(); err != nil {
 		_ = pipe.Close() //nolint:errcheck // EOF, including a previously closed pipe, terminates the supervisor.
 		return err
 	}
-	_ = workerReport.Close()
+	_ = workerReport.Close() //nolint:errcheck // Best-effort cleanup preserves the primary operation result.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -270,7 +270,7 @@ func (s *Service) Stop(ctx context.Context) error {
 }
 
 func (s *Service) stoppedStatus(state string) Status {
-	c, _ := s.Configuration()
+	c, _ := s.Configuration() //nolint:errcheck // An unconfigured stopped service reports audio disabled.
 	return Status{State: "stopped", Audio: (*audioProgress)(nil).status(c, state)}
 }
 
