@@ -122,6 +122,49 @@ the stage and clear of its tooltip, the skip link's focus ring on its own margin
 and the stream select's text at 16 px, below which iOS Safari zooms in. When a new
 colour pair appears, add it to that test; a new page token needs a dark value too.
 
+## Preview snapshots
+
+`npm run snapshots` captures every state of `/preview.html` at a git ref and in the
+working tree, and lists the views that differ. It keeps no baseline images. The
+ref is read with `git archive` into a temporary folder, so the checkout, index and
+branches stay as they are.
+
+```sh
+npm run snapshots                              # the working tree against HEAD
+npm run snapshots -- --base main               # a branch's work against main
+npm run snapshots -- --base HEAD~3 --head HEAD --only phone --scheme dark
+```
+
+Each state is captured at three sizes, in light and in dark:
+
+- 1440×900;
+- a 375×812 phone's whole page;
+- a 667×330 phone held sideways.
+
+The shortcuts dialog, the collapsed rail and the camera sheet are captured too.
+That makes 134 views of each version, in about a minute for both.
+
+The project's Vite serves both versions with the working tree's dependencies; the
+script notes when the ref's lock file differs. A local Chrome or Chromium captures
+them. Set `CHROME_PATH`, or pass `--chrome`, if Chrome is not in the usual place.
+
+To keep runs repeatable:
+
+- the preview's clock stands still, and timers of a second or more never fire;
+- the time zone is UTC and the locale en-US;
+- animations and transitions are off, and reduced motion is set;
+- colours are sRGB, and one device pixel is one CSS pixel;
+- the page is left to settle after it loads, after the state is chosen and after
+  each click;
+- each version runs in a browser of its own.
+
+The report goes to `.snapshots/`, which Git ignores. `index.html` shows each
+differing view's two captures and its changed pixels in red; `report.json` lists
+every view. The command exits 0 when no view differs, 1 when one does and 2 when
+it cannot run. Chrome draws large blurred shadows and gradients up to three levels
+differently from run to run, which the eye cannot see, so differences of up to
+three levels in a colour channel are ignored; `--tolerance 0` compares exactly.
+
 ## Ownership and recovery
 
 `useViewer` owns one `PlaybackController` per page. It receives filtered catalog
@@ -140,13 +183,12 @@ fresh page does. The viewer never replays a request whose outcome is uncertain,
 and has no upstream reconnect, credential storage, session lease renewal or
 foreground heartbeat.
 
-Status observations are read-only and pause when hidden, including in a page
-opened in a background tab. Camera statuses refresh every 10 seconds while the
-page is visible, and at once when it is shown again. A refresh changes only each
-camera's status; the cameras listed and the selection change only on reload. A
-camera the refresh leaves out, or a failed refresh, shows no status rather than an
-old one. A page shown again keeps its last statuses until that refresh answers,
-at most 20 seconds, and a reload overrides an older refresh. Freshness is timed on this device from when each
+Catalog and status observations are read-only and pause while hidden. Visible
+pages refresh full camera membership, access and availability every four seconds,
+and immediately when shown or after Save. Generation/request fencing rejects
+older responses. Additions preserve the selected video and playback controller;
+network failures preserve membership with unknown availability and a stale-list
+message. An explicit access denial clears the authorized view. Freshness is timed on this device from when each
 newer observation of a known state arrives; the server's observation time is
 only compared with its earlier values, never with the device clock. A page shown
 again does not warn while its first new request runs. Native ICE may recover
@@ -185,3 +227,54 @@ optional transport badge shows only the selected WebRTC protocol (`TCP`/`UDP`).
 
 [Controlled browser evidence](../.ctx/specs/camera-streaming/support/evidence/t12-playback.md)
 distinguishes tested behavior from pending target-browser/deployment gates.
+
+
+## Add a camera
+
+Enable the configured principal in [management settings](../config/README.md#managed-camera-state).
+The native development host enables its fixed local principal automatically.
+Choose **Add Camera**, enter an RTSP address and optional credentials, or import
+the Mac companion's exported YAML and optional credentials file. In the Mac app,
+stop capture before exporting, then start it before **Test connection**. YAML alone
+requires entering credentials in **Edit details**. Exported grants are ignored.
+
+Review the address and access guidance, test until decoded live video is verified
+and preview cleanup completes, then choose **Save Camera**. Save leaves the current
+view playing; **Watch Camera** selects the addition. Other visible authorized pages
+refresh automatically. `localhost` is the server's machine. Imported hosts are
+never silently changed to make a remote server reach the Mac.
+
+Browser site storage is required before mutations. It retains only scoped IDs,
+revisions and expiry, never endpoint, name, files or credentials. Lost replies and
+reloads check the original operation. **Check status** resolves uncertainty;
+**Retry original Save** preserves its key and original inputs when available.
+Unknown saves cannot be abandoned or silently retried as new cameras. Unsaved
+drafts lost at server restart require re-entry; durable saves recover by receipt.
+
+**Reconnect Camera** appears for an authorized source fault and confirms its effect
+on other viewers of that source. It remains available with management disabled
+when reconnect grants remain. **Try again** only retries this page's session.
+
+`npm run build` enforces gzip budgets from the manifest: 20,000 bytes for the
+initial JavaScript dependency closure, 12,000 for separately loaded management,
+and 6,000 for all CSS. Total JavaScript and SVG sizes are reported separately.
+The management smoke drivers under `scripts/` require an explicitly isolated host,
+an unsaved RTSP source and a locally installed browser driver; they never start
+camera capture or store screenshots. Safari is also checked with its native
+controls; a WebDriver setup failure is not browser playback evidence.
+`management-import-smoke.mjs` accepts exact `SMOKE_YAML` and `SMOKE_ENV` export
+paths and verifies lost import recovery and the YAML-only credential gate without
+starting capture. It intercepts the response after Chromium uploads the files.
+
+
+For Linux browser integration, run `./scripts/controlled-media.sh
+--management-browser --output NEW_DIRECTORY` from the repository root. It exposes
+only localhost HTTPS/media ports and writes the owned container names to `run.txt`.
+Run `management-smoke.mjs` with `PLAYWRIGHT_MODULE`, `SMOKE_ORIGIN` and
+`SMOKE_ENDPOINT`; the fixture authenticated source uses its documented synthetic
+credentials through `SMOKE_USERNAME`/`SMOKE_PASSWORD`. After onboarding, send HUP
+to test PID 7 in the owned app container to restart the host with management
+disabled. `management-recovery-smoke.mjs` takes `SMOKE_ORIGIN_CONTAINER` and checks
+restored grants, failed Watch, explicit reset, lost reset response and viewer
+denial. Stop the owned app container gracefully to finish the harness and verify
+`cleanup=true`. The fixture identity header and restart signal are test-only.

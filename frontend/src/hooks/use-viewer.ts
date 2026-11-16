@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AppProps, ViewerInput } from "../app";
-import type { CameraList, ErrorBody, StreamRef } from "../services/contracts";
+import type { CameraList, CatalogRevision, ErrorBody, StreamRef } from "../services/contracts";
 import { APIClient, safeError, type ViewerAPI } from "../services/api";
 import {
   PlaybackController,
@@ -27,10 +27,12 @@ function showAddress(link: string) {
 }
 
 /** Camera rows show the server's availability, refreshed this often while visible. */
-export const AVAILABILITY_MS = 10000;
+export const AVAILABILITY_MS = 4000;
 
-export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
+export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; refreshCatalog: (minimum?: CatalogRevision) => Promise<CatalogRevision | undefined>; onRecovered: () => Promise<void> } {
   const [catalog, setCatalog] = useState<CameraList>({ cameras: [] });
+  const [catalogStale, setCatalogStale] = useState(false);
+  const requestSequence = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ErrorBody>();
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>();
@@ -54,28 +56,41 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
         if (alive.current) setSnapshot(next);
       }),
   );
-  const refreshAbort = useRef<AbortController | undefined>(undefined);
+  const catalogAbort = useRef<AbortController | undefined>(undefined);
+  const refreshCatalog = useCallback(async (minimum?: CatalogRevision) => {
+    const sequence = ++requestSequence.current;
+    catalogAbort.current?.abort();
+    const abort = new AbortController(); catalogAbort.current = abort;
+    try {
+      const result = await api.list(abort.signal);
+      if (alive.current && sequence === requestSequence.current) {
+        const old = catalogRef.current.revision, next = result.revision;
+        if (next && old && next.runtime_epoch === old.runtime_epoch && next.generation < old.generation) throw Error();
+        if (minimum && next && next.runtime_epoch === minimum.runtime_epoch && next.generation < minimum.generation) throw Error();
+        catalogRef.current = result; setCatalog(result); setCatalogStale(false);
+      }
+      const revision = catalogRef.current.revision;
+      if (minimum && (!revision || (revision.runtime_epoch === minimum.runtime_epoch && revision.generation < minimum.generation))) throw Error();
+      return revision;
+    } catch (reason) {
+      if (alive.current && sequence === requestSequence.current) {
+        if (safeError(reason).code === "access_denied") { catalogRef.current={cameras:[]};setCatalog(catalogRef.current); setError(safeError(reason)); }
+        else { const stale={...catalogRef.current,cameras:catalogRef.current.cameras.map(camera=>({...camera,availability:"unknown" as const}))}; catalogRef.current=stale;setCatalog(stale);setCatalogStale(true); }
+      }
+      throw reason;
+    }
+  }, [api]);
   const reload = useCallback(() => {
-    refreshAbort.current?.abort();
-    const abort = new AbortController();
-    refreshAbort.current = abort;
     setLoading(true);
     setError(undefined);
-    void api
-      .list(abort.signal)
-      .then((result) => {
-        if (!abort.signal.aborted && alive.current) setCatalog(result);
-      })
-      .catch((reason) => {
-        if (!abort.signal.aborted && alive.current) {
-          setCatalog({ cameras: [] });
-          setError(safeError(reason, "server_unavailable"));
-        }
-      })
-      .finally(() => {
-        if (!abort.signal.aborted && alive.current) setLoading(false);
-      });
-  }, [api]);
+    const sequence=requestSequence.current+1;
+    void refreshCatalog().catch((reason) => {
+      if (alive.current && sequence===requestSequence.current && !catalogAbort.current?.signal.aborted) {
+        setCatalog({cameras:[]});
+        setError(safeError(reason, "server_unavailable"));
+      }
+    }).finally(() => { if (alive.current) setLoading(false); });
+  }, [refreshCatalog]);
   const onSelect = useCallback(
     (ref: StreamRef | undefined) => {
       const camera =
@@ -196,7 +211,7 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
     window.addEventListener("popstate", popstate);
     return () => {
       alive.current = false;
-      refreshAbort.current?.abort();
+      catalogAbort.current?.abort();
       document.removeEventListener("visibilitychange", visibility);
       window.removeEventListener("pagehide", pagehide);
       window.removeEventListener("pageshow", pageshow);
@@ -205,42 +220,17 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
       void controller.dispose().catch(() => {});
     };
   }, [controller, reload]);
-  // Refresh only each camera's availability, at once when the page is shown
-  // again. The camera list and the selection change only on reload, and a
-  // camera the refresh leaves out, or a failed refresh, shows no status. A
-  // reload started after a refresh carries newer availability than its answer.
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let request = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined, stopped = false;
     const refresh = () => {
       clearTimeout(timer);
-      request.abort();
-      if (document.visibilityState === "hidden") return;
-      const { signal } = (request = new AbortController()),
-        load = refreshAbort.current;
-      const show = ({ cameras }: CameraList) => {
-        if (signal.aborted) return;
-        if (load === refreshAbort.current)
-          setCatalog((old) => ({
-            cameras: old.cameras.map((camera) => ({
-              ...camera,
-              availability:
-                cameras.find((item) => item.id === camera.id)?.availability ??
-                "unknown",
-            })),
-          }));
-        timer = setTimeout(refresh, AVAILABILITY_MS);
-      };
-      api.list(signal).then(show, () => show({ cameras: [] }));
+      if (document.visibilityState === "hidden" || stopped) { catalogAbort.current?.abort(); ++requestSequence.current; return; }
+      void refreshCatalog().catch(() => {}).finally(() => { if (!stopped) timer = setTimeout(refresh, AVAILABILITY_MS); });
     };
     timer = setTimeout(refresh, AVAILABILITY_MS);
     document.addEventListener("visibilitychange", refresh);
-    return () => {
-      clearTimeout(timer);
-      request.abort();
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [api]);
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [refreshCatalog]);
   const viewer: ViewerInput | undefined = snapshot && {
     selection: snapshot.selection,
     status: snapshot.status,
@@ -302,6 +292,9 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void } {
     initialSelection,
     onSelect,
     onReload: reload,
+    catalogStale,
+    refreshCatalog,
+    onRecovered: async () => { await controller.stop(); await controller.retry(); },
   };
 }
 export const viewerAPI = new APIClient();

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tarfile
 
-from runtime_pack import DEFAULT_CACHE, DEFAULT_LOCK, ROOT, extract, fetch, inspect_macho, load_lock, recipe_hash, sha
+from runtime_pack import DEFAULT_CACHE, DEFAULT_LOCK, ROOT, extract, fetch, inspect_macho, load_lock, recipe_hash, sha, runtime_tools, verified_patches, verified_candidate, inspect_capabilities
 
 
 def capture(*args):
@@ -21,6 +21,9 @@ def build(args):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("runtime build requires Apple Silicon macOS and Xcode tools")
     lock = load_lock(args.lock)
+    patches = verified_patches(lock)
+    candidate_info = verified_candidate(args.candidate, lock) if args.candidate else None
+    tool_names = runtime_tools(lock)
     work = args.work.resolve()
     if work.exists():
         raise ValueError("work directory exists; select a fresh path for a clean build")
@@ -47,7 +50,10 @@ def build(args):
         with (work / (name + ".log")).open("ab") as log:
             subprocess.run(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
 
-    for name in ("pkgconf", "x264", "ffmpeg"):
+    for patch in patches:
+        run("patch", ["/usr/bin/patch", "--batch", "--fuzz=0", "-p1", "-i", str(patch)], source_dirs["ffmpeg"])
+
+    for name in (() if candidate_info else ("pkgconf", "x264", *(("opus",) if "opus" in lock["sources"] else ()), "ffmpeg")):
         directory = source_dirs[name]
         options = [str(directory / "configure"), f"--prefix={prefix}", *lock["configure"][name]]
         if name == "ffmpeg":
@@ -60,27 +66,21 @@ def build(args):
     stage = work / "pack"
     for name in ("tools", "licenses", "sources", "recipe"):
         (stage / name).mkdir(parents=True)
-    shutil.copy2(prefix / "bin/ffmpeg", stage / "tools/ffmpeg")
-    shutil.copy2(source_dirs["mediamtx"] / "mediamtx", stage / "tools/mediamtx")
-    for name in ("ffmpeg", "mediamtx"):
+    for name in tool_names:
+        source = args.candidate / "tools" / name if candidate_info else (source_dirs["mediamtx"] / name if name == "mediamtx" else prefix / "bin" / name)
+        shutil.copy2(source, stage / "tools" / name)
+    entitlements = ROOT / ("macos/runtime-entitlements.plist" if "opus" in lock["sources"] else "macos/CameraProof/entitlements.plist")
+    for name in tool_names:
         binary = stage / "tools" / name
         binary.chmod(0o755)
         subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime",
-                        "--entitlements", str(ROOT / "macos/CameraProof/entitlements.plist"), str(binary)], check=True)
-    macho = {name: inspect_macho(stage / "tools" / name, lock["target"]) for name in ("ffmpeg", "mediamtx")}
-    versions = {name: capture(str(stage / "tools" / name), "-version" if name == "ffmpeg" else "--version").splitlines()[0]
-                for name in ("ffmpeg", "mediamtx")}
+                        "--entitlements", str(entitlements), str(binary)], check=True)
+    macho = {name: inspect_macho(stage / "tools" / name, lock["target"]) for name in tool_names}
+    versions = {name: capture(str(stage / "tools" / name), "--version" if name == "mediamtx" else "-version").splitlines()[0]
+                for name in tool_names}
     if not versions["ffmpeg"].startswith("ffmpeg version " + lock["sources"]["ffmpeg"]["version"]) or versions["mediamtx"] != "v" + lock["sources"]["mediamtx"]["version"]:
         raise ValueError("built runtime version mismatch")
-    capabilities = {}
-    for option, required in {"-devices": ["avfoundation", "lavfi"], "-encoders": ["libx264", "wrapped_avframe", "rawvideo"],
-                             "-decoders": ["h264", "rawvideo", "wrapped_avframe"], "-muxers": ["rtsp", "null", "rawvideo"],
-                             "-filters": ["scale", "fps", "format"],
-                             "-demuxers": ["rtsp", "concat"], "-protocols": ["tcp", "pipe", "file"]}.items():
-        result = capture(str(stage / "tools/ffmpeg"), "-hide_banner", option)
-        if any(item not in result.split() for item in required):
-            raise ValueError(f"built FFmpeg is missing required capabilities: {option}")
-        capabilities[option] = result
+    capabilities = inspect_capabilities(stage / "tools", lock)
     run("encode-smoke", [str(stage / "tools/ffmpeg"), "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-an", "-frames:v", "30",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-f", "null", "-"], work)
@@ -106,6 +106,8 @@ def build(args):
         "Camstream Camera runtime pack\n\n"
         "FFmpeg is built with GPL libx264 and distributed under GPL-2.0-or-later.\n"
         "Exact FFmpeg/x264 sources and build recipes accompany this pack.\n"
+        "FFmpeg is modified by the ordered, hash-pinned patches in the recipe (exact audio UID/discovery and bounded audio FIFO).\n"
+        "Static libopus (BSD-3-Clause) source and upstream license accompany audio-capable packs.\n"
         "pkgconf (ISC) is a build-only dependency; its source accompanies the recipe.\n"
         "MediaMTX is an unmodified, hash-pinned official MIT-licensed release binary.\n"
         "Upstream origins, versions and hashes: recipe/macos/runtime.lock.json.\n"
@@ -118,8 +120,17 @@ def build(args):
     for name in ("build-runtime.py", "runtime_pack.py"):
         shutil.copy2(ROOT / "macos" / name, recipe_dir / name)
     shutil.copy2(ROOT / "macos/CameraProof/entitlements.plist", recipe_dir / "CameraProof/entitlements.plist")
+    if "opus" in lock["sources"]:
+        shutil.copy2(ROOT / "macos/runtime-entitlements.plist", recipe_dir / "runtime-entitlements.plist")
+    for record, patch in zip(lock.get("patches", []), patches):
+        destination = stage / "recipe" / record["file"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(patch, destination)
+    if candidate_info:
+        shutil.copy2(args.candidate / "BUILDINFO.json", stage / "recipe/proof-candidate-BUILDINFO.json")
     info = {"runtime_id": lock["runtime_id"], "target": lock["target"], "recipe_sha256": recipe_hash(lock),
-            "versions": versions, "macho": macho, "capabilities": capabilities, "sources": lock["sources"], "commands": commands,
+            "versions": versions, "macho": macho, "capabilities": capabilities, "sources": lock["sources"], "commands": commands, "patches": lock.get("patches", []),
+            "candidate_promotion": {"buildinfo_sha256": lock["proof_candidate"]["buildinfo_sha256"], "tools_before_signing": candidate_info["tools"]} if candidate_info else None,
             "build_environment": env, "toolchain": {"clang": capture(cc, "--version"),
             "sdk": capture("/usr/bin/xcrun", "--show-sdk-version"), "macos": platform.mac_ver()[0]},
             "signing": "ad-hoc hardened runtime; not Developer ID or notarized",
@@ -160,6 +171,7 @@ if __name__ == "__main__":
     parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--candidate", type=Path, help="promote the exact proof candidate pinned by BUILDINFO digest; validates inputs and tool hashes")
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=DEFAULT_CACHE / "packs")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))

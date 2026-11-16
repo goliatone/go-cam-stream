@@ -2,11 +2,12 @@
 # Disposable local Linux arm64 validation. No host caches, services or cameras.
 set -eu
 usage() {
-    echo 'Usage: ./scripts/controlled-media.sh [--fresh] [--management-probes|--management-host] [--output NEW_DIRECTORY]'
+    echo 'Usage: ./scripts/controlled-media.sh [--fresh] [--management-probes|--management-host|--management-browser] [--output NEW_DIRECTORY]'
     echo 'Requires Docker (Linux arm64 execution), tar, and network access for build dependencies.'
     echo '--fresh disables Docker build-layer reuse; evidence is retained, runtime resources are removed.'
 }
 fresh=false
+browser=false
 test_name=TestT05ProductionRTSP
 output=
 while [ "$#" -gt 0 ]; do
@@ -14,6 +15,7 @@ while [ "$#" -gt 0 ]; do
         --fresh) fresh=true; shift ;;
         --management-probes) test_name=TestManagementProbes; shift ;;
         --management-host) test_name=TestManagementHost; shift ;;
+        --management-browser) browser=true; test_name=TestManagementBrowser; shift ;;
         --output) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; output=$2; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -118,8 +120,13 @@ child=
 docker image inspect --format '{{.Id}}' "$image" > "$output/image.txt"
 
 # Separate PID namespaces: fixture FFmpeg never runs among application workers.
-# Share only loopback networking; nothing is published or externally reachable.
-docker create --init --name "$origin" --label "$label=$run" --network none \
+# API checks share isolated loopback only. Browser mode publishes an explicit
+# localhost-only HTTPS/media pool; no source API or RTSP listener is published.
+set -- --network none
+if [ "$browser" = true ]; then
+    set -- --network bridge -p 127.0.0.1:35410:35410 -p 127.0.0.1:35110-35115:35110-35115/tcp -p 127.0.0.1:35110-35115:35110-35115/udp
+fi
+docker create --init --name "$origin" --label "$label=$run" "$@" \
     --cpus 2 --memory 512m --entrypoint /bin/sh "$image" \
     -c 'go2rtc -config /fixture/other.yaml & exec go2rtc -config /fixture/origin.yaml' > /dev/null
 docker cp "$origin:/fixture/versions.txt" "$output/versions.txt"
@@ -130,10 +137,16 @@ until docker exec "$origin" sh -c 'curl --fail --silent http://127.0.0.1:34000/a
     [ "$attempt" -lt 20 ] || { echo 'Fixture origin did not become ready' >&2; exit 1; }
     sleep 1
 done
+set -- -e CAMSTREAM_RTSP_T05=1
+timeout=90s
+if [ "$browser" = true ]; then
+    set -- -e CAMSTREAM_MANAGEMENT_BROWSER=1 -v "$output:/evidence"
+    timeout=30m
+fi
 docker create --init --name "$app" --label "$label=$run" \
     --network "container:$origin" --cpus 2 --memory 768m \
-    -e CAMSTREAM_RTSP_T05=1 "$image" \
-    -test.run "^${test_name}$" -test.v -test.timeout 90s > /dev/null
+    "$@" "$image" \
+    -test.run "^${test_name}$" -test.v -test.timeout "$timeout" > /dev/null
 docker start "$app" > /dev/null
 echo 'Running production RTSP/API media checks…'
 docker wait "$app" > "$output/container-exit.txt" &

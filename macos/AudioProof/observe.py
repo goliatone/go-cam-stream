@@ -2,6 +2,7 @@
 """Bounded loopback proof reader. Prints metrics only; never stores media or credentials."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import selectors
@@ -11,7 +12,7 @@ import time
 
 
 def observe(tools, state, seconds, wrong_password=False):
-    config = json.loads((state / 'config.json').read_text())
+    config = json.loads((state / 'camera.json').read_text())
     secret = json.loads((state / 'credentials.json').read_text())
     password = 'invalid-proof-password' if wrong_password else secret['password']
     # Credential characters are generated hex by the unchanged service.
@@ -20,6 +21,7 @@ def observe(tools, state, seconds, wrong_password=False):
             raise ValueError('unsafe credential syntax')
     started = time.monotonic()
     counts, first, last, gap, pts = {}, {}, {}, {}, {}
+    expected_pts, durations, discontinuities, missing, maximum_pts_gap = {}, {}, {}, {}, {}
     with tempfile.TemporaryDirectory(prefix='camstream-audio-observe-') as temp:
         source = Path(temp) / 'source.ffconcat'
         fd = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -53,10 +55,25 @@ def observe(tools, state, seconds, wrong_password=False):
                         first.setdefault(kind, now)
                         gap[kind] = max(gap.get(kind, 0), now - last.get(kind, now))
                         last[kind] = now
-                        if values.get('pts_time') != 'N/A': pts[kind] = float(values['pts_time'])
+                        try:
+                            stamp = float(values.get('pts_time', 'nan'))
+                            duration = float(values.get('duration_time', 'nan'))
+                        except ValueError:
+                            continue
+                        if not math.isfinite(stamp) or not math.isfinite(duration) or duration <= 0:
+                            continue
+                        delta = stamp - expected_pts.get(kind, stamp)
+                        if abs(delta) > .002:
+                            discontinuities[kind] = discontinuities.get(kind, 0) + 1
+                            missing[kind] = missing.get(kind, 0) + max(delta, 0)
+                            maximum_pts_gap[kind] = max(maximum_pts_gap.get(kind, 0), delta)
+                        pts[kind] = stamp
+                        expected_pts[kind] = stamp + duration
+                        durations[kind] = durations.get(kind, 0) + duration
                 if reason == 'reader_exit': break
                 if elapsed >= next_report:
-                    print(json.dumps({'elapsed_s': round(elapsed, 2), 'packets': counts, 'last_pts': pts}), flush=True)
+                    print(json.dumps({'elapsed_s': round(elapsed, 2), 'packets': counts, 'last_pts': pts,
+                                      'pts_discontinuities': discontinuities, 'missing_duration_s': missing}), flush=True)
                     next_report += 30
                 if 'audio' not in counts and elapsed > 20:
                     reason = 'audio_startup_deadline'; break
@@ -67,9 +84,12 @@ def observe(tools, state, seconds, wrong_password=False):
             try: child.wait(timeout=3)
             except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=3)
             poll.close()
+            child.stdout.close()
         print(json.dumps({'result': reason, 'elapsed_s': round(time.monotonic()-started, 3),
                           'packets': counts, 'first_packet_s': first, 'maximum_arrival_gap_s': gap,
-                          'last_pts': pts, 'wrong_password': wrong_password}), flush=True)
+                          'last_pts': pts, 'wrong_password': wrong_password,
+                          'duration_sum_s': durations, 'pts_discontinuities': discontinuities,
+                          'missing_duration_s': missing, 'maximum_pts_gap_s': maximum_pts_gap}), flush=True)
 
 
 if __name__ == '__main__':

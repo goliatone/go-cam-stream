@@ -13,6 +13,8 @@ export interface ManagementView {
   busy?: boolean;
   storageReady: boolean;
   unresolved?: boolean;
+  canAbandon?: boolean;
+  canRetrySave?: boolean;
 }
 export interface ManagementActions {
   submit(input: DraftInput): void;
@@ -23,6 +25,8 @@ export interface ManagementActions {
   recover(): void;
   cancel(): void;
   close(): void;
+  abandon?(): void;
+  retrySave?(): void;
   watch(cameraID: string): void;
 }
 export interface ManagementDialogProps { view: ManagementView; actions: ManagementActions }
@@ -117,6 +121,8 @@ export default function CameraManagementDialog({ view, actions }: ManagementDial
       <div class="management-actions">
         {draft && !view.saved && <button type="button" class="primary-button" disabled={blocked || editing || draft.state !== "tested" || draft.test?.cleanup !== "confirmed"} onClick={actions.save}>Save Camera</button>}
         {(view.unresolved || error) && view.storageReady && <button type="button" disabled={view.busy} onClick={actions.recover}>Check status</button>}
+        {view.canRetrySave && <button type="button" disabled={view.busy} onClick={actions.retrySave}>Retry original Save</button>}
+        {view.canAbandon && <button type="button" onClick={actions.abandon}>Abandon unsaved draft</button>}
         {!view.saved && <button type="button" disabled={blocked} onClick={() => { clearSecrets(); actions.cancel(); }}>Cancel draft</button>}
         <button type="button" onClick={close}>Close</button>
       </div>

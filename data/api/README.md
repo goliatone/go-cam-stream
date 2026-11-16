@@ -103,7 +103,7 @@ The import fixture matches the Mac exporter; its all-zero password is synthetic.
 | POST `/api/camera-drafts/:id/tests/:test/complete` | `CompleteTestRequest` | 200 `TestResult` after cleanup | owning manager |
 | DELETE `/api/camera-drafts/:id/tests/:test` | `Mutation` | 200 `TestResult` after cleanup | owning manager |
 | POST `/api/cameras` | `SaveCameraRequest` | 201 `SaveCameraResponse` | owning manager |
-| GET `/api/camera-operations/:key?runtime_epoch=...&candidate_id=...` | none | 200 `OperationResult` | owner with operation-specific permission |
+| GET `/api/camera-operations/:key?runtime_epoch=...&candidate_id=...&kind=recovery` | none | 200 `OperationResult` | owner with operation-specific permission |
 | POST `/api/cameras/:id/streams/:stream/recovery` | `Mutation` | 200 `ReconnectResponse` | reconnect grants across affected aliases |
 
 All mutations require CSRF. JSON uses strict bounded decoding, with null rejected
@@ -155,3 +155,6 @@ is comparable only within one epoch. Fence old polls and preserve playback when
 reconciling membership. Error/status mappings are allowlisted in
 `management_errors.go`; ordinary media/auth errors retain `ErrorStatus` mappings.
 Private persistence and probe ownership ports live beside viewer commands.
+
+Operation lookup uses `kind=recovery` only for source reset. Omit it for draft,
+test and durable Save recovery. `candidate_id` is optional Save-anchor verification.

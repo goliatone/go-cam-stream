@@ -39,12 +39,25 @@ type ManagementErrorResponse struct {
 	Error ManagementErrorBody `json:"error"`
 }
 
-// ManagementError intentionally has no raw cause or payload. Telemetry uses only
-// its allowlisted code; provider errors are projected through PublicError.
-type ManagementError struct{ Code ManagementErrorCode }
+// ManagementError renders only an allowlisted code/message. A command boundary
+// may retain a cause for errors.Is/As; it is never included in public responses.
+type ManagementError struct {
+	Code  ManagementErrorCode
+	cause error
+}
 
 func (e *ManagementError) Error() string               { return managementErrorBody(e.Code).Message }
 func ManagementFailure(code ManagementErrorCode) error { return &ManagementError{Code: code} }
+func (e *ManagementError) Unwrap() error               { return e.cause }
+
+// ManagementCommandFailure preserves the public domain classification across
+// structured dispatcher wrappers without exposing their messages or metadata.
+func ManagementCommandFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ManagementError{Code: ManagementErrorCode(ManagementPublicError(err).Error.Code), cause: err}
+}
 func managementErrorBody(code ManagementErrorCode) ManagementErrorBody {
 	switch code {
 	case CodeDraftLost:
@@ -88,7 +101,7 @@ func managementErrorBody(code ManagementErrorCode) ManagementErrorBody {
 	case CodeEvidenceInsufficient:
 		return ManagementErrorBody{string(code), "Preview needs advancing decoded frames before saving.", false}
 	default:
-		e := PublicError(cs.NewError(cs.CodeInternal, nil)).Error
+		e := PublicError(cs.NewError(cs.ErrorCode(code), nil)).Error
 		return ManagementErrorBody{string(e.Code), e.Message, e.Retryable}
 	}
 }

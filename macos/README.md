@@ -331,8 +331,9 @@ cache is `.cache/camera-runtime/packs`; `--cache DIR` or `--runtime-pack FILE`
 supports preseeded storage. `--download` permits fetching only a URL recorded in
 the reviewed lock. The current lock controls the exact pack and any approved download URL.
 Runtime-1 and runtime-2 are publicly hosted as separately pinned prereleases.
-A supplied matching local pack remains usable offline; public runtime-1 cannot
-satisfy a runtime-2 lock.
+The current runtime-3 lock selects a locally verified audio-capable pack with no
+hosted URL. Supply that matching pack or preseed the cache; runtime-1/runtime-2
+cannot satisfy the new lock. No runtime-3 publication is implied.
 
 **Signing boundary:** proof/development builds use ad-hoc hardened signatures,
 including FFmpeg. Static non-system dependencies remove the T04 dylib Team ID
@@ -354,15 +355,29 @@ bootstraps the pinned pkgconf source and uses a system-only PATH and private pre
 python3 macos/build-runtime.py --work /private/tmp/camera-runtime-build
 # Offline build: preseed every filename in runtime.lock.json sources first.
 python3 macos/build-runtime.py --offline --cache /path/to/cache --work /private/tmp/camera-runtime-offline
+# Promote the exact verified T01 candidate without recompiling its tools:
+python3 macos/build-runtime.py --offline \
+  --candidate /private/tmp/camstream-audio-t01-6/candidate \
+  --work /private/tmp/camera-runtime-3-promotion
 ```
 
 The source cache is `CACHE/sources`. A wrong checksum is an error, never silently
 replaced. The builder compiles FFmpeg 9.0.2 and pinned x264 with a fixed reduced
-feature set and static libraries, and copies the exact official MediaMTX 1.21.3
-arm64 release. Its capability gate requires AVFoundation, libx264, H.264 decoding,
-RTSP/TCP and null-sink smoke support. Lavfi/testsrc2 and concat are retained for
+feature set, pinned static libopus 1.6.1 and static libraries, and copies the exact
+official MediaMTX 1.21.3 arm64 release. Runtime-3 retains T01’s codec/filter options
+and both ordered FFmpeg patches: exact microphone UID/discovery and bounded audio
+FIFO. Their SHA-256 values are recipe inputs; the builder verifies each patch and
+applies it to pristine source with zero fuzz. Its capability gate requires
+AVFoundation, libx264, H.264/Opus decode, libopus encode, both UID options, ffprobe,
+RTSP/TCP and preview/null-sink support. Lavfi/testsrc2 and concat are retained for
 camera-free validation and private-input reader probes. Upstream-selected RTSP
 dependencies are recorded in BUILDINFO; this is not a general FFmpeg distribution.
+
+`--candidate` requires the lock-pinned proof BUILDINFO digest, identical target,
+source pins, configure options and ordered patches, plus every candidate tool hash.
+Promotion preserves the verified tool code and applies pack signatures; the original
+candidate provenance is included. The normal source-build path remains available.
+Neither mode activates sensors: built-in smoke checks use lavfi synthetic video.
 
 The resulting archive and candidate `.record.json` go into `CACHE/packs` by
 default. Review the candidate hash into `runtime.lock.json` → `packs.darwin-arm64`
@@ -373,10 +388,11 @@ Choose a new runtime ID for a distributed dependency revision. App versions and
 runtime IDs remain independent.
 
 Pack layout: `tools/`, `licenses/`, `sources/`, `recipe/`, `BUILDINFO.json` and
-`MANIFEST.json`. It includes the exact FFmpeg/x264/pkgconf source archives, build
-scripts, configuration, toolchain/SDK provenance, dependency inspection and
-upstream notices. FFmpeg/libx264 use GPL-2.0-or-later; MediaMTX is MIT; pkgconf is
-an ISC build tool. Keep the accompanying sources/notices with distributed assets.
+`MANIFEST.json`. It includes the exact FFmpeg/x264/Opus/pkgconf source archives, both patches,
+modified-source notices, build scripts, configuration, provenance, dependency
+inspection and upstream licenses. Tools include ffmpeg, ffprobe and MediaMTX.
+FFmpeg/libx264 use GPL-2.0-or-later; Opus is BSD-3-Clause; MediaMTX is MIT; pkgconf
+is an ISC build tool. Keep the accompanying sources/notices with distributed assets.
 See [FFmpeg's upstream license guidance](https://ffmpeg.org/legal.html) and the
 pack's license texts. Fixed inputs do not promise byte-identical output across
 different SDKs/compiler versions; exact prepared archive hashes select artifacts.
@@ -535,10 +551,12 @@ A stale image is cleared after five seconds. Local preview does not establish
 that a remote Camstream server can reach this Mac.
 
 Runtime-2 adds bounded raw BGRA output for preview (up to 640×360 at 15 fps).
-The current runtime-2 archive is a locally verified pack with no hosted URL;
-runtime-1 publication does not supply preview capabilities. A signed preview
-release must bundle the exact runtime-2 hash and repeat affected permission,
-preview/window, Stop/Quit and owner-loss checks on its final bytes.
+Runtime-3 preserves those preview components and adds the verified Opus/UID/FIFO
+runtime. The pack alone does not add microphone configuration, readiness supervision
+or UI to Camstream Camera. The existing app assembly copies all locked tools but
+retains its current camera-only permission configuration; microphone app entitlements,
+usage text and final signed/browser validation remain the later audio integration tasks.
+Do not treat the development assembly as a completed microphone application.
 
 For browser onboarding, stop capture, export the connection YAML and optional
 credentials file, then restart capture. In the native development viewer, choose

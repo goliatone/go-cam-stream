@@ -108,6 +108,11 @@ func TestManagementRegisteredHTTPWorkflow(t *testing.T) {
 	if out.Code != 200 || !strings.Contains(out.Body.String(), "succeeded") {
 		t.Fatal("reconnect lookup", out.Code, out.Body.String())
 	}
+	// A missing or unauthorized target stays a safe denial through command wrappers.
+	out = request("POST", "/api/cameras/missing/streams/default/recovery", string(body))
+	if out.Code != 403 || !strings.Contains(out.Body.String(), "access_denied") {
+		t.Fatal("recovery denial projection", out.Code, out.Body.String())
+	}
 	// Safe classified command errors cross the registered runtime unchanged.
 	save.Mutation = mutation(6)
 	save.CatalogRevision.Generation = 99

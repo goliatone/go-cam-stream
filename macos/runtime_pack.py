@@ -30,7 +30,71 @@ def load_lock(path=DEFAULT_LOCK):
     for source in lock["sources"].values():
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", source["file"]) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
             raise ValueError("invalid locked filename/digest")
+    seen = set()
+    for patch in lock.get("patches", []):
+        name = patch["file"]
+        if not re.fullmatch(r"macos/patches/ffmpeg/[a-zA-Z0-9._-]+\.patch", name) or name in seen or not re.fullmatch(r"[0-9a-f]{64}", patch["sha256"]):
+            raise ValueError("invalid locked patch path/digest")
+        seen.add(name)
     return lock
+
+
+def runtime_tools(lock):
+    return ("ffmpeg", "ffprobe", "mediamtx") if "opus" in lock["sources"] else ("ffmpeg", "mediamtx")
+
+
+def verified_patches(lock, root=ROOT):
+    paths = []
+    for record in lock.get("patches", []):
+        path = Path(root) / safe_path(record["file"])
+        if not path.is_file() or sha(path) != record["sha256"]:
+            raise ValueError("runtime patch digest mismatch: " + record["file"])
+        paths.append(path)
+    return paths
+
+
+def verified_candidate(candidate, lock):
+    candidate = Path(candidate)
+    info_path = candidate / "BUILDINFO.json"
+    expected = lock.get("proof_candidate", {}).get("buildinfo_sha256")
+    if not expected or sha(info_path) != expected:
+        raise ValueError("proof candidate BUILDINFO digest mismatch")
+    info = json.loads(info_path.read_text())
+    for field in ("target", "sources", "configure", "patches"):
+        if info["lock"].get(field) != lock.get(field):
+            raise ValueError("proof candidate inputs differ: " + field)
+    for name in runtime_tools(lock):
+        if sha(candidate / "tools" / name) != info["tools"][name]["sha256"]:
+            raise ValueError("proof candidate tool digest mismatch: " + name)
+    return info
+
+
+def inspect_capabilities(tools, lock):
+    required = {"-devices": ["avfoundation", "lavfi"], "-encoders": ["libx264", "wrapped_avframe", "rawvideo"],
+                "-decoders": ["h264", "rawvideo", "wrapped_avframe"], "-muxers": ["rtsp", "null", "rawvideo"],
+                "-filters": ["scale", "fps", "format"], "-demuxers": ["rtsp", "concat"],
+                "-protocols": ["tcp", "pipe", "file"]}
+    audio = "opus" in lock["sources"]
+    if audio:
+        required["-encoders"] += ["libopus", "pcm_s16le"]
+        required["-decoders"] += ["opus", "pcm_s16le", "pcm_s32le", "pcm_f32le", "pcm_f64le"]
+        required["-filters"] += ["aresample", "aformat", "anullsrc", "sine"]
+        required["-muxers"] += ["s16le"]
+    capabilities = {}
+    for option, names in required.items():
+        result = subprocess.check_output([str(Path(tools) / "ffmpeg"), "-hide_banner", option], text=True, stderr=subprocess.DEVNULL, timeout=20)
+        if any(name not in result.split() for name in names):
+            raise ValueError("runtime missing required capabilities: " + option)
+        capabilities[option] = result
+    if audio:
+        result = subprocess.check_output([str(Path(tools) / "ffmpeg"), "-hide_banner", "-h", "demuxer=avfoundation"], text=True, stderr=subprocess.DEVNULL, timeout=20)
+        if any(name not in result.split() for name in ("-camstream_audio_uid", "-camstream_list_audio_devices")):
+            raise ValueError("runtime missing exact audio UID/discovery capabilities")
+        capabilities["avfoundation_options"] = result
+        version = subprocess.check_output([str(Path(tools) / "ffprobe"), "-version"], text=True, stderr=subprocess.DEVNULL, timeout=20)
+        if not version.startswith("ffprobe version " + lock["sources"]["ffmpeg"]["version"]):
+            raise ValueError("runtime ffprobe version mismatch")
+    return capabilities
 
 
 def recipe_hash(lock):
@@ -131,18 +195,33 @@ def unpack_locked(archive, destination, lock, macho=True):
         raise ValueError("runtime pack target/recipe mismatch")
     actual = {p.relative_to(destination).as_posix() for p in destination.rglob("*") if p.is_file()} - {"MANIFEST.json"}
     files = manifest["files"]
-    if actual != set(files) or not {"tools/ffmpeg", "tools/mediamtx", "licenses/NOTICE.txt", "BUILDINFO.json"}.issubset(actual):
+    required = {"tools/" + name for name in runtime_tools(lock)} | {"licenses/NOTICE.txt", "BUILDINFO.json"}
+    if lock.get("patches"):
+        required |= {"recipe/" + p["file"] for p in lock["patches"]}
+        required |= {"recipe/macos/runtime.lock.json"}
+        required |= {"sources/" + s["file"] for s in lock["sources"].values() if not s.get("prebuilt")}
+    if actual != set(files) or not required.issubset(actual):
         raise ValueError("runtime pack inventory mismatch")
     for name, entry in files.items():
         path = destination / safe_path(name)
         if sha(path) != entry["sha256"] or path.stat().st_mode & 0o777 != entry["mode"]:
             raise ValueError(f"runtime pack file mismatch: {name}")
-    for name in ("ffmpeg", "mediamtx"):
+    if lock.get("patches"):
+        verified_patches(lock, destination / "recipe")
+        embedded = load_lock(destination / "recipe/macos/runtime.lock.json")
+        if recipe_hash(embedded) != recipe_hash(lock):
+            raise ValueError("runtime embedded recipe mismatch")
+        for source in lock["sources"].values():
+            if not source.get("prebuilt") and sha(destination / "sources" / source["file"]) != source["sha256"]:
+                raise ValueError("runtime source archive digest mismatch")
+    for name in runtime_tools(lock):
         path = destination / "tools" / name
         if path.stat().st_mode & 0o111 == 0:
             raise ValueError("runtime tool is not executable")
         if macho:
             inspect_macho(path, lock["target"])
+    if macho:
+        inspect_capabilities(destination / "tools", lock)
     return manifest
 
 

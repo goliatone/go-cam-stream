@@ -45,6 +45,6 @@ export default defineConfig({
   },
   preview: { host: "127.0.0.1" },
   // Native dynamic imports fetch optional dialogs only when requested. Small
-  // shared styles load with the viewer; no dependency-preload helper is needed.
-  build: { target: "es2022", modulePreload: false },
+  // shared styles load with the viewer. The manifest supports payload accounting.
+  build: { target: "es2022", modulePreload: false, manifest: true },
 });

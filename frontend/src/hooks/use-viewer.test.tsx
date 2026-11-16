@@ -236,7 +236,7 @@ describe("live media binding", () => {
 });
 
 describe("camera availability", () => {
-  it("refreshes only each camera's availability, while the page is visible", async () => {
+  it("refreshes membership while preserving playback, and pauses in hidden pages", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const advance = (ms: number) =>
       act(async () => {
@@ -271,15 +271,14 @@ describe("camera availability", () => {
       expect(api.list).toHaveBeenCalledTimes(2);
       expect(badge("Room 2")).toBe("Unavailable");
       expect(row("Room 2").classList.contains("dim")).toBe(true);
-      // The selected row keeps this page's own state; the list and the
-      // selection change only on reload.
+      // Membership updates while the selected row keeps this page’s state.
       expect(badge("Room 1")).toBeUndefined();
-      expect(within(rail).queryByText("Room 3")).toBeNull();
+      expect(within(rail).queryByText("Room 3")).toBeTruthy();
       expect(control.select).toHaveBeenCalledTimes(selects);
-      // A camera the refresh leaves out, and a failed refresh, show none.
+      // Authoritative removal drops a row; network failure retains membership.
       api.list.mockResolvedValue({ cameras: [{ ...room1!, availability: "idle" }] });
       await advance(AVAILABILITY_MS);
-      expect(badge("Room 2")).toBeUndefined();
+      expect(within(rail).queryByText("Room 2")).toBeNull();
       api.list.mockResolvedValue(catalog);
       await advance(AVAILABILITY_MS);
       expect(badge("Room 2")).toBe("Live");
@@ -318,7 +317,7 @@ describe("camera availability", () => {
       await advance(AVAILABILITY_MS * 3);
       expect(badge("Room 2")).toBe("Live");
       expect(api.list).toHaveBeenCalledTimes(pending);
-      expect(AVAILABILITY_MS).toBe(10000);
+      expect(AVAILABILITY_MS).toBeLessThanOrEqual(5000);
     } finally {
       vi.useRealTimers();
     }
@@ -659,4 +658,24 @@ describe("addresses and paused video", () => {
       Reflect.deleteProperty(HTMLVideoElement.prototype, "webkitEnterFullscreen");
     }
   });
+});
+
+it("fences older lists behind Save and preserves the selected video on membership additions",async()=>{
+ vi.spyOn(HTMLMediaElement.prototype,"play").mockResolvedValue(undefined);
+ const rev=(generation:number)=>({runtime_epoch:"epoch",generation});
+ api.list.mockResolvedValue({...catalog,revision:rev(1)});
+ let host!:ReturnType<typeof useViewer>;
+ function Bound(){host=useViewer(api);return <App {...host}/>}
+ render(<Bound/>);await waitFor(()=>expect(control.select).toHaveBeenCalled());act(()=>control.changed!(snapshot("playing")));
+ const video=document.querySelector("video"),selectionCalls=control.select.mock.calls.length;
+ let old!:(list:CameraList)=>void;
+ api.list.mockImplementationOnce(()=>new Promise(resolve=>{old=resolve}));
+ const pending=host.refreshCatalog();
+ const added={...catalog.cameras[0]!,id:"new-camera",name:"Added camera"};
+ api.list.mockResolvedValueOnce({cameras:[...catalog.cameras,added],revision:rev(2)});
+ await act(async()=>{await host.refreshCatalog(rev(2))});
+ await act(async()=>{old({...catalog,revision:rev(1)});await pending});
+ expect(host.catalog.cameras).toContainEqual(added);expect(document.querySelector("video")).toBe(video);expect(control.select).toHaveBeenCalledTimes(selectionCalls);expect(control.dispose).not.toHaveBeenCalled();
+ api.list.mockResolvedValueOnce({...catalog,revision:rev(1)});
+ await act(async()=>{await expect(host.refreshCatalog(rev(2))).rejects.toThrow()});expect(host.catalog.cameras).toContainEqual({...added,availability:"unknown"});
 });

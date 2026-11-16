@@ -72,6 +72,19 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
+	// Proof-only diagnostic seam: publisher stderr is otherwise discarded by the
+	// unchanged helper. Keep it private; never copy raw diagnostics into evidence.
+	publishing := false
+	for _, arg := range args {
+		publishing = publishing || strings.HasPrefix(arg, "rtsp://")
+	}
+	if path != "" && s.Enabled && publishing {
+		log, e := os.OpenFile(filepath.Join(filepath.Dir(path), "capture-diagnostic.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0600)
+		if e != nil || syscall.Dup2(int(log.Fd()), 2) != nil {
+			os.Exit(1)
+		}
+		log.Close()
+	}
 	if syscall.Exec(real, append([]string{real}, args...), os.Environ()) != nil {
 		os.Exit(1)
 	}

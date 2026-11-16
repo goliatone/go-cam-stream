@@ -46,7 +46,7 @@ export interface ManagementAPI {
 }
 export class ManagementClient implements ManagementAPI {
   #token: string | undefined;
-  constructor(readonly fetcher: typeof fetch = fetch) {}
+  constructor(readonly fetcher: typeof fetch = (...args) => fetch(...args)) {}
   async #request(path: string, method = "GET", body?: unknown): Promise<unknown> {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), 30000);
@@ -55,7 +55,7 @@ export class ManagementClient implements ManagementAPI {
       if (method !== "GET") {
         if (!this.#token) {
           const token = await this.#request(CSRF_PATH);
-          if (!object(token) || !string(token.token)) return invalid();
+          if (!object(token) || token.header_name !== CSRF_HEADER || !string(token.token) || !token.token || token.token.length > 8192) return invalid();
           this.#token = token.token;
         }
         headers[CSRF_HEADER] = this.#token;

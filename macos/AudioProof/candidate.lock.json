@@ -96,7 +96,7 @@
       "--enable-encoder=libopus,pcm_s16le",
       "--enable-parser=opus",
       "--enable-filter=aresample,aformat,anull,abuffer,abuffersink,sine,anullsrc,ashowinfo,showinfo,astats",
-      "--enable-muxer=s16le,framecrc"
+      "--enable-muxer=pcm_s16le,framecrc"
     ],
     "opus": [
       "--disable-shared",
@@ -110,6 +110,10 @@
     {
       "file": "macos/patches/ffmpeg/0001-camstream-audio-uid.patch",
       "sha256": "cf1ee9be5a225d202d93efa557eb3a6df5a1389cf2953bade9a7414644cdd169"
+    },
+    {
+      "file": "macos/patches/ffmpeg/0002-camstream-audio-queue.patch",
+      "sha256": "e42f7b777cda83e631787c43b42c94d2f086fa853228baa694b2a02fe0fc2f2f"
     }
   ]
 }

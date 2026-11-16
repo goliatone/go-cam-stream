@@ -65,9 +65,23 @@ class RuntimePackTests(unittest.TestCase):
         pack.extract(archive, destination)
         self.assertGreater((destination / "configure").stat().st_mtime, (destination / "configure.ac").stat().st_mtime)
 
-    def fixture(self, target=None, corrupt=False, extra=False, mode=0o755):
+    def fixture(self, target=None, corrupt=False, extra=False, mode=0o755, omit=None):
         files = {"tools/ffmpeg": b"ffmpeg", "tools/mediamtx": b"mediamtx",
                  "licenses/NOTICE.txt": b"notices", "BUILDINFO.json": b"{}"}
+        for name in pack.runtime_tools(self.lock):
+            files["tools/" + name] = name.encode()
+        for source in self.lock["sources"].values():
+            if not source.get("prebuilt"):
+                data = ("source-" + source["file"]).encode()
+                source["sha256"] = hashlib.sha256(data).hexdigest()
+                files["sources/" + source["file"]] = data
+        for record in self.lock.get("patches", []):
+            data = record["file"].encode()
+            record["sha256"] = hashlib.sha256(data).hexdigest()
+            files["recipe/" + record["file"]] = data
+        files["recipe/macos/runtime.lock.json"] = json.dumps({**self.lock, "packs": {}}).encode()
+        if omit:
+            files.pop(omit)
         manifest = {"schema": 1, "target": target or self.lock["target"], "recipe_sha256": pack.recipe_hash(self.lock),
                     "files": {name: {"sha256": hashlib.sha256(data).hexdigest(), "mode": 0o755 if name.startswith("tools/") else 0o644}
                               for name, data in files.items()}}
@@ -117,11 +131,72 @@ class RuntimePackTests(unittest.TestCase):
                     pack.unpack_locked(archive, self.root / name, self.lock, macho=False)
 
     def test_pack_digest_is_not_part_of_its_recipe_hash(self):
+        self.fixture()
         before = pack.recipe_hash(self.lock)
         self.fixture()
         self.assertEqual(pack.recipe_hash(self.lock), before)
         self.lock["configure"]["ffmpeg"].append("--changed")
         self.assertNotEqual(pack.recipe_hash(self.lock), before)
+
+    def test_audio_pack_requires_probe_patch_and_sources(self):
+        names = ["tools/ffprobe", "recipe/" + self.lock["patches"][0]["file"],
+                 "sources/" + self.lock["sources"]["opus"]["file"]]
+        for i, name in enumerate(names):
+            with self.subTest(name=name):
+                archive = self.fixture(omit=name)
+                with self.assertRaisesRegex(ValueError, "inventory mismatch"):
+                    pack.unpack_locked(archive, self.root / str(i), self.lock, macho=False)
+
+    def test_patch_content_and_order_are_recipe_inputs(self):
+        before = pack.recipe_hash(self.lock)
+        paths = pack.verified_patches(self.lock)
+        self.assertEqual(len(paths), 2)
+        self.lock["patches"].reverse()
+        self.assertNotEqual(pack.recipe_hash(self.lock), before)
+        record = self.lock["patches"][0]
+        path = self.root / record["file"]
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"changed patch")
+        with self.assertRaisesRegex(ValueError, "patch digest mismatch"):
+            pack.verified_patches(self.lock, self.root)
+
+    def test_candidate_promotion_rejects_changed_inputs_and_tools(self):
+        (self.root / "tools").mkdir()
+        tools = {}
+        for name in pack.runtime_tools(self.lock):
+            path = self.root / "tools" / name
+            path.write_text(name)
+            tools[name] = {"sha256": pack.sha(path)}
+        info = {"lock": self.lock, "tools": tools}
+        info_path = self.root / "BUILDINFO.json"
+        info_path.write_text(json.dumps(info))
+        self.lock["proof_candidate"] = {"buildinfo_sha256": pack.sha(info_path)}
+        pack.verified_candidate(self.root, self.lock)
+        (self.root / "tools/ffmpeg").write_text("changed")
+        with self.assertRaisesRegex(ValueError, "tool digest mismatch"):
+            pack.verified_candidate(self.root, self.lock)
+        (self.root / "tools/ffmpeg").write_text("ffmpeg")
+        self.lock["configure"]["ffmpeg"].append("--changed")
+        with self.assertRaisesRegex(ValueError, "inputs differ"):
+            pack.verified_candidate(self.root, self.lock)
+        info_path.write_text("{}")
+        with self.assertRaisesRegex(ValueError, "BUILDINFO digest mismatch"):
+            pack.verified_candidate(self.root, self.lock)
+
+    def test_missing_audio_selector_and_encoder_are_rejected(self):
+        names = "avfoundation lavfi libx264 wrapped_avframe rawvideo h264 rtsp null scale fps format concat tcp pipe file libopus pcm_s16le pcm_s32le pcm_f32le pcm_f64le opus aresample aformat anullsrc sine s16le"
+        def output(argv, **kwargs):
+            if "-h" in argv:
+                return "-camstream_audio_uid -camstream_list_audio_devices"
+            if "-version" in argv:
+                return "ffprobe version " + self.lock["sources"]["ffmpeg"]["version"]
+            return names
+        with patch("subprocess.check_output", side_effect=output):
+            pack.inspect_capabilities(self.root, self.lock)
+        for missing in ("-camstream_audio_uid", "libopus"):
+            with patch("subprocess.check_output", side_effect=lambda argv, **kw: output(argv, **kw).replace(missing, "")):
+                with self.assertRaisesRegex(ValueError, "missing"):
+                    pack.inspect_capabilities(self.root, self.lock)
 
     def test_macho_architecture_target_and_external_dependencies(self):
         def check(arch="arm64", minimum="26.0", dependency="/usr/lib/libSystem.B.dylib"):

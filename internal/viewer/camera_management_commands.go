@@ -25,6 +25,7 @@ func (h managementHandler[M, R]) Execute(ctx context.Context, msg M) error {
 	if err == nil {
 		value, err = h.call(ctx, msg)
 	}
+	err = api.ManagementCommandFailure(err)
 	if result := command.ResultFromContext[R](ctx); result != nil {
 		if err != nil {
 			result.StoreError(err)

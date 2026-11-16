@@ -10,9 +10,9 @@ export type ErrorCode =
   | "capacity_exceeded" | "camera_busy" | "cleanup_incomplete" | "controller_conflict"
   | "server_unavailable" | "access_denied" | "csrf_invalid" | "canceled" | "deadline_exceeded" | "internal";
 export interface MediaCapabilities { video: boolean; audio: boolean }
-export interface StreamSummary { can_reconnect?: boolean; recovery_required?: boolean; id: StreamID; name: string; capabilities: MediaCapabilities }
+export interface StreamSummary { can_reconnect?: boolean | undefined; recovery_required?: boolean | undefined; id: StreamID; name: string; capabilities: MediaCapabilities }
 export interface CameraSummary { id: CameraID; name: string; availability: State; streams: readonly StreamSummary[] }
-export interface CameraList { revision?: CatalogRevision; cameras: readonly CameraSummary[] }
+export interface CameraList { revision?: CatalogRevision | undefined; cameras: readonly CameraSummary[] }
 export type CameraDetail = CameraSummary;
 export interface StreamList { streams: readonly StreamSummary[] }
 export interface ErrorBody { code: ErrorCode; message: string; retryable: boolean }

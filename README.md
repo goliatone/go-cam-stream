@@ -166,3 +166,19 @@ review; nothing is reset automatically.
 Existing manual drafts (including v0.1.3) are not retroactively enrolled in the
 new approval job. This command prepares a new version and leaves those drafts
 unchanged. The first patch from the current baseline is v0.1.4.
+
+
+## Browser camera onboarding
+
+Camera managers can use **Add Camera → Test connection → Save Camera → Watch
+Camera** to register RTSP cameras without restarting the server. The form accepts
+manual settings or the Mac app's exact YAML/credentials export. A successful test
+requires decoded video and confirmed preview cleanup. Additions belong to their
+creator, and existing playback continues through Save.
+
+Enable exact manager principals and persistent private state in
+[management configuration](config/README.md#managed-camera-state). The tagged
+native development host enables its local principal automatically. See the
+[onboarding guide](frontend/README.md#add-a-camera) for import, localhost guidance,
+recovery and source reconnect behavior. Private state includes plaintext camera
+credentials; protect its directory and backups.

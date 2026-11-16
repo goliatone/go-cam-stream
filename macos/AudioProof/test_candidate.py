@@ -75,10 +75,10 @@ class AudioCandidateTests(unittest.TestCase):
                                 '-protocol_whitelist', 'file,tcp,rtsp,rtp,udp', '-f', 'concat', '-safe', '0', '-i', str(source),
                                 '-map', '0:a:0', '-t', '2', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le',
                                 '-f', 's16le', 'pipe:1'], capture_output=True, timeout=15, env=env)
-                            self.assertEqual(audio.returncode, 0, 'Opus decode failed; diagnostics omitted')
+                            self.assertEqual(audio.returncode, 0, audio.stderr.decode(errors='replace').replace(password, '<redacted>')[:1000])
                             self.assertGreaterEqual(len(audio.stdout), 48000 * 2)
                             self.assertEqual(set(audio.stdout), {0}, 'synthetic silent source decoded nonzero')
-                            (folder / 'config.json').write_text(json.dumps({'port': port, 'path': 'test'}))
+                            (folder / 'camera.json').write_text(json.dumps({'port': port, 'path': 'test'}))
                             (folder / 'credentials.json').touch(mode=0o600)
                             (folder / 'credentials.json').write_text(json.dumps({'username': 'camera', 'password': password}))
                             metrics = io.StringIO()

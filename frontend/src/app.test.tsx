@@ -449,7 +449,7 @@ describe("addressable views and tab state", () => {
     const viewer = input();
     const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
     expect(document.title).toBe("Room 1 · Live · camstream");
-    expect(icon()).toContain("#1e9e5a");
+    expect(icon()).toContain("favicon-live");
     rerender(
       <App
         catalog={catalog}
@@ -460,14 +460,14 @@ describe("addressable views and tab state", () => {
       />,
     );
     expect(document.title).toBe("Room 1 · Paused · camstream");
-    expect(icon()).not.toContain("cx='25'");
+    expect(icon()).toContain("favicon-idle");
     rerender(<App catalog={catalog} />);
     expect(document.title).toBe("Room 1 · camstream");
     rerender(
       <App catalog={catalog} error={samples.denied.error as ErrorBody} />,
     );
     expect(document.title).toBe("camstream");
-    expect(icon()).toContain("#d23f3f");
+    expect(icon()).toContain("favicon-danger");
   });
 
   it("offers Play when live video is paused", async () => {
@@ -1095,7 +1095,7 @@ describe("live status and recovery", () => {
           .querySelector<HTMLLinkElement>('link[rel~="icon"]')!
           .getAttribute("href")!,
       );
-    expect(icon()).toContain("#d4900f");
+    expect(icon()).toContain("favicon-busy");
     expect(
       rail.querySelector("[aria-current='page']")!.textContent,
     ).toContain("Reconnecting");
@@ -1123,7 +1123,7 @@ describe("live status and recovery", () => {
     const failedBadge = document.querySelector(".stage-badge .status-badge")!;
     expect(failedBadge.textContent).toBe("Unavailable");
     expect(failedBadge.classList.contains("tone-danger")).toBe(true);
-    expect(icon()).toContain("#d23f3f");
+    expect(icon()).toContain("favicon-danger");
     expect(
       screen.getByRole("button", { name: "Stop" }).getAttribute("aria-disabled"),
     ).toBe("true");

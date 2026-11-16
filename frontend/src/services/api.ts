@@ -1,5 +1,6 @@
 import type {
   CameraList,
+  CatalogRevision,
   ErrorBody,
   ErrorCode,
   Session,
@@ -57,7 +58,9 @@ function publicError(value: unknown): ErrorBody {
 function catalog(value: unknown): CameraList {
   if (!object(value) || !Array.isArray(value.cameras)) return fail();
   const cameraIDs = new Set<string>();
+  if (value.revision !== undefined && (!object(value.revision) || !id(value.revision.runtime_epoch) || !Number.isSafeInteger(value.revision.generation) || (value.revision.generation as number) < 1)) return fail();
   return {
+    revision: value.revision as CatalogRevision | undefined,
     cameras: value.cameras.map((camera: unknown) => {
       if (
         !object(camera) ||
@@ -85,8 +88,11 @@ function catalog(value: unknown): CameraList {
             typeof stream.capabilities.audio !== "boolean"
           )
             return fail();
+          for (const key of ["can_reconnect", "recovery_required"]) if (stream[key] !== undefined && typeof stream[key] !== "boolean") return fail();
           streamIDs.add(stream.id);
           return {
+            can_reconnect: stream.can_reconnect as boolean | undefined,
+            recovery_required: stream.recovery_required as boolean | undefined,
             id: stream.id,
             name: stream.name,
             capabilities: {

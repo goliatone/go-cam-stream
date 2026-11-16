@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 
-from runtime_pack import DEFAULT_CACHE, DEFAULT_LOCK, ROOT, inspect_macho, load_lock, selected_pack, unpack_locked
+from runtime_pack import DEFAULT_CACHE, DEFAULT_LOCK, ROOT, inspect_macho, load_lock, selected_pack, unpack_locked, runtime_tools
 
 
 def run(*args, **kwargs):
@@ -43,7 +43,7 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
     contents = app / "Contents"
     for name in ("MacOS", "Helpers", "Frameworks", "Resources"):
         (contents / name).mkdir(parents=True)
-    for name in ("ffmpeg", "mediamtx"):
+    for name in runtime_tools(lock):
         shutil.copy2(runtime / "tools" / name, contents / "Helpers" / name)
     for name in ("licenses", "sources", "recipe"):
         shutil.copytree(runtime / name, contents / "Resources" / name)

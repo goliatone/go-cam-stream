@@ -221,7 +221,7 @@ export function App({
           <KeyboardIcon />
         </button>
       </header>
-      {catalogStale && <p class="catalog-stale" role="status">Camera list may be out of date. Current playback is preserved.</p>}
+      {catalogStale && <p class="catalog-stale" role="status">Camera list may be out of date.</p>}
       <main id="viewer" ref={viewerRoot} tabIndex={-1} data-player-root="">
         {error ? (
           <div class="catalog-message" role="alert">

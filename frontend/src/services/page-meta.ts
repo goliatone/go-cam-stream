@@ -1,21 +1,13 @@
 import type { Tone } from "../components/status";
 
+import idle from "../components/favicon-idle.svg?no-inline";
+import live from "../components/favicon-live.svg?no-inline";
+import busy from "../components/favicon-busy.svg?no-inline";
+import danger from "../components/favicon-danger.svg?no-inline";
 const BRAND = "camstream";
-const DOT_COLORS: Partial<Record<Tone, string>> = {
-  live: "#1e9e5a",
-  busy: "#d4900f",
-  danger: "#d23f3f",
-};
-
-/** Inline SVG favicon with an optional state dot. The production CSP allows data: images. */
-export function faviconHref(tone: Tone | null) {
-  const color = tone ? DOT_COLORS[tone] : undefined;
-  const dot = color
-    ? `<circle cx='25' cy='8' r='6' fill='${color}' stroke='white' stroke-width='2'/>`
-    : "";
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='1' y='8' width='21' height='17' rx='5' fill='#176b51'/><path d='M22 14.5 30 10v13l-8-4.5z' fill='#176b51'/><circle cx='11.5' cy='16.5' r='4' fill='white'/>${dot}</svg>`;
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-}
+const ICONS: Partial<Record<Tone, string>> = { live, busy, danger };
+/** Hashed same-origin favicons share the viewer asset admission boundary. */
+export function faviconHref(tone: Tone | null) { return (tone && ICONS[tone]) || idle; }
 
 /** "Hall · Live · camstream"; parts that are unknown are left out. */
 export function pageTitle(camera?: string, state?: string) {

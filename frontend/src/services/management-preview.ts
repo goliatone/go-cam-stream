@@ -12,6 +12,8 @@ export class BrowserPreview implements Preview {
   #frames = 0;
   #callback: number | undefined;
   #closed = false;
+  #qualityPrevious: number | undefined;
+  #qualityFrames=0;
   constructor(readonly video: HTMLVideoElement) {
     if(typeof RTCPeerConnection!=="function")throw new ManagementFailure("unsupported_browser");
     this.#peer=new RTCPeerConnection({iceServers:[]});
@@ -45,7 +47,7 @@ export class BrowserPreview implements Preview {
     if(!available) {
       const stats=await this.#peer.getStats();
       stats.forEach(report=>{if(report.type==="inbound-rtp"&&(report.kind==="video"||report.mediaType==="video")&&typeof report.framesDecoded==="number"){frames=report.framesDecoded;method="frames_decoded";available=true}});
-      if(!available&&typeof this.video.getVideoPlaybackQuality==="function"){frames=this.video.getVideoPlaybackQuality().totalVideoFrames;method="playback_quality";available=Number.isFinite(frames)}
+      if(!available&&typeof this.video.getVideoPlaybackQuality==="function"){const total=this.video.getVideoPlaybackQuality().totalVideoFrames;if(this.#qualityPrevious!==undefined)this.#qualityFrames+=Math.max(0,total-this.#qualityPrevious);this.#qualityPrevious=total;frames=this.#qualityFrames;method="playback_quality";available=Number.isFinite(total)}
     }
     if(!available)throw new ManagementFailure("playback_evidence_unavailable");
     if(frames<2||this.video.paused||this.video.videoWidth<1||this.video.videoHeight<1)return;

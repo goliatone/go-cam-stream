@@ -2,7 +2,9 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -10,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/goliatone/go-cam-stream/data/api"
+	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
+	gerrors "github.com/goliatone/go-errors"
 )
 
 func TestManagementFixtures(t *testing.T) {
@@ -102,5 +106,39 @@ func TestManagementValidation(t *testing.T) {
 		if bad.Validate() == nil {
 			t.Fatal("insufficient evidence accepted")
 		}
+	}
+}
+
+func TestManagementCommandErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		code   string
+		status int
+	}{
+		{"denied", cs.NewError(cs.CodeAccessDenied, nil), "access_denied", 403},
+		{"capacity", cs.NewError(cs.CodeCapacityExceeded, nil), "capacity_exceeded", 429},
+		{"cleanup keeps precedence", cs.NewError(cs.CodeCleanupIncomplete, context.DeadlineExceeded), "cleanup_incomplete", 503},
+		{"management", api.ManagementFailure(api.CodeCatalogConflict), "catalog_revision_conflict", 409},
+		{"foreign", errors.New("PRIVATE provider payload"), "internal", 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projected := api.ManagementCommandFailure(tc.err)
+			wrapped := gerrors.Wrap(projected, gerrors.CategoryInternal, "PRIVATE dispatcher detail").WithTextCode("HANDLER_EXECUTION_FAILED")
+			body := api.ManagementPublicError(wrapped)
+			if body.Error.Code != tc.code || api.ManagementErrorStatus(body.Error.Code) != tc.status {
+				t.Fatal(body)
+			}
+			if !errors.Is(wrapped, tc.err) {
+				t.Fatal("lost cause identity")
+			}
+			encoded, _ := json.Marshal(body)
+			if strings.Contains(string(encoded), "PRIVATE") {
+				t.Fatal("private error leaked")
+			}
+		})
+	}
+	if api.ManagementCommandFailure(nil) != nil {
+		t.Fatal("success became error")
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"testing"
 
 	"github.com/goliatone/go-cam-stream/config"
@@ -149,4 +151,38 @@ func TestManagementHost(t *testing.T) {
 		t.Fatal("disabled-management reconnect")
 	}
 	t.Log("Production Save preserved two RTP viewers and PID; duplicate receipt, creator isolation, persistent credentials and disabled-management playback/reconnect passed.")
+}
+
+// TestManagementBrowser keeps the production host available for an external
+// browser driver. Its private fixture ingress is never linked into the binary.
+func TestManagementBrowser(t *testing.T) {
+	if os.Getenv("CAMSTREAM_MANAGEMENT_BROWSER") != "1" {
+		t.Skip("isolated browser fixture")
+	}
+	start := func(enabled bool) *rtspHost {
+		return startRTSPHost(t, true, func(cfg *config.Config) {
+			cfg.Management = config.Management{Enabled: enabled, Principals: []string{"owner"}}
+			cfg.Backend.RuntimeDir = "/tmp/management-browser"
+			cfg.Cameras = cfg.Cameras[1:2]
+			cfg.Access = []config.Access{
+				{Login: "owner", Grants: []config.Grant{{CameraID: "other", Streams: []cs.StreamID{"main"}, View: true}}},
+				{Login: "viewer", Grants: []config.Grant{{CameraID: "other", Streams: []cs.StreamID{"main"}, View: true}}},
+			}
+		})
+	}
+	h := start(true)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	for {
+		fmt.Printf("MANAGEMENT_BROWSER_READY pid=%d epoch=%s\n", os.Getpid(), h.c.management.RuntimeEpoch())
+		if <-signals == syscall.SIGTERM {
+			return
+		}
+		// Explicit test-driver HUP restarts the entire host against the same durable
+		// installation with management disabled; it never resets a source implicitly.
+		h.stop()
+		h.proxy.Close()
+		h = start(false)
+	}
 }

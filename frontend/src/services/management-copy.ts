@@ -23,6 +23,6 @@ export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
   receipt_expired: "Resolve the original saved camera before starting another Save.",
 };
 export function managementMessage(code: ManagementErrorCode) {
-  return managementCopy[code] ?? "The camera operation did not complete. Check the camera and the operation status before trying again.";
+  return (Object.prototype.hasOwnProperty.call(managementCopy,code)?managementCopy[code]:undefined) ?? "The camera operation did not complete. Check the camera and the operation status before trying again.";
 }
 

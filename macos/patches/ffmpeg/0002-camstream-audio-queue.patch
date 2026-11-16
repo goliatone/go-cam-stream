@@ -1,0 +1,123 @@
+--- a/libavdevice/avfoundation.m
++++ b/libavdevice/avfoundation.m
+@@ -27,6 +27,7 @@
+ 
+ #import <AVFoundation/AVFoundation.h>
+ #include "camstream_audio_uid.h"
++#include "camstream_audio_queue.h"
+ #include <pthread.h>
+ 
+ #include "libavutil/channel_layout.h"
+@@ -135,6 +136,7 @@
+     AVCaptureAudioDataOutput *audio_output;
+     CMSampleBufferRef         current_frame;
+     CMSampleBufferRef         current_audio_frame;
++    CamstreamAudioQueue      audio_queue;
+ 
+     AVCaptureDevice          *observed_device;
+ #if !TARGET_OS_IPHONE && __MAC_OS_X_VERSION_MIN_REQUIRED >= 1070
+@@ -151,6 +153,13 @@
+ static void unlock_frames(AVFContext* ctx)
+ {
+     pthread_mutex_unlock(&ctx->frame_lock);
++}
++
++/* Called only with frame_lock held. */
++static void camstream_advance_audio(AVFContext *ctx)
++{
++    if (ctx->current_audio_frame) CFRelease(ctx->current_audio_frame);
++    ctx->current_audio_frame = (CMSampleBufferRef)camstreamAudioPop(&ctx->audio_queue);
+ }
+ 
+ /** FrameReceiver class - delegate for AVCaptureSession
+@@ -277,10 +286,10 @@
+     lock_frames(_context);
+ 
+     if (_context->current_audio_frame != nil) {
+-        CFRelease(_context->current_audio_frame);
+-    }
+-
+-    _context->current_audio_frame = (CMSampleBufferRef)CFRetain(audioFrame);
++        camstreamAudioPush(&_context->audio_queue, audioFrame, CMSampleBufferGetTotalSampleSize(audioFrame));
++    } else {
++        _context->current_audio_frame = (CMSampleBufferRef)CFRetain(audioFrame);
++    }
+ 
+     unlock_frames(_context);
+ 
+@@ -313,6 +322,8 @@
+     if (ctx->current_frame) {
+         CFRelease(ctx->current_frame);
+     }
++    if (ctx->current_audio_frame) CFRelease(ctx->current_audio_frame);
++    camstreamAudioClear(&ctx->audio_queue);
+ }
+ 
+ static int parse_device_name(AVFormatContext *s)
+@@ -756,8 +767,7 @@
+         }
+     }
+ 
+-    CFRelease(ctx->current_audio_frame);
+-    ctx->current_audio_frame = nil;
++    camstream_advance_audio(ctx);
+ 
+     unlock_frames(ctx);
+ 
+@@ -1163,6 +1173,12 @@
+         CMBlockBufferRef block_buffer;
+         lock_frames(ctx);
+ 
++        if (ctx->audio_queue.overflow) {
++            unlock_frames(ctx);
++            av_log(s, AV_LOG_ERROR, "Audio capture queue overflow\n");
++            return AVERROR(EIO);
++        }
++
+         if (ctx->current_frame != nil) {
+             int status;
+             int length = 0;
+@@ -1287,8 +1303,7 @@
+                 }
+             }
+ 
+-            CFRelease(ctx->current_audio_frame);
+-            ctx->current_audio_frame = nil;
++            camstream_advance_audio(ctx);
+         } else {
+             pkt->data = NULL;
+             unlock_frames(ctx);
+--- /dev/null
++++ b/libavdevice/camstream_audio_queue.h
+@@ -0,0 +1,31 @@
++/* Camstream: bounded retained FIFO; overflow is fatal, never a silent drop. */
++#include <CoreFoundation/CoreFoundation.h>
++#define CAMSTREAM_AUDIO_QUEUE_CAPACITY 512
++#define CAMSTREAM_AUDIO_QUEUE_BYTES (4 * 1024 * 1024)
++typedef struct CamstreamAudioQueue {
++    CFTypeRef values[CAMSTREAM_AUDIO_QUEUE_CAPACITY];
++    size_t sizes[CAMSTREAM_AUDIO_QUEUE_CAPACITY], bytes;
++    unsigned head, count;
++    int overflow;
++} CamstreamAudioQueue;
++static void camstreamAudioPush(CamstreamAudioQueue *q, CFTypeRef value, size_t size) {
++    if (q->count == CAMSTREAM_AUDIO_QUEUE_CAPACITY || size > CAMSTREAM_AUDIO_QUEUE_BYTES - q->bytes) { q->overflow = 1; return; }
++    q->values[(q->head + q->count) % CAMSTREAM_AUDIO_QUEUE_CAPACITY] = CFRetain(value);
++    q->sizes[(q->head + q->count) % CAMSTREAM_AUDIO_QUEUE_CAPACITY] = size;
++    q->bytes += size;
++    q->count++;
++}
++/* Transfer the retained reference to the caller. */
++static CFTypeRef camstreamAudioPop(CamstreamAudioQueue *q) {
++    if (!q->count) return NULL;
++    CFTypeRef value = q->values[q->head];
++    q->values[q->head] = NULL;
++    q->bytes -= q->sizes[q->head];
++    q->head = (q->head + 1) % CAMSTREAM_AUDIO_QUEUE_CAPACITY;
++    q->count--;
++    return value;
++}
++static void camstreamAudioClear(CamstreamAudioQueue *q) {
++    CFTypeRef value;
++    while ((value = camstreamAudioPop(q))) CFRelease(value);
++}
