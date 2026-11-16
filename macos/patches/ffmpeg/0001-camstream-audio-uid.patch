@@ -1,0 +1,107 @@
+--- a/libavdevice/avfoundation.m
++++ b/libavdevice/avfoundation.m
+@@ -26,6 +26,7 @@
+  */
+ 
+ #import <AVFoundation/AVFoundation.h>
++#include "camstream_audio_uid.h"
+ #include <pthread.h>
+ 
+ #include "libavutil/channel_layout.h"
+@@ -103,6 +104,8 @@
+     int             video_is_screen;
+ 
+     int             list_devices;
++    int             camstream_list_audio_devices;
++    char           *camstream_audio_uid;
+     int             video_device_index;
+     int             video_stream_index;
+     int             audio_device_index;
+@@ -842,6 +845,24 @@
+ #endif
+ 
+     // List devices if requested
++    if (ctx->camstream_list_audio_devices) {
++        NSMutableArray *records = [NSMutableArray array];
++        NSMutableSet *ids = [NSMutableSet set];
++        for (AVCaptureDevice *device in getDevicesWithMediaType(AVMediaTypeAudio)) {
++            NSString *uid = [device uniqueID];
++            if (!camstreamValidUID(uid) || [ids containsObject:uid]) goto fail;
++            [ids addObject:uid];
++            [records addObject:@{@"id":uid, @"name":[device localizedName]}];
++        }
++        NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"version":@1, @"devices":records}
++                                                     options:0 error:nil];
++        if (!json || [json length] > 131072) goto fail;
++        fwrite([json bytes], 1, [json length], stdout);
++        fputc('\n', stdout);
++        fflush(stdout);
++        goto fail; /* AVFoundation enumeration intentionally exits nonzero, like list_devices. */
++    }
++
+     if (ctx->list_devices) {
+         int index = 0;
+         av_log(ctx, AV_LOG_INFO, "AVFoundation video devices:\n");
+@@ -989,7 +1010,19 @@
+     }
+ 
+     // get audio device
+-    if (ctx->audio_device_index >= 0) {
++    if (ctx->camstream_audio_uid) {
++        if (ctx->audio_device_index >= 0 ||
++            (ctx->audio_filename && strcmp(ctx->audio_filename, "none"))) {
++            av_log(ctx, AV_LOG_ERROR, "Conflicting audio selectors\n");
++            goto fail;
++        }
++        NSString *uid = [NSString stringWithUTF8String:ctx->camstream_audio_uid];
++        audio_device = camstreamSelectAudio(getDevicesWithMediaType(AVMediaTypeAudio), uid);
++        if (!audio_device || ![audio_device isConnected]) {
++            av_log(ctx, AV_LOG_ERROR, "Selected audio identity unavailable\n");
++            goto fail;
++        }
++    } else if (ctx->audio_device_index >= 0) {
+         NSArray *devices = getDevicesWithMediaType(AVMediaTypeAudio);
+ 
+         if (ctx->audio_device_index >= [devices count]) {
+@@ -1042,7 +1075,12 @@
+     if (video_device && add_video_device(s, video_device)) {
+         goto fail;
+     }
++    if (audio_device && ctx->camstream_audio_uid && ![audio_device isConnected]) {
++        av_log(s, AV_LOG_ERROR, "Selected audio identity disconnected\n");
++        goto fail;
++    }
+     if (audio_device && add_audio_device(s, audio_device)) {
++        goto fail;
+     }
+ 
+     [ctx->capture_session startRunning];
+@@ -1275,6 +1313,8 @@
+ }
+ 
+ static const AVOption options[] = {
++    { "camstream_audio_uid", "select exactly one audio UID, without fallback", offsetof(AVFContext, camstream_audio_uid), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
++    { "camstream_list_audio_devices", "emit versioned audio UID JSON without capture (enumeration exit)", offsetof(AVFContext, camstream_list_audio_devices), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+     { "list_devices", "list available devices", offsetof(AVFContext, list_devices), AV_OPT_TYPE_BOOL, {.i64=0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+     { "video_device_index", "select video device by index for devices with same name (starts at 0)", offsetof(AVFContext, video_device_index), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+     { "audio_device_index", "select audio device by index for devices with same name (starts at 0)", offsetof(AVFContext, audio_device_index), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+--- /dev/null
++++ b/libavdevice/camstream_audio_uid.h
+@@ -0,0 +1,17 @@
++/* Camstream proof: exact audio identity; no name/index/default fallback. */
++#import <Foundation/Foundation.h>
++static BOOL camstreamValidUID(NSString *uid) {
++    return uid && [uid length] && [uid lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= 1024 &&
++        [uid rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location == NSNotFound;
++}
++static id camstreamSelectAudio(NSArray *devices, NSString *uid) {
++    if (!camstreamValidUID(uid)) return nil;
++    id selected = nil;
++    for (id device in devices) {
++        if ([[device uniqueID] isEqualToString:uid]) {
++            if (selected) return nil;
++            selected = device;
++        }
++    }
++    return [[selected retain] autorelease];
++}

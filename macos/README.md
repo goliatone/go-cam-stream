@@ -539,3 +539,15 @@ The current runtime-2 archive is a locally verified pack with no hosted URL;
 runtime-1 publication does not supply preview capabilities. A signed preview
 release must bundle the exact runtime-2 hash and repeat affected permission,
 preview/window, Stop/Quit and owner-loss checks on its final bytes.
+
+For browser onboarding, stop capture, export the connection YAML and optional
+credentials file, then restart capture. In the native development viewer, choose
+Add Camera and import those files. Review the endpoint, test preview, save, then
+choose Watch Camera. YAML alone requires entering credentials. Exported access
+grants are ignored; the saved camera belongs to the signed-in creator.
+
+`localhost` means the server's machine. Same-Mac development uses IPv4 loopback;
+a Linux/container/remote host needs a reachable companion address and its Private
+network setting. Imported hosts are never silently rewritten. The selected numeric
+address stays fixed after testing and saving. Only trusted operators/upstreams
+should be configured: go2rtc redirects are trusted, not contained by admission.
