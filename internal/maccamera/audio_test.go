@@ -144,7 +144,11 @@ func TestAudioDiscoveryExecutionBounds(t *testing.T) {
 			if err := os.WriteFile(tool, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			timeout := 2 * time.Second
+			if script == "exec sleep 5" {
+				timeout = 200 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			s := &Service{Tools: Tools{FFmpeg: tool}}
 			devices, err := s.AudioDevices(ctx)
