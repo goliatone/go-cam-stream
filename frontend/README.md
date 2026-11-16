@@ -92,6 +92,36 @@ and embed steps. Run it before compiling or testing packages that import the Go
 host; missing embedded assets intentionally fail compilation. The controlled-media
 runner builds these assets inside its Docker image automatically.
 
+## Styles
+
+`src/styles.css` defines each colour, font and font size once, as a custom
+property in its first `:root` rule, and its other rules use only these tokens. The
+dialog backdrop's token is set on `::backdrop` itself, because older browsers do
+not let a backdrop inherit custom properties. The page tokens (`--text`,
+`--surface`, `--accent` and the rest) set the page's look. The stage tokens
+(`--stage`, `--on-stage` and the rest) and the backings for what sits on the video
+(`--glass`, `--scrim`, `--tip`, `--toolbar-shade`) stay dark, because they sit
+around and on the video.
+
+The page follows the system's light or dark setting. When the system prefers
+dark, a `:root` rule inside `@media (prefers-color-scheme: dark)` replaces the
+page tokens, and `--stage-frame` draws a line around the stage, which a light page
+does not need. `color-scheme: light dark` on `:root`, and a `color-scheme` meta in
+`index.html`, let the browser draw scrollbars and its other parts in the same
+scheme; the stage is always `color-scheme: dark`. There is no toggle, and nothing
+is stored.
+
+`src/styles.test.ts` fails when a rule uses a colour, font or font size directly,
+named colours included, or uses a token that does not exist, or when a token goes
+unused or another rule redefines one. It checks WCAG AA contrast for each text,
+icon and focus ring against its background, in both themes. Anything on the video
+is checked over a white frame: its rule must declare the backing the check
+assumes, and no other rule may change that backing. The test also keeps the
+toolbar's icons on the solid part of its shade, a focused control's halo inside
+the stage and clear of its tooltip, the skip link's focus ring on its own margin,
+and the stream select's text at 16 px, below which iOS Safari zooms in. When a new
+colour pair appears, add it to that test; a new page token needs a dark value too.
+
 ## Ownership and recovery
 
 `useViewer` owns one `PlaybackController` per page. It receives filtered catalog

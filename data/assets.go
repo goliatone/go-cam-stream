@@ -40,7 +40,7 @@ func loadAssets(root fs.FS) (map[string][]byte, error) {
 	}
 	files := map[string][]byte{}
 	for name, sum := range manifest {
-		if name != "index.html" && (!strings.HasPrefix(name, "assets/") || path.Clean(name) != name || (path.Ext(name) != ".js" && path.Ext(name) != ".css")) {
+		if name != "index.html" && (!strings.HasPrefix(name, "assets/") || path.Clean(name) != name || (path.Ext(name) != ".js" && path.Ext(name) != ".css" && path.Ext(name) != ".svg")) {
 			return nil, errors.New("invalid asset manifest")
 		}
 		content, readErr := fs.ReadFile(root, name)

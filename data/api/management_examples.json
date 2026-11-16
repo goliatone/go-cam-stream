@@ -1,0 +1,718 @@
+{
+  "manager": {
+    "type": "Capabilities",
+    "value": {
+      "can_manage_cameras": true,
+      "recovery_scope": "scope-fixture",
+      "runtime_epoch": "epoch-fixture"
+    }
+  },
+  "viewer": {
+    "type": "Capabilities",
+    "value": {
+      "can_manage_cameras": false,
+      "recovery_scope": "scope-fixture",
+      "runtime_epoch": "epoch-fixture"
+    }
+  },
+  "manual": {
+    "type": "CreateDraftRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "name": "Camera",
+      "endpoint": "rtsp://192.168.1.20/live",
+      "authentication": "anonymous"
+    }
+  },
+  "import": {
+    "type": "ImportDraftRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "yaml": "# Merge this camera and grant into the Linux camstream configuration.\ncameras:\n  - id: macbook\n    name: MacBook Camera\n    physical_id: macbook\n    strategy: rtsp\n    config:\n      host: \"localhost\"\n      port: 18556\n      username_ref: env://MAC_CAMERA_USERNAME\n      password_ref: env://MAC_CAMERA_PASSWORD\n      profiles:\n        - {id: default, path: /macbook, audio: false}\naccess:\n  - login: REPLACE_WITH_YOUR_SERVE_LOGIN\n    grants:\n      - {camera_id: macbook, streams: [default], view: true, diagnose: true, reconnect: true}\n"
+    }
+  },
+  "patch": {
+    "type": "PatchDraftRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "expected_revision": 1,
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "anonymous"
+    }
+  },
+  "cancel": {
+    "type": "Mutation",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture"
+    }
+  },
+  "draft_incomplete": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": false,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "incomplete"
+    }
+  },
+  "draft_ready": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "ready"
+    }
+  },
+  "draft_testing": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "testing",
+      "dial_address": "127.0.0.1",
+      "test": {
+        "id": "test-fixture",
+        "attempt_key": "0123456789abcdef0123456789abcdef",
+        "draft_revision": 1,
+        "stage": "source_media",
+        "expires_at": "2026-11-15T22:00:00Z",
+        "source_media_observed": false,
+        "browser_frames_reported": false,
+        "cleanup": "pending",
+        "answer": {
+          "type": "answer",
+          "sdp": "v=0\r\n"
+        }
+      }
+    }
+  },
+  "draft_cleaning": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "cleaning",
+      "dial_address": "127.0.0.1",
+      "test": {
+        "id": "test-fixture",
+        "attempt_key": "0123456789abcdef0123456789abcdef",
+        "draft_revision": 1,
+        "stage": "cleaning",
+        "expires_at": "2026-11-15T22:00:00Z",
+        "source_media_observed": false,
+        "browser_frames_reported": false,
+        "cleanup": "pending",
+        "answer": {
+          "type": "answer",
+          "sdp": "v=0\r\n"
+        }
+      }
+    }
+  },
+  "draft_tested": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "tested",
+      "dial_address": "127.0.0.1",
+      "test": {
+        "id": "test-fixture",
+        "attempt_key": "0123456789abcdef0123456789abcdef",
+        "draft_revision": 1,
+        "stage": "passed",
+        "expires_at": "2026-11-15T22:00:00Z",
+        "source_media_observed": true,
+        "browser_frames_reported": true,
+        "cleanup": "confirmed",
+        "answer": {
+          "type": "answer",
+          "sdp": "v=0\r\n"
+        },
+        "passed_at": "2026-11-15T22:00:00Z"
+      }
+    }
+  },
+  "draft_saving": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "saving",
+      "dial_address": "127.0.0.1",
+      "test": {
+        "id": "test-fixture",
+        "attempt_key": "0123456789abcdef0123456789abcdef",
+        "draft_revision": 1,
+        "stage": "passed",
+        "expires_at": "2026-11-15T22:00:00Z",
+        "source_media_observed": true,
+        "browser_frames_reported": true,
+        "cleanup": "confirmed",
+        "answer": {
+          "type": "answer",
+          "sdp": "v=0\r\n"
+        },
+        "passed_at": "2026-11-15T22:00:00Z"
+      }
+    }
+  },
+  "draft_saved": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "saved",
+      "dial_address": "127.0.0.1",
+      "test": {
+        "id": "test-fixture",
+        "attempt_key": "0123456789abcdef0123456789abcdef",
+        "draft_revision": 1,
+        "stage": "passed",
+        "expires_at": "2026-11-15T22:00:00Z",
+        "source_media_observed": true,
+        "browser_frames_reported": true,
+        "cleanup": "confirmed",
+        "answer": {
+          "type": "answer",
+          "sdp": "v=0\r\n"
+        },
+        "passed_at": "2026-11-15T22:00:00Z"
+      }
+    }
+  },
+  "draft_canceled": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "canceled"
+    }
+  },
+  "draft_expired": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "draft_expired",
+        "message": "This draft has expired. Create a new draft.",
+        "retryable": false
+      }
+    }
+  },
+  "draft_cleanup_failed": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-15T22:00:00Z",
+      "name": "Mac Camera",
+      "endpoint": "rtsp://localhost:18556/macbook",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [
+        "server_relative_localhost",
+        "imported_grants_ignored",
+        "initial_address_only",
+        "creator_only_access"
+      ],
+      "state": "cleanup_failed",
+      "dial_address": "127.0.0.1",
+      "test": {
+        "id": "test-fixture",
+        "attempt_key": "0123456789abcdef0123456789abcdef",
+        "draft_revision": 1,
+        "stage": "cleanup_failed",
+        "expires_at": "2026-11-15T22:00:00Z",
+        "source_media_observed": false,
+        "browser_frames_reported": false,
+        "cleanup": "unknown",
+        "answer": {
+          "type": "answer",
+          "sdp": "v=0\r\n"
+        }
+      }
+    }
+  },
+  "test_create": {
+    "type": "CreateTestRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "expected_revision": 1,
+      "offer": {
+        "type": "offer",
+        "sdp": "v=0\r\n"
+      }
+    }
+  },
+  "test_complete": {
+    "type": "CompleteTestRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "expected_revision": 1,
+      "evidence": {
+        "method": "frames_decoded",
+        "frames": 3,
+        "width": 640,
+        "height": 480,
+        "paused": false
+      }
+    }
+  },
+  "save": {
+    "type": "SaveCameraRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "draft_id": "draft-fixture",
+      "expected_revision": 1,
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 2
+      }
+    }
+  },
+  "saved": {
+    "type": "SaveCameraResponse",
+    "value": {
+      "camera_id": "camera-fixture",
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 2
+      }
+    }
+  },
+  "operation_processing": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "save",
+      "state": "processing",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture"
+    }
+  },
+  "operation_outcome_unknown": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "save",
+      "state": "outcome_unknown",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture"
+    }
+  },
+  "operation_succeeded": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "save",
+      "state": "succeeded",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture",
+      "saved": {
+        "camera_id": "camera-fixture",
+        "catalog_revision": {
+          "runtime_epoch": "epoch-fixture",
+          "generation": 2
+        }
+      }
+    }
+  },
+  "operation_not_committed": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "save",
+      "state": "not_committed",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture"
+    }
+  },
+  "operation_expired": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "save",
+      "state": "expired",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture"
+    }
+  },
+  "operation_not_found": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "save",
+      "state": "not_found",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture"
+    }
+  },
+  "recovery": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "recovery",
+      "state": "succeeded",
+      "runtime_epoch": "epoch-fixture",
+      "recovery": {
+        "affected": [
+          {
+            "camera_id": "camera-fixture",
+            "stream_id": "default"
+          }
+        ],
+        "closed_sessions": []
+      }
+    }
+  },
+  "draft_lost": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "draft_lost",
+        "message": "This draft was lost when the server restarted. Re-enter the camera.",
+        "retryable": false
+      }
+    }
+  },
+  "test_expired": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "test_expired",
+        "message": "Test the current draft again before saving.",
+        "retryable": false
+      }
+    }
+  },
+  "draft_revision_conflict": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "draft_revision_conflict",
+        "message": "Refresh the current draft before continuing.",
+        "retryable": false
+      }
+    }
+  },
+  "catalog_revision_conflict": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "catalog_revision_conflict",
+        "message": "Refresh the catalog before explicitly rebasing this save.",
+        "retryable": false
+      }
+    }
+  },
+  "operation_conflict": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "operation_conflict",
+        "message": "This operation key already identifies a different request.",
+        "retryable": false
+      }
+    }
+  },
+  "operation_in_progress": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "operation_in_progress",
+        "message": "Wait for the current operation to finish.",
+        "retryable": true
+      }
+    }
+  },
+  "save_outcome_unknown": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "save_outcome_unknown",
+        "message": "The save outcome is unknown. Look up the original operation.",
+        "retryable": true
+      }
+    }
+  },
+  "storage_unavailable": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "storage_unavailable",
+        "message": "Private camera storage is unavailable.",
+        "retryable": true
+      }
+    }
+  },
+  "recovery_storage_unavailable": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "recovery_storage_unavailable",
+        "message": "Enable browser site storage before managing cameras.",
+        "retryable": false
+      }
+    }
+  },
+  "receipt_expired": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "receipt_expired",
+        "message": "Resolve the original camera creation before starting another save.",
+        "retryable": false
+      }
+    }
+  },
+  "recovery_lost": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "recovery_lost",
+        "message": "Refresh source status before explicitly reconnecting again.",
+        "retryable": false
+      }
+    }
+  },
+  "destination_denied": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "destination_denied",
+        "message": "The initial camera address is not permitted.",
+        "retryable": false
+      }
+    }
+  },
+  "address_unavailable": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "address_unavailable",
+        "message": "The initial camera address could not be verified.",
+        "retryable": true
+      }
+    }
+  },
+  "identity_unverified": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "identity_unverified",
+        "message": "An existing camera identity could not be verified.",
+        "retryable": true
+      }
+    }
+  },
+  "duplicate_camera": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "duplicate_camera",
+        "message": "This address overlaps an existing camera or reserved test.",
+        "retryable": false
+      }
+    }
+  },
+  "credentials_required": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "credentials_required",
+        "message": "Supply both camera username and password.",
+        "retryable": false
+      }
+    }
+  },
+  "import_invalid": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "import_invalid",
+        "message": "Use one supported Mac camera YAML file and optional literal credentials file.",
+        "retryable": false
+      }
+    }
+  },
+  "playback_evidence_unavailable": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "playback_evidence_unavailable",
+        "message": "This browser cannot report decoded preview frames.",
+        "retryable": false
+      }
+    }
+  },
+  "playback_evidence_insufficient": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "playback_evidence_insufficient",
+        "message": "Preview needs advancing decoded frames before saving.",
+        "retryable": false
+      }
+    }
+  },
+  "denied": {
+    "type": "ManagementErrorResponse",
+    "value": {
+      "error": {
+        "code": "access_denied",
+        "message": "Access denied",
+        "retryable": false
+      }
+    }
+  },
+  "import_with_env": {
+    "type": "ImportDraftRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "yaml": "# Merge this camera and grant into the Linux camstream configuration.\ncameras:\n  - id: macbook\n    name: MacBook Camera\n    physical_id: macbook\n    strategy: rtsp\n    config:\n      host: \"localhost\"\n      port: 18556\n      username_ref: env://MAC_CAMERA_USERNAME\n      password_ref: env://MAC_CAMERA_PASSWORD\n      profiles:\n        - {id: default, path: /macbook, audio: false}\naccess:\n  - login: REPLACE_WITH_YOUR_SERVE_LOGIN\n    grants:\n      - {camera_id: macbook, streams: [default], view: true, diagnose: true, reconnect: true}\n",
+      "env": "MAC_CAMERA_USERNAME=camera\nMAC_CAMERA_PASSWORD=000000000000000000000000000000000000000000000000\n"
+    }
+  },
+  "catalog": {
+    "type": "CameraList",
+    "value": {
+      "revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 2
+      },
+      "cameras": [
+        {
+          "id": "camera-fixture",
+          "name": "Camera",
+          "availability": "failed",
+          "streams": [
+            {
+              "id": "default",
+              "name": "Default",
+              "capabilities": {
+                "video": true,
+                "audio": false
+              },
+              "can_reconnect": true,
+              "recovery_required": true
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

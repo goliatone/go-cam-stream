@@ -44,7 +44,7 @@ export default defineConfig({
       : {}),
   },
   preview: { host: "127.0.0.1" },
-  // The viewer ships as one module chunk with nothing to preload, so the
-  // modulepreload polyfill would only add bytes.
-  build: { target: "es2022", modulePreload: { polyfill: false } },
+  // Native dynamic imports fetch optional dialogs only when requested. Small
+  // shared styles load with the viewer; no dependency-preload helper is needed.
+  build: { target: "es2022", modulePreload: false },
 });

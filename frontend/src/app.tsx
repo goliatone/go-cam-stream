@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
   CameraList,
@@ -7,6 +8,8 @@ import type {
   StreamStatus,
   StreamSummary,
 } from "./services/contracts";
+import { LazyManagement, LazyShortcuts } from "./components/lazy-management";
+import type { ManagementDialogProps } from "./components/camera-management";
 import { CameraLinks } from "./components/camera-selector";
 import {
   CameraIcon,
@@ -43,6 +46,11 @@ export interface AppProps {
   /** Selection requested by the page address; resolved like any other request. */
   initialSelection?: Partial<StreamRef>;
   onReload?: () => void;
+  onAddCamera?: (() => void) | undefined;
+  watchSelection?: StreamRef | undefined;
+  recoveryControl?: ComponentChildren;
+  management?: ManagementDialogProps | undefined;
+  catalogStale?: boolean | undefined;
   onSelect?: (selection: StreamRef | undefined) => void;
 }
 /** Status updates that stop for this long, while the page asks, warn. */
@@ -52,17 +60,7 @@ const sameStream = (a: StreamRef, b: StreamRef) =>
 // Below 1024 px the rail starts as icons, leaving the width to the video.
 const narrow = () =>
   typeof matchMedia === "function" && matchMedia("(max-width: 1023px)").matches;
-const SHORTCUTS: [keys: string[], action: string][] = [
-  [["Space", "K"], "Play or pause"],
-  [["M"], "Mute or unmute"],
-  [["F"], "Fullscreen, or double-click the video"],
-  [["P"], "Picture in picture"],
-  [["S"], "Stop and free your viewer slot"],
-  [["R"], "Try again"],
-  [["[", "]"], "Previous or next camera"],
-  [["1–9"], "Go to a camera in the list"],
-  [["?"], "Show these shortcuts"],
-];
+
 
 export function App({
   catalog,
@@ -72,12 +70,13 @@ export function App({
   initialSelection,
   onSelect,
   onReload,
+  onAddCamera, watchSelection, recoveryControl, management, catalogStale,
 }: AppProps) {
   const [requested, setRequested] = useState(initialSelection);
   const [railOpen, setRailOpen] = useState(() => !narrow());
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheet = useRef<HTMLDialogElement>(null);
-  const shortcuts = useRef<HTMLDialogElement>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const viewerRoot = useRef<HTMLElement>(null);
   // Resolve against the current filtered catalog on every render. Never retain a removed scope.
   const cameras = error || loading ? [] : catalog.cameras;
@@ -112,6 +111,8 @@ export function App({
     if (camera) showPageState(pageTitle(camera.name, word), view.tone);
     else showPageState(pageTitle(), error ? "danger" : null);
   }, [camera?.name, word, view.tone, Boolean(error)]);
+
+  useEffect(() => { if (watchSelection) setRequested(watchSelection); }, [watchSelection]);
 
   function select(next: StreamRef) {
     if (selected && sameStream(selected, next)) return;
@@ -155,7 +156,7 @@ export function App({
   // Camera shortcuts: [ and ] step through playable cameras and 1–9 pick a
   // row. The player owns its own keys.
   useShortcuts((key) => {
-    if (key === "?") openDialog(shortcuts.current);
+    if (key === "?") setHelpOpen(true);
     else if (key === "[" || key === "]") {
       const playable = cameras.filter((item) => item.streams.length);
       const step = key === "]" ? 1 : -1;
@@ -173,6 +174,7 @@ export function App({
       data-rail={railOpen ? "open" : "collapsed"}
       {...(noRail ? { "data-norail": "" } : {})}
     >
+      {management && <LazyManagement {...management} />}
       <a class="skip-link" href="#viewer">
         Skip to viewer
       </a>
@@ -214,11 +216,12 @@ export function App({
           aria-keyshortcuts="?"
           aria-haspopup="dialog"
           title="Keyboard shortcuts (?)"
-          onClick={() => openDialog(shortcuts.current)}
+          onClick={() => setHelpOpen(true)}
         >
           <KeyboardIcon />
         </button>
       </header>
+      {catalogStale && <p class="catalog-stale" role="status">Camera list may be out of date. Current playback is preserved.</p>}
       <main id="viewer" ref={viewerRoot} tabIndex={-1} data-player-root="">
         {error ? (
           <div class="catalog-message" role="alert">
@@ -248,6 +251,7 @@ export function App({
               No cameras are set up for you. Ask the person who runs camstream
               to add cameras or give you access.
             </p>
+            {onAddCamera && <button type="button" class="primary-button" onClick={onAddCamera}>Add Camera</button>}
           </div>
         ) : camera && stream ? (
           <Player
@@ -269,6 +273,7 @@ export function App({
       {camera && stream ? (
         <section class="stream-bar" aria-label="Stream details">
           <div class="stream-bar-inner">
+            {recoveryControl}
             <StreamDetails
               id="stream-select"
               camera={camera}
@@ -311,6 +316,7 @@ export function App({
               titles={!railOpen}
             />
           )}
+          {onAddCamera && <button type="button" class="add-camera" onClick={onAddCamera} aria-label="Add Camera">+ Add Camera</button>}
           <p class="rail-note">Switching cameras changes only this page.</p>
         </nav>
       )}
@@ -363,43 +369,7 @@ export function App({
           )}
         </div>
       </dialog>
-      <dialog
-        ref={shortcuts}
-        class="dialog"
-        aria-labelledby="shortcuts-title"
-        onClose={dialogClosed}
-        onClick={(event) => {
-          if (event.target === event.currentTarget)
-            closeDialog(shortcuts.current);
-        }}
-      >
-        <div class="dialog-inner">
-          <div class="dialog-head">
-            <h2 id="shortcuts-title">Keyboard shortcuts</h2>
-            <button
-              type="button"
-              class="icon-button"
-              aria-label="Close"
-              onClick={() => closeDialog(shortcuts.current)}
-            >
-              <CloseIcon />
-            </button>
-          </div>
-          <dl class="key-list">
-            {SHORTCUTS.map(([keys, action]) => (
-              <div key={action}>
-                <dt>{action}</dt>
-                <dd>
-                  {keys.map((key) => (
-                    <kbd key={key}>{key}</kbd>
-                  ))}
-                </dd>
-              </div>
-            ))}
-          </dl>
-          <p class="dialog-note">Shortcuts are off while a field has focus.</p>
-        </div>
-      </dialog>
+      {helpOpen && <LazyShortcuts onClose={() => { setHelpOpen(false); dialogClosed(); }} />}
     </div>
   );
 }

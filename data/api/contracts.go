@@ -24,9 +24,11 @@ type MediaCapabilities struct {
 }
 
 type StreamSummary struct {
-	ID           camstream.StreamID `json:"id"`
-	Name         string             `json:"name"`
-	Capabilities MediaCapabilities  `json:"capabilities"`
+	CanReconnect     bool               `json:"can_reconnect,omitempty"`
+	RecoveryRequired bool               `json:"recovery_required,omitempty"`
+	ID               camstream.StreamID `json:"id"`
+	Name             string             `json:"name"`
+	Capabilities     MediaCapabilities  `json:"capabilities"`
 }
 
 type CameraSummary struct {
@@ -37,7 +39,8 @@ type CameraSummary struct {
 }
 
 type CameraList struct {
-	Cameras []CameraSummary `json:"cameras"`
+	Revision *CatalogRevision `json:"revision,omitempty"`
+	Cameras  []CameraSummary  `json:"cameras"`
 }
 type CameraDetail = CameraSummary
 type StreamList struct {

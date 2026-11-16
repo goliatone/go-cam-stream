@@ -80,3 +80,78 @@ T09 mounts the embedded frontend and exact manifest-listed assets inside the sam
 authenticated ingress; unknown paths return 404 without SPA fallback. Controlled Linux media and a
 synthetic Serve HTTPS proxy verify the integration; actual Tailnet/deployment and
 hardware/browser acceptance remain later tasks.
+
+## Camera-management contracts
+
+`management.go`, `management_errors.go` and `management_examples.json` define
+onboarding contracts. They do not enable management or install routes. The same
+fixtures are decoded strictly in Go and compiled against the TypeScript types by
+`python3 data/api/check_management_contracts.py --tsc frontend/node_modules/.bin/tsc`.
+The import fixture matches the Mac exporter; its all-zero password is synthetic.
+
+| Method/path | Input | Success | Permission |
+| --- | --- | --- | --- |
+| GET `/api/capabilities` | none | 200 `Capabilities` | admitted principal |
+| POST `/api/camera-drafts` | `CreateDraftRequest` | 201 `DraftReview` | manager |
+| POST `/api/camera-drafts/import` | multipart fields `yaml`, optional `env`, `operation_key`, `runtime_epoch` | 201 `DraftReview` | manager |
+| GET `/api/camera-drafts/:id` | none | 200 `DraftReview` | owning manager |
+| PATCH `/api/camera-drafts/:id` | `PatchDraftRequest` | 200 `DraftReview` | owning manager |
+| DELETE `/api/camera-drafts/:id` | `Mutation` | 200 `DraftReview` after cleanup | owning manager |
+| POST `/api/camera-drafts/:id/tests` | `CreateTestRequest` | 201 `TestResult` | owning manager |
+| GET `/api/camera-drafts/:id/tests/:test` | none | 200 `TestResult` | owning manager |
+| GET `/api/camera-drafts/:id/tests?attempt_key=...` | none | 200 original `TestResult` | owning manager |
+| POST `/api/camera-drafts/:id/tests/:test/complete` | `CompleteTestRequest` | 200 `TestResult` after cleanup | owning manager |
+| DELETE `/api/camera-drafts/:id/tests/:test` | `Mutation` | 200 `TestResult` after cleanup | owning manager |
+| POST `/api/cameras` | `SaveCameraRequest` | 201 `SaveCameraResponse` | owning manager |
+| GET `/api/camera-operations/:key?runtime_epoch=...&candidate_id=...` | none | 200 `OperationResult` | owner with operation-specific permission |
+| POST `/api/cameras/:id/streams/:stream/recovery` | `Mutation` | 200 `ReconnectResponse` | reconnect grants across affected aliases |
+
+All mutations require CSRF. JSON uses strict bounded decoding, with null rejected
+for optional credentials. YAML/env are file contents, never filesystem paths;
+32 KiB/8 KiB limits fit the 128 KiB transport body cap. Credentials are write-only.
+Request formatting is redacted; JSON requests must never enter command payload
+logging, tracing or event serialization. Only an owned draft review may return
+the submitted endpoint. Ordinary catalog, operation and error payloads omit it.
+
+`operation_key` is 32 lowercase hex characters from 128 random bits; a test's
+`attempt_key` is that same key. Bind keys to owner, kind, target and semantic
+input. Check receipts before revision checks. Changed intent under a key conflicts.
+Operation results contain IDs and safe outcomes, not original inputs. Unknown is
+not failed: look up the existing operation before any replay/rebase. A saved
+result includes the current catalog epoch/generation even after restart. Permanent
+candidate/creation anchors survive the 24-hour receipt window. Save resolution
+requires creator view permission when management is disabled; reset resolution
+requires reconnect permission. Cross-owner lookups return the same access-denied
+shape as nonexistent resources.
+
+Draft transitions are incomplete → ready → testing → cleaning → tested → saving
+→ saved. Edits invalidate a pass; edits during testing/cleaning/saving conflict.
+Cancel/expiry enters cleanup before terminal disposal; cleanup_failed retains
+ownership/reservations. A test pass requires server-observed media plus at least
+two advancing client-reported frames, positive dimensions and unpaused playback,
+then confirmed cleanup. Frame methods are `video_frame_callback`, `frames_decoded`
+or `playback_quality`; a playing event alone is insufficient. The test deadline
+is 20 seconds after offer admission, separate from ICE gathering and cleanup.
+The five-minute pass age starts at media evidence, not cleanup completion.
+
+Drafts last 15 minutes plus five minutes of terminal recovery. Unresolved cleanup
+outlives expiry. Limits: four drafts/one test per owner, 32 drafts/four tests
+worldwide, 64 operations per draft/2048 total. Reject new work at capacity;
+never evict unresolved ownership. Save receipts last 24 hours (maximum 1024);
+reconnect operations last ten minutes (maximum 128, one active reset per source).
+
+`recovery_scope` binds installation and principal; `runtime_epoch` distinguishes
+server lifetimes. Browser recovery stores only those values, keys, IDs, revisions,
+kind and expiry. Verify storage before enabling mutations; storage denial is
+`recovery_storage_unavailable`. A changed epoch loses unsaved drafts, but never
+invalidates durable save lookup. No endpoint, file content or credential belongs
+in browser storage. Recovery-lost reset operations require a fresh status read
+and explicit operator action; do not blindly reset twice.
+
+`CameraList.revision` and stream `can_reconnect`/`recovery_required` are additive
+fields. Their omission supports the existing read-only host; missing reconnect
+flags mean false. A management-enabled host must supply a revision. Generation
+is comparable only within one epoch. Fence old polls and preserve playback when
+reconciling membership. Error/status mappings are allowlisted in
+`management_errors.go`; ordinary media/auth errors retain `ErrorStatus` mappings.
+Private persistence and probe ownership ports live beside viewer commands.

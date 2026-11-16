@@ -714,6 +714,7 @@ describe("video-first shell", () => {
     await press("[");
     await waitFor(() => expect(onSelect).toHaveBeenLastCalledWith(room("room2")));
     await press("?");
+    await waitFor(() => expect(document.querySelector("dialog[aria-labelledby='shortcuts-title']")?.hasAttribute("open")).toBe(true));
     const help = document.querySelector("dialog[aria-labelledby='shortcuts-title']")!;
     expect(help.hasAttribute("open")).toBe(true);
     // An open dialog keeps every key.

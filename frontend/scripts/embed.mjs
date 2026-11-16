@@ -11,7 +11,7 @@ await cp(path.join(source, 'index.html'), path.join(stage, 'index.html'));
 await cp(path.join(source, 'assets'), path.join(stage, 'assets'), { recursive: true });
 const manifest = {};
 for (const name of ['index.html', ...(await readdir(path.join(stage, 'assets'))).sort().map(n => `assets/${n}`)]) {
-  if (!/^(index\.html|assets\/[A-Za-z0-9_-]+\.(js|css))$/.test(name)) throw new Error('Unexpected production asset');
+  if (!/^(index\.html|assets\/[A-Za-z0-9_-]+\.(js|css|svg))$/.test(name)) throw new Error('Unexpected production asset');
   manifest[name] = createHash('sha256').update(await readFile(path.join(stage, name))).digest('hex');
 }
 await writeFile(path.join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');

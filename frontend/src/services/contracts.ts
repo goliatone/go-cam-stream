@@ -10,9 +10,9 @@ export type ErrorCode =
   | "capacity_exceeded" | "camera_busy" | "cleanup_incomplete" | "controller_conflict"
   | "server_unavailable" | "access_denied" | "csrf_invalid" | "canceled" | "deadline_exceeded" | "internal";
 export interface MediaCapabilities { video: boolean; audio: boolean }
-export interface StreamSummary { id: StreamID; name: string; capabilities: MediaCapabilities }
+export interface StreamSummary { can_reconnect?: boolean; recovery_required?: boolean; id: StreamID; name: string; capabilities: MediaCapabilities }
 export interface CameraSummary { id: CameraID; name: string; availability: State; streams: readonly StreamSummary[] }
-export interface CameraList { cameras: readonly CameraSummary[] }
+export interface CameraList { revision?: CatalogRevision; cameras: readonly CameraSummary[] }
 export type CameraDetail = CameraSummary;
 export interface StreamList { streams: readonly StreamSummary[] }
 export interface ErrorBody { code: ErrorCode; message: string; retryable: boolean }
@@ -43,3 +43,31 @@ export const CSRF_PATH = "/api/csrf";
 export const CSRF_HEADER = "X-CSRF-Token";
 export const DIAGNOSE_COMMAND = "camera.diagnose.v1";
 export const RECONNECT_COMMAND = "camera.reconnect.v1";
+
+// Camera management wire contracts; see data/api/management.go.
+export interface CatalogRevision { runtime_epoch: string; generation: number }
+export interface Capabilities { can_manage_cameras: boolean; recovery_scope: string; runtime_epoch: string }
+export interface Mutation { operation_key: string; runtime_epoch: string }
+export type AuthenticationMode = "anonymous" | "credentials";
+export interface Credentials { username: string; password: string }
+export interface DraftInput { name: string; endpoint: string; authentication: AuthenticationMode; credentials?: Credentials }
+export interface CreateDraftRequest extends Mutation, DraftInput {  }
+export interface ImportDraftRequest extends Mutation { yaml: string; env?: string }
+export interface PatchDraftRequest extends Mutation, DraftInput { expected_revision: number }
+export type DraftState = "incomplete" | "ready" | "testing" | "cleaning" | "tested" | "saving" | "saved" | "canceled" | "expired" | "cleanup_failed";
+export type DraftWarning = "server_relative_localhost" | "imported_grants_ignored" | "initial_address_only" | "creator_only_access" | "fixed_address";
+export interface DraftReview { id: string; candidate_id: string; revision: number; runtime_epoch: string; expires_at: string; name: string; endpoint: string; authentication: AuthenticationMode; credentials_present: boolean; dial_address?: string; warnings: readonly DraftWarning[]; state: DraftState; test?: TestResult }
+export type TestStage = "negotiating" | "source_media" | "browser_playback" | "cleaning" | "passed" | "failed" | "canceled" | "cleanup_failed";
+export type CleanupState = "pending" | "confirmed" | "unknown";
+export interface CreateTestRequest extends Mutation { expected_revision: number; offer: SDPOffer }
+export interface FrameEvidence { method: string; frames: number; width: number; height: number; paused: boolean }
+export interface CompleteTestRequest extends Mutation { expected_revision: number; evidence: FrameEvidence }
+export interface TestResult { id: string; attempt_key: string; draft_revision: number; stage: TestStage; expires_at: string; answer?: SDPAnswer; source_media_observed: boolean; browser_frames_reported: boolean; cleanup: CleanupState; passed_at?: string; error?: ManagementErrorBody }
+export interface SaveCameraRequest extends Mutation { draft_id: string; expected_revision: number; catalog_revision: CatalogRevision }
+export interface SaveCameraResponse { camera_id: string; catalog_revision: CatalogRevision }
+export type OperationKind = "create" | "import" | "patch" | "cancel" | "test" | "complete" | "cancel_test" | "save" | "recovery";
+export type OperationState = "processing" | "outcome_unknown" | "succeeded" | "not_committed" | "expired" | "not_found";
+export interface OperationResult { operation_key: string; kind: OperationKind; state: OperationState; runtime_epoch: string; revision?: number; draft_id?: string; candidate_id?: string; test_id?: string; saved?: SaveCameraResponse; recovery?: ReconnectResponse; error?: ManagementErrorBody }
+export type ManagementErrorCode = ErrorCode | "draft_lost" | "draft_expired" | "test_expired" | "draft_revision_conflict" | "catalog_revision_conflict" | "operation_conflict" | "operation_in_progress" | "save_outcome_unknown" | "storage_unavailable" | "recovery_storage_unavailable" | "receipt_expired" | "recovery_lost" | "destination_denied" | "address_unavailable" | "identity_unverified" | "duplicate_camera" | "credentials_required" | "import_invalid" | "playback_evidence_unavailable" | "playback_evidence_insufficient";
+export interface ManagementErrorBody { code: ManagementErrorCode; message: string; retryable: boolean }
+export interface ManagementErrorResponse { error: ManagementErrorBody }

@@ -1,21 +1,116 @@
+/* Type and colour tokens. Rules use only these, so a theme changes them in one
+   place; styles.test.ts checks that and the contrast of the pairs used. */
 :root {
-  font-family:
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
+  --font:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
-  color: #182d35;
-  background: #f3f5f3;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-base: 15px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 21px;
+  --fs-3xl: 24px;
+  /* The page */
+  --text: #182d35;
+  --text-muted: #596b70;
+  --text-disabled: #617274;
+  --bg: #f3f5f3;
+  --surface: #fff;
+  --fill: #f0f3f0;
+  --fill-soft: #f5f7f5;
+  --fill-strong: #e9eeea;
+  --line: #dce3df;
+  --line-strong: #cbd5d0;
+  --accent: #176b51;
+  --accent-soft: #ecf5ee;
+  --accent-tint: #d8eade;
+  --on-accent: #fff;
+  --focus: #278d73;
+  --icon: #49625a;
+  --icon-dim: #71837f;
+  --warn: #8a4b00;
+  --dot: #87979b;
+  --dot-live: #248266;
+  --dot-danger: #c0563a;
+  --dot-busy: #c79a2e;
+  --shadow: rgb(0 0 0 / 0.3);
+  /* The stage, which stays dark around the video */
+  --stage: #101c21;
+  --stage-raised: #203137;
+  --stage-hover: #273a3f;
+  --stage-line: #394a50;
+  --stage-line-strong: #6b8086;
+  --stage-shimmer: #1a2a30;
+  --stage-icon: #b3c8c2;
+  --stage-dot-busy: #e0b04a;
+  --on-stage: #eef5f3;
+  --on-stage-strong: #fff;
+  --on-stage-soft: #dde6e4;
+  --on-stage-muted: #b1c0c4;
+  --on-stage-hover: rgb(255 255 255 / 0.14);
+  --on-stage-disabled: rgb(255 255 255 / 0.4);
+  --primary: #c4e3d2;
+  --primary-hover: #e2f5e9;
+  --primary-line: #9ed1bc;
+  --on-primary: #153c2c;
+  --on-disabled: #aebdbb;
+  --disabled-line: #475a60;
+  --letterbox: #000;
+  /* Only a dark page needs a line around the stage. */
+  --stage-frame: none;
+  /* Backings for what sits on the video, which may be any frame */
+  --glass: rgb(16 28 33 / 0.8);
+  --glass-weak: rgb(16 28 33 / 0.6);
+  --scrim: rgb(8 15 18 / 0.82);
+  --scrim-edge: rgb(8 15 18 / 0.75);
+  --scrim-light: rgb(8 15 18 / 0.66);
+  --scrim-light-edge: rgb(8 15 18 / 0.24);
+  --tip: rgb(8 12 14 / 0.92);
+  --toolbar-shade: rgb(0 0 0 / 0.6);
+}
+/* A dialog's backdrop inherits no custom properties before Chrome 122, Firefox
+   120 and Safari 17.4, so its token is set on the backdrop itself. */
+::backdrop {
+  --backdrop: rgb(5 8 10 / 0.5);
+}
+/* The page follows the system's dark setting. The stage and the backings on the
+   video look the same in both themes; on a dark page a line marks the stage. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e3ebe9;
+    --text-muted: #9babad;
+    --text-disabled: #8b9c9e;
+    --bg: #0e1416;
+    --surface: #151d20;
+    --fill: #1c272a;
+    --fill-soft: #192326;
+    --fill-strong: #233135;
+    --line: #273438;
+    --line-strong: #3c4c51;
+    --accent: #56bd95;
+    --accent-soft: #152e27;
+    --accent-tint: #1d4135;
+    --on-accent: #05201a;
+    --focus: #5ec9a1;
+    --icon: #a3b7b1;
+    --icon-dim: #7d908c;
+    --warn: #e9a55b;
+    --stage-frame: 0 0 0 1px #273438;
+  }
+}
+:root {
+  /* Scrollbars and other parts the browser draws follow the same setting. */
+  color-scheme: light dark;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
   font-synthesis: none;
   font-weight: 400;
   line-height: 1.5;
-  font-size: 15px;
-  --muted: #596b70;
-  --line: #dce3df;
-  --accent: #176b51;
-  --stage: #101c21;
+  font-size: var(--fs-base);
   --topbar: 56px;
   --info: 64px;
   --gutter: 24px;
@@ -50,7 +145,7 @@ button:disabled {
   cursor: not-allowed;
 }
 :focus-visible {
-  outline: 3px solid #278d73;
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 h1,
@@ -76,8 +171,8 @@ main:focus,
   white-space: nowrap;
 }
 .small {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 
 /* Shell: a 56 px top bar, a camera rail and a stage sized to the viewport. */
@@ -116,7 +211,7 @@ main:focus,
   height: var(--topbar);
   padding: 0 max(12px, env(safe-area-inset-right)) 0
     max(12px, env(safe-area-inset-left));
-  background: #fff;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 .brand {
@@ -126,7 +221,7 @@ main:focus,
   gap: 10px;
   min-height: 44px;
   text-decoration: none;
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.5px;
 }
@@ -136,7 +231,7 @@ main:focus,
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
 }
 .brand-mark svg {
@@ -152,7 +247,7 @@ main:focus,
 .view-title {
   min-width: 0;
   overflow: hidden;
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -170,11 +265,11 @@ main:focus,
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .icon-button:hover {
   color: inherit;
-  background: #edf2ee;
+  background: var(--fill-strong);
 }
 main {
   grid-area: main;
@@ -185,11 +280,11 @@ main {
 }
 main:fullscreen {
   padding: 0;
-  background: #000;
+  background: var(--letterbox);
 }
 main:-webkit-full-screen {
   padding: 0;
-  background: #000;
+  background: var(--letterbox);
 }
 
 /* Stage: the video with its status, messages and controls on top. */
@@ -208,7 +303,10 @@ main:-webkit-full-screen {
   overflow: clip;
   border-radius: 10px;
   background: var(--stage);
-  color: #eef5f3;
+  color: var(--on-stage);
+  /* Dark in both themes, down to a long message's scrollbar. */
+  color-scheme: dark;
+  box-shadow: var(--stage-frame);
   touch-action: manipulation;
 }
 .video-stage video {
@@ -224,7 +322,8 @@ main:-webkit-full-screen {
   position: relative;
   z-index: 2;
 }
-/* Scrim: overlay copy stays legible over any frame, including a bright frozen one. */
+/* Scrim: overlay copy stays legible over any frame, including a bright frozen
+   one; even its edge keeps 4.5:1 for the muted copy over white. */
 .video-stage.has-message::before {
   content: "";
   position: absolute;
@@ -232,20 +331,28 @@ main:-webkit-full-screen {
   z-index: 1;
   background: radial-gradient(
     ellipse at center,
-    rgb(8 15 18 / 0.82),
-    rgb(8 15 18 / 0.62)
+    var(--scrim),
+    var(--scrim-edge)
   );
 }
 /* Paused or waiting for a tap: keep the live frame visible behind Play. */
 .video-stage.has-prompt::before {
   background: radial-gradient(
     ellipse at center,
-    rgb(8 15 18 / 0.66),
-    rgb(8 15 18 / 0.24)
+    var(--scrim-light),
+    var(--scrim-light-edge)
   );
 }
+/* The prompt itself sits on a backing, so its words stay legible over a bright
+   frame while the frame around it stays in view. */
+.has-prompt .player-message {
+  border-radius: 12px;
+  background: var(--scrim);
+}
+/* A white ring between two dark ones, so focus shows on any frame. */
 .video-stage :focus-visible {
-  outline-color: #fff;
+  outline-color: var(--on-stage-strong);
+  box-shadow: 0 0 0 7px var(--tip);
 }
 .player[data-idle] .video-stage {
   cursor: none;
@@ -259,14 +366,14 @@ main:-webkit-full-screen {
 }
 .stage-badge {
   padding: 3px 9px;
-  border: 1px solid #394a50;
+  border: 1px solid var(--stage-line);
   border-radius: 6px;
-  background: rgb(16 28 33 / 0.8);
+  background: var(--glass);
 }
 .stage-badge .status-badge,
 .media-transport {
-  font-size: 12px;
-  color: #dde6e4;
+  font-size: var(--fs-xs);
+  color: var(--on-stage-soft);
 }
 .overlay-cameras {
   display: none;
@@ -276,9 +383,9 @@ main:-webkit-full-screen {
   padding: 0 14px;
   border: 0;
   border-radius: 999px;
-  background: rgb(16 28 33 / 0.78);
-  color: #f4f7f8;
-  font-size: 14px;
+  background: var(--glass);
+  color: var(--on-stage-strong);
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .player[data-fullscreen] .overlay-cameras {
@@ -307,24 +414,24 @@ main:-webkit-full-screen {
   width: 54px;
   height: 54px;
   margin-bottom: 2px;
-  border: 1px solid #34474e;
+  border: 1px solid var(--stage-line);
   border-radius: 50%;
-  background: #203137;
-  color: #b3c8c2;
+  background: var(--stage-raised);
+  color: var(--stage-icon);
 }
 .player-message h2 {
-  font-size: 21px;
+  font-size: var(--fs-2xl);
   font-weight: 500;
   letter-spacing: -0.3px;
 }
 .player-message p {
   max-width: 390px;
-  font-size: 13px;
-  color: #b1c0c4;
+  font-size: var(--fs-sm);
+  color: var(--on-stage-muted);
 }
 .player-message .retry-help {
-  font-size: 12px;
-  color: #bbccca;
+  font-size: var(--fs-xs);
+  color: var(--on-stage-muted);
 }
 .message-actions {
   display: flex;
@@ -338,11 +445,11 @@ main:-webkit-full-screen {
 /* The safe code, camera, stream and time, for a report. */
 .player-message .error-details,
 .catalog-message .error-details {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
 .error-details code {
-  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: var(--fs-xs) var(--mono);
 }
 .error-details time {
   white-space: nowrap;
@@ -354,18 +461,18 @@ main:-webkit-full-screen {
   gap: 8px;
   padding: 6px 14px;
   border-radius: 999px;
-  background: rgb(8 15 18 / 0.82);
-  font-size: 13px;
+  background: var(--scrim);
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .player-notice .status-dot {
-  background: #e0b04a;
+  background: var(--stage-dot-busy);
 }
 .countdown {
   font-variant-numeric: tabular-nums;
 }
 .player-notice .countdown {
-  color: #b1c0c4;
+  color: var(--on-stage-muted);
 }
 .primary-button {
   display: inline-flex;
@@ -374,34 +481,34 @@ main:-webkit-full-screen {
   gap: 8px;
   min-height: 44px;
   padding: 9px 17px;
-  border: 1px solid #9ed1bc;
+  border: 1px solid var(--primary-line);
   border-radius: 6px;
-  background: #c4e3d2;
-  color: #153c2c;
-  font-size: 13px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: var(--fs-sm);
   font-weight: 600;
   text-decoration: none;
 }
 .primary-button:hover:not(:disabled) {
-  background: #e2f5e9;
+  background: var(--primary-hover);
 }
 .primary-button:disabled {
-  color: #aebdbb;
-  background: #273a3f;
-  border-color: #475a60;
+  color: var(--on-disabled);
+  background: var(--stage-hover);
+  border-color: var(--disabled-line);
 }
 .secondary-button {
   min-height: 44px;
   padding: 9px 17px;
-  border: 1px solid #6b8086;
+  border: 1px solid var(--stage-line-strong);
   border-radius: 6px;
-  background: rgb(16 28 33 / 0.6);
-  color: #eef5f3;
-  font-size: 13px;
+  background: var(--glass-weak);
+  color: var(--on-stage);
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 .secondary-button:hover {
-  background: #273a3f;
+  background: var(--stage-hover);
 }
 .primary-button svg {
   flex: none;
@@ -414,9 +521,9 @@ main:-webkit-full-screen {
   max-width: calc(100% - 24px);
   padding: 6px 12px;
   border-radius: 8px;
-  background: rgb(8 12 14 / 0.9);
-  color: #fff;
-  font-size: 12px;
+  background: var(--tip);
+  color: var(--on-stage-strong);
+  font-size: var(--fs-xs);
   text-align: center;
   transform: translateX(-50%);
   pointer-events: none;
@@ -426,13 +533,14 @@ main:-webkit-full-screen {
   opacity: 0;
 }
 
-/* Controls sit on the video and fade during playback. */
+/* Controls sit on the video and fade during playback. The shade stays solid
+   behind the icons, at either toolbar height, so they show on any frame. */
 .player-toolbar {
   display: flex;
   align-items: center;
   gap: 2px;
   padding: 28px 8px 8px;
-  background: linear-gradient(to top, rgb(0 0 0 / 0.6), rgb(0 0 0 / 0));
+  background: linear-gradient(to top, var(--toolbar-shade) 62%, transparent);
   transition:
     opacity 0.2s,
     transform 0.2s;
@@ -457,13 +565,13 @@ main:-webkit-full-screen {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #f4f7f8;
+  color: var(--on-stage-strong);
 }
 .control-button:hover {
-  background: rgb(255 255 255 / 0.14);
+  background: var(--on-stage-hover);
 }
 .control-button[aria-disabled="true"] {
-  color: rgb(244 247 248 / 0.4);
+  color: var(--on-stage-disabled);
   cursor: default;
 }
 .control-button[aria-disabled="true"]:hover {
@@ -473,13 +581,13 @@ main:-webkit-full-screen {
 .control-button::after {
   content: attr(data-tip);
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 10px);
   left: 0;
   padding: 5px 9px;
   border-radius: 6px;
-  background: rgb(8 12 14 / 0.94);
-  color: #fff;
-  font-size: 12px;
+  background: var(--tip);
+  color: var(--on-stage-strong);
+  font-size: var(--fs-xs);
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
@@ -526,16 +634,18 @@ main:-webkit-full-screen {
     gap: 6px;
   }
   .player-message h2 {
-    font-size: 17px;
+    font-size: var(--fs-xl);
   }
   .player-message p {
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
   .stage-top {
     padding: 8px;
   }
+  /* 7 px keeps a focused control's halo inside the stage, and the toolbar keeps
+     its 64 px height. */
   .player-toolbar {
-    padding: 16px 4px 4px;
+    padding: 13px 7px 7px;
   }
   .player-hint {
     bottom: 56px;
@@ -567,25 +677,25 @@ main:-webkit-full-screen {
 }
 .stream-select label,
 .stream-facts dt {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 select {
   max-width: 220px;
   min-height: 44px;
   padding: 8px 28px 8px 10px;
-  border: 1px solid #cbd5d0;
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #fff;
-  color: #213c40;
+  background: var(--surface);
+  color: var(--text);
   /* iOS Safari zooms the page into form controls smaller than 16 px. */
-  font-size: 16px;
+  font-size: var(--fs-lg);
 }
 .stream-facts {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 20px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .stream-facts div {
   display: flex;
@@ -596,7 +706,7 @@ select {
 }
 /* Status updates stopped while the page asked for them. */
 .stale {
-  color: #8a4b00;
+  color: var(--warn);
   font-weight: 600;
 }
 
@@ -609,7 +719,7 @@ select {
   overflow-y: auto;
   padding: 16px 8px;
   border-right: 1px solid var(--line);
-  background: #fff;
+  background: var(--surface);
 }
 .rail-heading {
   display: flex;
@@ -618,16 +728,16 @@ select {
   padding: 0 8px 8px;
 }
 .rail-heading h2 {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .count {
   padding: 1px 8px;
   border-radius: 5px;
-  background: #f0f3f0;
-  color: var(--muted);
-  font-size: 12px;
+  background: var(--fill);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 .camera-list {
   display: grid;
@@ -648,10 +758,10 @@ select {
   text-decoration: none;
 }
 a.camera-choice:hover {
-  background: #f5f7f5;
+  background: var(--fill-soft);
 }
 .camera-choice[aria-current="page"] {
-  background: #ecf5ee;
+  background: var(--accent-soft);
 }
 .camera-choice[aria-current="page"]::before {
   content: "";
@@ -664,15 +774,15 @@ a.camera-choice:hover {
   background: var(--accent);
 }
 .camera-choice[aria-disabled="true"] {
-  color: #667779;
+  color: var(--text-disabled);
 }
 /* A failed camera stays a link. Its dimmed name keeps 4.5:1 contrast and its
    icon, the only visible content in the collapsed rail, keeps 3:1. */
 .camera-choice.dim {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .camera-choice.dim .camera-icon {
-  color: #71837f;
+  color: var(--icon-dim);
 }
 .camera-icon {
   display: grid;
@@ -681,11 +791,11 @@ a.camera-choice:hover {
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  background: #f0f3ef;
-  color: #49625a;
+  background: var(--fill);
+  color: var(--icon);
 }
 .camera-choice[aria-current="page"] .camera-icon {
-  background: #d8eade;
+  background: var(--accent-tint);
   color: var(--accent);
 }
 .camera-label {
@@ -693,23 +803,23 @@ a.camera-choice:hover {
 }
 .camera-label strong {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 .rail-note {
   margin-top: auto;
   padding: 16px 8px 4px;
-  font-size: 12px;
-  color: var(--muted);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 .status-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
-  color: #5b6c72;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 .status-dot {
@@ -717,16 +827,16 @@ a.camera-choice:hover {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #87979b;
+  background: var(--dot);
 }
 .tone-live .status-dot {
-  background: #248266;
+  background: var(--dot-live);
 }
 .tone-danger .status-dot {
-  background: #c0563a;
+  background: var(--dot-danger);
 }
 .tone-busy .status-dot {
-  background: #c79a2e;
+  background: var(--dot-busy);
 }
 /* Collapsed rail: icons only; names stay available to assistive technology. */
 @media (min-width: 768px) {
@@ -758,22 +868,27 @@ a.camera-choice:hover {
   padding: 48px 30px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--surface);
   text-align: center;
 }
 .catalog-message h2 {
-  font-size: 24px;
+  font-size: var(--fs-3xl);
   font-weight: 500;
 }
 .catalog-message p {
   max-width: 480px;
-  color: var(--muted);
-  font-size: 14px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }
 .skeleton {
   display: block;
   border-radius: 6px;
-  background: linear-gradient(90deg, #e9eeea 25%, #f6f8f6 50%, #e9eeea 75%);
+  background: linear-gradient(
+    90deg,
+    var(--fill-strong) 25%,
+    var(--fill-soft) 50%,
+    var(--fill-strong) 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
 }
@@ -805,9 +920,10 @@ a.camera-choice:hover {
 .stage-skeleton {
   aspect-ratio: 16 / 9;
   border-radius: 10px;
-  background: linear-gradient(100deg, var(--stage) 30%, #1a2a30 50%, var(--stage) 70%)
+  background: linear-gradient(100deg, var(--stage) 30%, var(--stage-shimmer) 50%, var(--stage) 70%)
     var(--stage);
   background-size: 220% 100%;
+  box-shadow: var(--stage-frame);
   animation: shimmer 1.6s ease-in-out infinite;
 }
 @keyframes shimmer {
@@ -824,12 +940,12 @@ a.camera-choice:hover {
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--surface);
   color: inherit;
-  box-shadow: 0 24px 64px rgb(0 0 0 / 0.3);
+  box-shadow: 0 24px 64px var(--shadow);
 }
 .dialog::backdrop {
-  background: rgb(5 8 10 / 0.5);
+  background: var(--backdrop);
 }
 .dialog-inner {
   display: grid;
@@ -843,13 +959,13 @@ a.camera-choice:hover {
   margin-right: -12px;
 }
 .dialog-head h2 {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 .key-list {
   display: grid;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--fs-md);
 }
 .key-list div {
   display: flex;
@@ -868,13 +984,13 @@ kbd {
   border: 1px solid var(--line);
   border-bottom-width: 2px;
   border-radius: 6px;
-  background: #f6f8f6;
-  font: 600 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--fill-soft);
+  font: 600 var(--fs-xs) / 1.6 var(--mono);
   text-align: center;
 }
 .dialog-note {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 .camera-sheet .camera-list {
   margin: 0 -8px;
@@ -891,7 +1007,10 @@ kbd {
   left: 10px;
   z-index: 30;
   padding: 8px;
-  background: #fff;
+  background: var(--surface);
+  /* Its focus ring lies on this margin, also where the link covers the video
+     in landscape. */
+  box-shadow: 0 0 0 6px var(--surface);
   transform: translateY(-200%);
 }
 .skip-link:focus {
@@ -952,7 +1071,7 @@ kbd {
   .stream-bar {
     padding: 8px var(--gutter);
     border-bottom: 1px solid var(--line);
-    background: #fff;
+    background: var(--surface);
   }
   .stream-bar-inner {
     width: 100%;
@@ -1004,7 +1123,7 @@ kbd {
     position: fixed;
     inset: 0;
     padding: 0;
-    background: #000;
+    background: var(--letterbox);
   }
   .player,
   .stage-skeleton {
