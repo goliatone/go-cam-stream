@@ -166,3 +166,14 @@ Local workflow validation uses `actionlint .github/workflows/controlled-media.ym
 capacity and artifact upload require a first dispatched run; local checks cannot
 establish those results. Automatic PR gating is a separate follow-up after that
 run is reviewed.
+
+Camera management loads the private overlay under controller and state-directory
+locks before binding HTTP. It shares one managed/environment resolver with the
+RTSP encoders. Durable state lives beside `workers`, survives worker retirement,
+and remains loaded when management is disabled. Shutdown drains HTTP, settles
+pending commits and cleans temporary previews before closing the coordinator,
+workers, secret buffers and locks. Uncertain cleanup retains ownership for retry.
+
+Run `./scripts/controlled-media.sh --management-host --output NEW_DIRECTORY`
+for the isolated production Save/creator-grant/restart/RTP smoke. Browser decode
+is a separate integrated check; the API harness does not claim it.

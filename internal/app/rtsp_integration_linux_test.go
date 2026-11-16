@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -37,9 +38,10 @@ type rtspHost struct {
 	c            *Controller
 	proxy        *httptest.Server
 	kasaRequests atomic.Uint64
+	stop         func()
 }
 
-func startRTSPHost(t *testing.T, browser bool) *rtspHost {
+func startRTSPHost(t *testing.T, browser bool, configure ...func(*config.Config)) *rtspHost {
 	t.Helper()
 	h := new(rtspHost)
 	t.Setenv("T05_RTSP_USER", "t05-user")
@@ -87,6 +89,9 @@ func startRTSPHost(t *testing.T, browser bool) *rtspHost {
 			{CameraID: "other", Streams: []cs.StreamID{"main"}, View: true, Diagnose: true, Reconnect: true},
 			{CameraID: "kasa", Streams: []cs.StreamID{"default"}, View: true, Diagnose: true, Reconnect: true}}},
 		{Login: "viewer", Grants: []config.Grant{{CameraID: "primary", Streams: []cs.StreamID{"main"}, View: true}}},
+	}
+	for _, option := range configure {
+		option(&cfg)
 	}
 	target, err := url.Parse("http://" + cfg.Listen)
 	if err != nil {
@@ -145,12 +150,16 @@ func startRTSPHost(t *testing.T, browser bool) *rtspHost {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- h.c.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if e := <-done; e != nil {
-			t.Error(e)
-		}
-	})
+	var once sync.Once
+	h.stop = func() {
+		once.Do(func() {
+			cancel()
+			if e := <-done; e != nil {
+				t.Error(e)
+			}
+		})
+	}
+	t.Cleanup(h.stop)
 	eventually(t, h.c.ready.Load)
 	return h
 }
@@ -185,6 +194,9 @@ func (h *rtspHost) request(t *testing.T, actor, method, path, body string) (int,
 		t.Fatal(err)
 	}
 	for _, private := range []string{"t05-main-private", "t05-sub-private", "t05-other-private", "t05-missing-private", "t05-user", "t05-fixture-password", "t05-kasa-user", "t05-kasa-password", "env://", "rtsp://", "kasa://"} {
+		if strings.HasPrefix(path, api.DraftsPath) && (strings.HasPrefix(private, "t05-") && strings.HasSuffix(private, "-private") || private == "rtsp://") {
+			continue
+		} // owner-only review intentionally echoes the submitted endpoint
 		if strings.Contains(string(data), private) {
 			t.Fatalf("public response leaked %q", private)
 		}
@@ -245,7 +257,7 @@ func (h *rtspHost) peer(t *testing.T, camera, stream, actor string, expected int
 	}
 	status, data := h.request(t, actor, "POST", "/api/cameras/"+camera+"/streams/"+stream+"/sessions", string(body))
 	if status != expected {
-		t.Fatalf("negotiate %s/%s: status=%d body=%s", camera, stream, status, data)
+		t.Fatalf("negotiate %s/%s: status=%d", camera, stream, status)
 	}
 	if expected != 201 {
 		var failure api.ErrorResponse

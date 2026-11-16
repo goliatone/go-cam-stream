@@ -25,6 +25,8 @@ const developmentLogin = "local-developer"
 type DevelopmentOptions struct{ Go2RTC, FFmpeg, WebcamDevice string }
 
 func NewDevelopment(cfg config.Config, logger admin.Logger, options ...DevelopmentOptions) (*Controller, error) {
+	cfg.Management.Enabled = true
+	cfg.Management.Principals = []string{developmentLogin}
 	cfg.Access = nil
 	catalog, err := config.Prepare(context.Background(), cfg, config.DefaultProviders()...)
 	if err != nil {

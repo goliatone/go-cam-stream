@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goliatone/go-cam-stream/config"
@@ -15,14 +16,12 @@ import (
 // CameraService adds immutable startup catalog/access policy to the public
 // coordinator. It owns principal bindings, not another media lifecycle engine.
 type CameraService struct {
-	core    *cs.Service
-	timeout time.Duration
-	cameras map[cs.CameraID]config.CatalogCamera
-	order   []cs.CameraID
-	aliases map[cs.SourceKey][]api.StreamRef
-	access  map[string]map[scope]rights
-	mu      sync.Mutex
-	owners  map[cs.SessionID]string // bounded by the core's MaxSessionRecords
+	core         *cs.Service
+	timeout      time.Duration
+	catalogState atomic.Pointer[catalogSnapshot]
+	publication  sync.Mutex
+	mu           sync.Mutex
+	owners       map[cs.SessionID]string // bounded by the core's MaxSessionRecords
 }
 
 // NewCameraService snapshots a catalog from config.Prepare. Provider-owned typed
@@ -32,14 +31,17 @@ func NewCameraService(core *cs.Service, catalog config.Catalog, timeout time.Dur
 	if core == nil || timeout <= 0 {
 		return nil, invalid()
 	}
-	s := &CameraService{core: core, timeout: timeout, cameras: map[cs.CameraID]config.CatalogCamera{}, aliases: map[cs.SourceKey][]api.StreamRef{}, access: map[string]map[scope]rights{}, owners: map[cs.SessionID]string{}}
-	if err := s.loadCatalog(catalog); err != nil {
+	s := &CameraService{core: core, timeout: timeout, owners: map[cs.SessionID]string{}}
+	snapshot, err := newCatalogSnapshot(catalog, api.CatalogRevision{}, nil)
+	if err != nil {
 		return nil, err
 	}
+	s.catalogState.Store(snapshot)
 	return s, nil
 }
 
 func (s *CameraService) CreateSession(ctx context.Context, camera cs.CameraID, stream cs.StreamID, request api.CreateSessionRequest) (api.Session, error) {
+	ctx = s.captureCatalog(ctx)
 	item, err := s.require(ctx, camera, stream, view)
 	if err != nil {
 		return api.Session{}, err
@@ -64,6 +66,7 @@ func (s *CameraService) CreateSession(ctx context.Context, camera cs.CameraID, s
 	return out, nil
 }
 func (s *CameraService) CloseSession(ctx context.Context, id cs.SessionID) error {
+	ctx = s.captureCatalog(ctx)
 	s.mu.Lock()
 	owner, known := s.owners[id]
 	s.mu.Unlock()
@@ -100,8 +103,9 @@ func (r DiagnoseResult) CommandResultFailure() error {
 	return nil
 }
 func (s *CameraService) Diagnose(ctx context.Context, id cs.CameraID, stream cs.StreamID) (DiagnoseResult, error) {
+	ctx = s.captureCatalog(ctx)
 	out := DiagnoseResult{api.DiagnoseResponse{CameraID: id, Streams: []api.StreamDiagnosis{}}}
-	item, ok := s.cameras[id]
+	item, ok := s.snapshot(ctx).cameras[id]
 	if !ok {
 		return out, denied()
 	}
@@ -154,6 +158,7 @@ func diagnosticChecks(state cs.StreamState, err error) []api.DiagnosticCheck {
 }
 
 func (s *CameraService) Reconnect(ctx context.Context, id cs.CameraID, stream cs.StreamID) (api.ReconnectResponse, error) {
+	ctx = s.captureCatalog(ctx)
 	out := api.ReconnectResponse{Affected: []api.StreamRef{}, ClosedSessions: []cs.SessionID{}}
 	item, err := s.require(ctx, id, stream, reconnect)
 	if err != nil {
@@ -162,12 +167,12 @@ func (s *CameraService) Reconnect(ctx context.Context, id cs.CameraID, stream cs
 	key := item.Sources[stream]
 	// Reset affects every alias of the source. Partial operator grants cannot
 	// interrupt or reveal another alias's viewers.
-	for _, alias := range s.aliases[key] {
+	for _, alias := range s.snapshot(ctx).aliases[key] {
 		if _, err = s.require(ctx, alias.CameraID, alias.StreamID, reconnect); err != nil {
 			return out, err
 		}
 	}
-	out.Affected = append(out.Affected, s.aliases[key]...)
+	out.Affected = append(out.Affected, s.snapshot(ctx).aliases[key]...)
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	ids, err := s.core.ResetSource(ctx, key)

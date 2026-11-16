@@ -9,6 +9,7 @@ import (
 
 	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/config"
+	"github.com/goliatone/go-cam-stream/internal/viewer"
 	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
 	"github.com/goliatone/go-cam-stream/pkg/camstream/backends/go2rtc"
 	"github.com/goliatone/go-cam-stream/pkg/camstream/backends/go2rtc/kasa"
@@ -32,7 +33,7 @@ func newDevelopmentController(cfg config.Config, logger admin.Logger, opts Devel
 	// The application has already checked/retired the old generation while owning
 	// its installation lock. The backend checks again before taking its own flock.
 	bc.AllowExec = opts.FFmpeg != ""
-	resolver := environment.New(environment.Config{})
+	resolver := viewer.NewManagedSecrets(environment.New(environment.Config{}))
 	var encoder cs.SourceEncoder[go2rtc.Input] = rtspencoder.NewEncoder(resolver)
 	if opts.FFmpeg != "" {
 		encoder = developmentSourceEncoder{base: encoder, ffmpeg: opts.FFmpeg, webcam: opts.WebcamDevice}
@@ -41,7 +42,7 @@ func newDevelopmentController(cfg config.Config, logger admin.Logger, opts Devel
 	if err != nil {
 		return nil, safe(err)
 	}
-	return New(cfg, Dependencies{Backend: backend, Runtime: backend, Providers: config.DefaultProviders(), VerifyClean: verify, Logger: logger})
+	return New(cfg, Dependencies{Backend: backend, Runtime: backend, Providers: config.DefaultProviders(), VerifyClean: verify, Logger: logger, Secrets: resolver})
 }
 
 type developmentSourceEncoder struct {

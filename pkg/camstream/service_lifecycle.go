@@ -361,6 +361,10 @@ func (s *Service) pollService() {
 	for _, src := range s.sourceList() {
 		select {
 		case src.gate <- struct{}{}:
+			if src.retired.Load() {
+				serviceLeave(src)
+				continue
+			}
 		default:
 			continue
 		}

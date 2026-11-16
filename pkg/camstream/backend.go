@@ -61,3 +61,11 @@ type StreamState struct {
 	ObservedAt     time.Time
 	Fault          ErrorCode // empty when no fault is known; no backend-native error text
 }
+
+// TransientRetirer is an optional host-management capability. It forgets only
+// the supplied terminal session records after confirmed source cleanup. Ordinary
+// playback tombstones retain their existing lifetime. The coordinator guarantees
+// these IDs were generated for an exclusively transient source and never reused.
+type TransientRetirer interface {
+	RetireTransientSessions(context.Context, SourceKey, []SessionID) error
+}

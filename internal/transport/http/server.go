@@ -23,14 +23,15 @@ import (
 )
 
 type Routes struct {
-	Service *viewer.CameraService
-	Bus     *admin.CommandBus
-	Ready   func() bool
+	Service    *viewer.CameraService
+	Bus        *admin.CommandBus
+	Ready      func() bool
+	Management ManagementRoutes
 }
 
 // New mounts a minimal core go-admin host and the application API. Registration
 // is completed before WrappedRouter seals routes. The caller owns the bus.
-func New(ctx context.Context, cfg config.Config, service *viewer.CameraService, bus *admin.CommandBus, ready func() bool, logger admin.Logger) (http.Handler, error) {
+func New(ctx context.Context, cfg config.Config, service *viewer.CameraService, bus *admin.CommandBus, ready func() bool, logger admin.Logger, management ...ManagementRoutes) (http.Handler, error) {
 	if service == nil || bus == nil || ready == nil || cfg.Validate() != nil {
 		return nil, cs.NewError(cs.CodeInvalidArgument, nil)
 	}
@@ -39,8 +40,12 @@ func New(ctx context.Context, cfg config.Config, service *viewer.CameraService, 
 	r.Use(authenticator{}.WrapHandler)
 	r.Use(csrfProtection(cfg.InstallationID))
 	csrf.RegisterRoutes(r, csrf.RouteConfig{Path: api.CSRFPath})
-	h := Routes{service, bus, ready}
+	h := Routes{Service: service, Bus: bus, Ready: ready}
+	if len(management) > 0 {
+		h.Management = management[0]
+	}
 	h.register(r)
+	h.registerManagement(r)
 	// Core go-admin starts a legacy process-global registry whenever its bus is
 	// enabled during Initialize. Keep it disabled through bootstrap; our committed
 	// owner runtimes are independent and enabled only after route registration.
@@ -60,7 +65,7 @@ func New(ctx context.Context, cfg config.Config, service *viewer.CameraService, 
 	if err != nil {
 		return nil, cs.NewError(cs.CodeInternal, err)
 	}
-	return guard(web, cfg.Origin, cfg.Access, ready), nil
+	return guardWithAdmission(web, cfg.Origin, service.AdmittedPrincipals, ready), nil
 }
 func (h Routes) register(r admin.AdminRouter) {
 	r.Get("/api/health", func(c router.Context) error {

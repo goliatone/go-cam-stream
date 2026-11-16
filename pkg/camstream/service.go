@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,6 +63,8 @@ type Service struct {
 }
 
 type serviceSource struct {
+	transient                       CameraID
+	retired                         atomic.Bool
 	gate                            chan struct{} // serializes backend operations for this source only
 	key                             SourceKey
 	device                          PhysicalCameraID
@@ -142,6 +145,15 @@ func (s *Service) strategy(camera Camera) (Strategy, error) {
 // ID with retained ownership; callers must not turn an uncertain POST into an
 // automatic retry. The deadline applies to negotiation, never active playback.
 func (s *Service) CreateSession(ctx context.Context, camera Camera, stream StreamID, offer Offer) (SessionState, error) {
+	return s.createSession(ctx, camera, stream, offer, false)
+}
+
+// CreateTransientSession marks a private source for explicit management retirement.
+// It cannot share a source with normal playback or another transient camera.
+func (s *Service) CreateTransientSession(ctx context.Context, camera Camera, stream StreamID, offer Offer) (SessionState, error) {
+	return s.createSession(ctx, camera, stream, offer, true)
+}
+func (s *Service) createSession(ctx context.Context, camera Camera, stream StreamID, offer Offer, transient bool) (SessionState, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.options.NegotiationTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -154,7 +166,7 @@ func (s *Service) CreateSession(ctx context.Context, camera Camera, stream Strea
 	if offer.SDP == "" || len(offer.SDP) > 64<<10 {
 		return SessionState{}, NewError(CodeInvalidArgument, nil)
 	}
-	v, err := s.reserve(spec, camera.ID, stream, cancel)
+	v, err := s.reserve(spec, camera.ID, stream, cancel, transient)
 	if err != nil {
 		return SessionState{}, err
 	}
@@ -181,7 +193,7 @@ func (s *Service) CreateSession(ctx context.Context, camera Camera, stream Strea
 	return result, nil
 }
 
-func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, cancel context.CancelFunc) (*serviceSession, error) {
+func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, cancel context.CancelFunc, transient bool) (*serviceSession, error) {
 	var random [24]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, NewError(CodeInternal, err)
@@ -195,9 +207,16 @@ func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, can
 	if key := s.devices[spec.PhysicalCameraID]; key != "" && key != spec.Key {
 		return nil, NewError(CodeCameraBusy, nil)
 	}
+	existing := s.sources[spec.Key]
+	if existing != nil && ((transient && existing.transient != camera) || (!transient && existing.transient != "")) {
+		return nil, NewError(CodeConflict, nil)
+	}
 	src, err := s.sourceDefinition(spec)
 	if err != nil {
 		return nil, err
+	}
+	if transient && existing == nil {
+		src.transient = camera
 	}
 	if src.fault != "" {
 		return nil, NewError(src.fault, nil)
@@ -277,6 +296,10 @@ func (s *Service) create(ctx context.Context, v *serviceSession, spec StreamSpec
 func serviceEnter(ctx context.Context, source *serviceSource) error {
 	select {
 	case source.gate <- struct{}{}:
+		if source.retired.Load() {
+			serviceLeave(source)
+			return NewError(CodeNotFound, nil)
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

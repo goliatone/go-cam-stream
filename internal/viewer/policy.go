@@ -42,7 +42,7 @@ func denied() error  { return cs.NewError(cs.CodeAccessDenied, nil) }
 func invalid() error { return cs.NewError(cs.CodeInvalidArgument, nil) }
 
 func (s *CameraService) allowed(ctx context.Context, camera cs.CameraID, stream cs.StreamID, action permission) bool {
-	r := s.access[principal(ctx)][scope{camera, stream}]
+	r := s.snapshot(ctx).access[principal(ctx)][scope{camera, stream}]
 	switch action {
 	case view:
 		return r.view
@@ -61,50 +61,23 @@ func (s *CameraService) require(ctx context.Context, camera cs.CameraID, stream 
 	if !s.allowed(ctx, camera, stream, action) {
 		return config.CatalogCamera{}, denied()
 	}
-	item, ok := s.cameras[camera]
+	item, ok := s.snapshot(ctx).cameras[camera]
 	if !ok || item.Sources[stream] == "" {
 		return config.CatalogCamera{}, denied()
 	}
 	return item, nil
 }
 
-func (s *CameraService) loadCatalog(catalog config.Catalog) error {
-	for _, item := range catalog.Cameras {
-		if err := s.addCamera(item); err != nil {
-			return err
-		}
-	}
-	for _, entry := range catalog.Access {
-		if !config.ValidLogin(entry.Login) || s.access[entry.Login] != nil {
-			return invalid()
-		}
-		grants := map[scope]rights{}
-		for _, grant := range entry.Grants {
-			if len(grant.Streams) == 0 || (!grant.View && !grant.Diagnose && !grant.Reconnect) {
-				return invalid()
-			}
-			for _, stream := range grant.Streams {
-				key := scope{grant.CameraID, stream}
-				if s.cameras[grant.CameraID].Sources[stream] == "" {
-					return invalid()
-				}
-				if _, duplicate := grants[key]; duplicate {
-					return invalid()
-				}
-				grants[key] = rights{grant.View, grant.Diagnose, grant.Reconnect}
-			}
-		}
-		s.access[entry.Login] = grants
-	}
-	return nil
-}
-
 func (s *CameraService) List(ctx context.Context) (api.CameraList, error) {
+	ctx = s.captureCatalog(ctx)
 	out := api.CameraList{Cameras: []api.CameraSummary{}}
+	if revision := s.snapshot(ctx).revision; revision.RuntimeEpoch != "" {
+		out.Revision = &revision
+	}
 	if err := s.admit(ctx); err != nil {
 		return out, err
 	}
-	for _, id := range s.order {
+	for _, id := range s.snapshot(ctx).order {
 		if summary, ok := s.summary(ctx, id); ok {
 			out.Cameras = append(out.Cameras, summary)
 		}
@@ -117,7 +90,7 @@ func (s *CameraService) admit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, ok := s.access[principal(ctx)]; !ok {
+	if _, ok := s.snapshot(ctx).access[principal(ctx)]; !ok && !s.snapshot(ctx).managers[principal(ctx)] {
 		return denied()
 	}
 	return nil
@@ -126,14 +99,21 @@ func (s *CameraService) admit(ctx context.Context) error {
 // summary describes a camera with the profiles this viewer may watch. A camera
 // without one is not listed.
 func (s *CameraService) summary(ctx context.Context, id cs.CameraID) (api.CameraSummary, bool) {
-	camera, ok := s.cameras[id]
+	camera, ok := s.snapshot(ctx).cameras[id]
 	if !ok {
 		return api.CameraSummary{}, false
 	}
 	summary := api.CameraSummary{ID: id, Name: camera.Camera.Name, Streams: []api.StreamSummary{}}
 	for _, stream := range camera.Streams {
 		if s.allowed(ctx, id, stream.ID, view) {
-			summary.Streams = append(summary.Streams, streamSummary(stream))
+			entry := streamSummary(stream)
+			entry.CanReconnect = s.allowed(ctx, id, stream.ID, reconnect)
+			for _, alias := range s.snapshot(ctx).aliases[camera.Sources[stream.ID]] {
+				entry.CanReconnect = entry.CanReconnect && s.allowed(ctx, alias.CameraID, alias.StreamID, reconnect)
+			}
+			state, err := s.core.StreamSnapshot(ctx, camera.Camera, stream.ID)
+			entry.RecoveryRequired = err == nil && state.Fault != ""
+			summary.Streams = append(summary.Streams, entry)
 		}
 	}
 	if len(summary.Streams) == 0 {
@@ -179,6 +159,7 @@ func summarize(seen map[cs.State]bool) cs.State {
 
 // Camera summarizes only the requested camera, as List would list it.
 func (s *CameraService) Camera(ctx context.Context, id cs.CameraID) (api.CameraDetail, error) {
+	ctx = s.captureCatalog(ctx)
 	if err := s.admit(ctx); err != nil {
 		return api.CameraDetail{}, err
 	}
@@ -189,6 +170,7 @@ func (s *CameraService) Camera(ctx context.Context, id cs.CameraID) (api.CameraD
 	return summary, nil
 }
 func (s *CameraService) Status(ctx context.Context, id cs.CameraID, stream cs.StreamID) (api.StreamStatus, error) {
+	ctx = s.captureCatalog(ctx)
 	item, err := s.require(ctx, id, stream, view)
 	if err != nil {
 		return api.StreamStatus{}, err
@@ -226,7 +208,38 @@ func publicStatus(id cs.StreamID, state cs.StreamState, err error) api.StreamSta
 	return out
 }
 
-func (s *CameraService) addCamera(item config.CatalogCamera) error {
+func (s *catalogSnapshot) loadCatalog(catalog config.Catalog) error {
+	for _, item := range catalog.Cameras {
+		if err := s.addCamera(item); err != nil {
+			return err
+		}
+	}
+	for _, entry := range catalog.Access {
+		if !config.ValidLogin(entry.Login) || s.access[entry.Login] != nil {
+			return invalid()
+		}
+		grants := map[scope]rights{}
+		for _, grant := range entry.Grants {
+			if len(grant.Streams) == 0 || (!grant.View && !grant.Diagnose && !grant.Reconnect) {
+				return invalid()
+			}
+			for _, stream := range grant.Streams {
+				key := scope{grant.CameraID, stream}
+				if s.cameras[grant.CameraID].Sources[stream] == "" {
+					return invalid()
+				}
+				if _, duplicate := grants[key]; duplicate {
+					return invalid()
+				}
+				grants[key] = rights{grant.View, grant.Diagnose, grant.Reconnect}
+			}
+		}
+		s.access[entry.Login] = grants
+	}
+	return nil
+}
+
+func (s *catalogSnapshot) addCamera(item config.CatalogCamera) error {
 	if !config.ValidID(string(item.Camera.ID)) || item.Camera.Config == nil || item.Camera.PhysicalID == "" || len(item.Streams) == 0 {
 		return invalid()
 	}

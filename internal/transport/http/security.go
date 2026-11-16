@@ -66,6 +66,10 @@ func guard(next http.Handler, origin string, access []config.Access, ready func(
 	for _, a := range access {
 		allow[a.Login] = true
 	}
+	return guardWithAdmission(next, origin, func() map[string]bool { return allow }, ready)
+}
+
+func guardWithAdmission(next http.Handler, origin string, principals func() map[string]bool, ready func() bool) http.Handler {
 	u, parseErr := url.Parse(origin)
 	if parseErr != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, cs.CodeAccessDenied) })
@@ -92,7 +96,7 @@ func guard(next http.Handler, origin string, access []config.Access, ready func(
 			_, _ = w.Write([]byte("{\"ok\":true}\n")) //nolint:errcheck // The response is complete; a disconnected caller needs no second write.
 			return
 		}
-		ctx, err := authenticatedContext(r, u.Host, origin, allow)
+		ctx, err := authenticatedContext(r, u.Host, origin, principals())
 		if err != nil {
 			writeError(w, cs.DescribeError(err).Code)
 			return
