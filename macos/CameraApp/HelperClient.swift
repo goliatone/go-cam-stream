@@ -53,6 +53,7 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
     private(set) var audioVersion = 0
     private(set) var sharingVersion = 0
     private(set) var conversationVersion = 0
+    private(set) var callRecoveryVersion = 0
     var idle: Bool { ready && current == nil && queue.isEmpty && !closing }
 
     func launch(executable: URL, directory: URL) {
@@ -142,7 +143,9 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
         }
         sequence += 1
         let id = "request-\(sequence)"
-        let request = NativeConversationRequest(id: id, method: method, roomID: roomID, invitationURL: invitation)
+        let wantsProgress = callRecoveryVersion == 1 && (method == .create || method == .createLocal)
+        let request = NativeConversationRequest(id: id, method: method, roomID: roomID, invitationURL: invitation,
+                                                setupProgress: wantsProgress ? true : nil)
         guard var data = try? JSONEncoder().encode(request), data.count < 16384 else {
             completion(["error": ["code": "invitation_invalid"]])
             return
@@ -178,9 +181,13 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
                     audioVersion = (reply["result"] as? Reply)?["audio"] as? Int ?? 0
                     sharingVersion = (reply["result"] as? Reply)?["sharing"] as? Int ?? 0
                     conversationVersion = (reply["result"] as? Reply)?["conversations"] as? Int ?? 0
+                    callRecoveryVersion = (reply["result"] as? Reply)?["call_recovery"] as? Int ?? 0
                     deadline?.invalidate(); ready = true; onReady?()
                 } else if event == "sharing_changed", ready, sharingVersion >= 1, reply["result"] is Reply {
                     onSharingEvent?(reply)
+                } else if event == "conversation_setup_progress", callRecoveryVersion == 1,
+                          let pending = current, reply["id"] as? String == pending.id {
+                    onEvent?(reply)
                 } else if event == "capture_stopped" || event == "session_error" {
                     onEvent?(reply)
                 } else { fail(); return }

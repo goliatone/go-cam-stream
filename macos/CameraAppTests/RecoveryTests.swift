@@ -164,6 +164,41 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         check(helper.methods.filter { $0 == "conversation_create" }.count == creates + 1 &&
               model.conversationFeedback?.title == "Calls couldn't start",
               "Try Again starts the conversation through the normal action")
+
+        helper.conversationReply = ["error": ["code": "media_unreachable", "setup": "listener_in_use", "port": 18894]]
+        model.startConversation()
+        check(model.conversationFeedback?.title == "Call port 18894 is already in use" &&
+              model.conversationFeedback?.message.contains("stop the test") == true &&
+              model.conversationFeedback?.actions.first == .retryConversation && !model.canCopyConversation,
+              "a port conflict names the port and gives an action without exposing an invitation")
+
+        helper.conversationReply = setupFailure("public_route_unreachable")
+        model.perform(.retryConversation)
+        check(model.conversationFeedback?.title == "Guests can't reach this Mac" && model.conversationSetupPort == nil &&
+              model.conversationFeedback?.actions == [.retryConversation, .testLocalConversation] && !model.canCopyConversation,
+              "a failed route check explains the tunnel and keeps the invitation unavailable")
+        var diagnostics = ""
+        model.writeClipboard = { diagnostics = $0 }
+        model.copyConversationDiagnostics()
+        check(diagnostics.contains("public_route_unreachable") && !diagnostics.contains("18894") && !diagnostics.contains("https://"),
+              "call diagnostics include the current reason and omit endpoint and stale port data")
+        model.perform(.testLocalConversation)
+        check(helper.methods.last == "conversation_create_local", "the local action requests a separate loopback room")
+
+        helper.conversationReply = setupFailure("relay_unavailable")
+        model.startConversationInBrowser()
+        check(model.conversationFeedback?.actions == [.retryRelay, .showSettingsFolder], "an unavailable relay offers a useful retry and settings")
+        helper.conversationReply = prejoin("host")
+        model.perform(.retryRelay)
+        check(model.hostInBrowser, "a retry preserves the host in browser start mode")
+        helper.conversationReply = setupFailure("public_route_unreachable")
+        model.perform(.checkConversationRoute)
+        check(!model.canCopyConversation && model.conversationRouteFeedback?.actions.first == .checkConversationRoute,
+              "an unavailable public route suspends copying and offers a connection check")
+        helper.conversationReply = ["result": true]
+        model.perform(.checkConversationRoute)
+        check(model.canCopyConversation && model.conversationRouteFeedback == nil,
+              "a successful check restores invitation copy")
     }
 
     do { // Older helpers without a setup cause: neutral, role-specific recovery.
@@ -179,6 +214,22 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         check(model.conversationFeedback?.title == "Couldn't join the conversation" &&
               model.conversationFeedback?.message.contains("already has a guest") == true && model.conversationFeedback?.actions == [],
               "a guest who cannot join is told why without a host action")
+    }
+
+    do { // New helpers report each setup stage while a start is pending.
+        let (model, helper) = launched()
+        helper.heldConversationMethods.insert(.create)
+        model.startConversation()
+        check(model.conversationProgress == .listener && !model.canCopyConversation, "start begins with the local listener check")
+        helper.onEvent?(["event": "conversation_setup_progress", "result": "public_route"])
+        check(model.conversationProgress == .publicRoute, "the helper advances the public link progress")
+        helper.onEvent?(["event": "conversation_setup_progress", "result": "relay"])
+        check(model.conversationProgress == .relay, "the helper advances the relay progress")
+        helper.pendingConversation.removeValue(forKey: .create)?(setupFailure("call_assets_unavailable"))
+        check(model.conversationProgress == nil && model.conversationFeedback?.actions == [.openInstallGuide],
+              "missing call files stop progress and offer installation help")
+        model.perform(.openInstallGuide)
+        check(opened.last == CameraModel.installGuide, "installation help opens the app replacement instructions")
     }
 
     do { // Calls that stop after opening, and explicit closes.

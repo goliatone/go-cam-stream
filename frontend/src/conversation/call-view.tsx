@@ -339,7 +339,7 @@ export function CallView({ model, actions, page }: { model: CallModel; actions: 
             <button id="copy-invitation" class="btn primary" type="button" onClick={actions.copyInvitation}>
               <Icon name="copy" /><span>Copy invitation</span>
             </button>
-          </> : model.native ? <p>Send them the invitation link.{until && ` It works until ${until}.`}</p>
+          </> : model.native ? <p>Check the guest link in Camstream before sharing it.</p>
             : <p>Copy the invitation in Camstream on your Mac and send it to your guest.{until && ` It works until ${until}.`}</p>}
         </> : <>
           <span class="badge-icon muted" aria-hidden="true"><Icon name="clock" /></span>

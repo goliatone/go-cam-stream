@@ -130,6 +130,56 @@ function dev:build() (
     go build -tags camstream_dev -o bin/camstream-dev ./cmd/camstream-dev
 )
 
+function _mac:fresh-output {
+    mkdir -p "$1" || return "$?"
+    mktemp -d "$1/build.XXXXXX"
+}
+
+## mac:build [APP_PATH]
+## Build a fresh local macOS app using .version and the cached runtime pack.
+function mac:build() (
+    case "${1:-}" in
+        -h|--help) echo "Usage: $0 mac:build [APP_PATH]"; return 0 ;;
+    esac
+    if (( $# > 1 )) || [[ "${1:-}" == -* ]]; then
+        echo "Usage: $0 mac:build [APP_PATH]" >&2
+        return 2
+    fi
+
+    local version output build_dir
+    version="$(version:get)" || return "$?"
+    (cd "${SCRIPT_DIR}/frontend" && npm ci) || return "$?"
+    output="${1:-}"
+    if [[ -z "${output}" ]]; then
+        build_dir="$(_mac:fresh-output "${SCRIPT_DIR}/dist/macos/camstream-camera-${version}")" || return "$?"
+        output="${build_dir}/Camstream Camera.app"
+        trap 'rmdir "$build_dir" 2>/dev/null || true' EXIT
+    fi
+    python3 "${SCRIPT_DIR}/macos/build-app.py" --version "${version}" --output "${output}"
+)
+
+## mac:package [OUTPUT_DIR]
+## Build a fresh development DMG and print the full app and DMG paths.
+function mac:package() (
+    case "${1:-}" in
+        -h|--help) echo "Usage: $0 mac:package [OUTPUT_DIR]"; return 0 ;;
+    esac
+    if (( $# > 1 )) || [[ "${1:-}" == -* ]]; then
+        echo "Usage: $0 mac:package [OUTPUT_DIR]" >&2
+        return 2
+    fi
+
+    local version output
+    version="$(version:get)" || return "$?"
+    (cd "${SCRIPT_DIR}/frontend" && npm ci) || return "$?"
+    output="${1:-}"
+    if [[ -z "${output}" ]]; then
+        output="$(_mac:fresh-output "${SCRIPT_DIR}/dist/releases/camstream-camera-${version}")" || return "$?"
+        trap 'rmdir "$output" 2>/dev/null || true' EXIT
+    fi
+    python3 "${SCRIPT_DIR}/macos/package-release.py" "${version}" --development --output "${output}"
+)
+
 ## dev:webcams
 ## List Mac webcams and their indices for dev:serve --webcam=INDEX, without capture.
 function dev:webcams {

@@ -56,7 +56,7 @@ final class AppMenus: NSObject, NSMenuDelegate {
 
     private func buildMain() {
         let app = submenu("Camstream Camera")
-        app.addItem(withTitle: "About Camstream Camera", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        app.addItem(item("About Camstream Camera", #selector(showAbout)))
         app.addItem(.separator())
         app.addItem(item("Settings…", #selector(showSettings), ","))
         app.addItem(.separator())
@@ -147,6 +147,14 @@ final class AppMenus: NSObject, NSMenuDelegate {
         let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
+    }
+
+    @objc private func showAbout() {
+        let buildID = Bundle.main.object(forInfoDictionaryKey: "CamstreamBuildID") as? String
+        let options: [NSApplication.AboutPanelOptionKey: Any] = buildID.map {
+            [.credits: NSAttributedString(string: "Build ID: \($0)")]
+        } ?? [:]
+        NSApp.orderFrontStandardAboutPanel(options: options)
     }
 
     @objc private func showSettings() { showSection(0) }

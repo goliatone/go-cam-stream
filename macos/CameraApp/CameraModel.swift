@@ -47,16 +47,22 @@ final class CameraModel: ObservableObject {
     }
     var conversationMessage: String? { conversationNotice?.text }
     @Published private(set) var openingConversation = false
+    @Published private(set) var conversationProgress: ConversationSetupStage?
+    @Published private(set) var conversationRouteReachable = true
+    @Published private(set) var checkingConversationRoute = false
     @Published private(set) var closingConversation = false
     @Published private(set) var hostInBrowser = false
     /// Sanitized cause of the last failed start or open, when the helper reports one.
-    @Published private(set) var conversationSetup: ConversationSetup?
+    @Published private var conversationFault: ConversationFault?
+    var conversationSetup: ConversationSetup? { conversationFault?.setup }
+    var conversationSetupPort: UInt16? { conversationFault?.port }
     private struct CallReport { let surface: ObjectIdentifier; let state: ConversationCallState }
     @Published private var callReport: CallReport?
     @Published private(set) var browserRoom: ConversationRoomView?
     private var openingBrowserHost = false
     private var nextHostStatus = Date.distantPast
     private var hostStatusPending = false
+    private var nextRouteCheck = Date.distantPast
     private var browserCaptureLease: UUID?
     private var conversationCloseWaiters: [(Bool) -> Void] = []
     private var pendingConversationURL: String?
@@ -183,6 +189,10 @@ final class CameraModel: ObservableObject {
         openedInvitation = nil
         conversationPrejoin = nil
         openingConversation = false
+        conversationProgress = nil
+        conversationRouteReachable = true
+        checkingConversationRoute = false
+        nextRouteCheck = .distantPast
         hostInBrowser = false
         nextHostStatus = .distantPast
         hostStatusPending = false
@@ -247,9 +257,19 @@ final class CameraModel: ObservableObject {
         case .invalidConfiguration:
             return "Check the call settings against the setup guide, then try again."
         case .runtimeUnavailable:
-            return "Try again. If it keeps failing, check the call address in the setup guide."
+            return "Try again. If it keeps failing, quit and reopen Camstream Camera."
         case .startFailed:
             return "Try again in a moment."
+        case .listenerInUse:
+            return "Quit the other Camstream instance or stop the test using this port, then try again."
+        case .publicRouteUnreachable:
+            return "Check that the tunnel is running and forwards your call address to this Mac, then try again."
+        case .callAssetsUnavailable:
+            return "Install a complete, current Camstream Camera app, then reopen it."
+        case .relayConfigurationInvalid:
+            return "Check the conversation relay settings and credentials, then try again."
+        case .relayUnavailable:
+            return "Check the relay provider and your network, then test again."
         case nil:
             break
         }
@@ -271,21 +291,33 @@ final class CameraModel: ObservableObject {
 
     /// The helper speaks the conversation contract; older helpers do not.
     var conversationsSupported: Bool { (client as? ConversationHelper)?.conversationVersion == 1 }
+    var supportsCallRecovery: Bool { (client as? ConversationHelper)?.callRecoveryVersion == 1 }
     func openSetupGuide() { _ = openBrowser(Self.setupGuide) }
+    func openCallInstallGuide() { _ = openBrowser(Self.installGuide) }
     var conversationAvailable: Bool {
         ready && !quitting && sleepAcknowledgement == nil && (client as? ConversationHelper)?.conversationVersion == 1
     }
     /// Only the host holds an invitation to share.
-    var canCopyConversation: Bool { conversationPrejoin?.admission.role == .host && conversationPrejoin?.invitationURL != nil }
+    var canCopyConversation: Bool {
+        conversationRouteReachable && conversationPrejoin?.admission.role == .host && conversationPrejoin?.invitationURL != nil
+    }
     var canStartConversation: Bool {
         conversationAvailable && !openingConversation && !closingConversation && conversationPrejoin == nil && !quitting
     }
 
     private enum HostStart { case muted, prejoin, browser }
+    private var lastHostStart: (method: ConversationMethod, mode: HostStart) = (.create, .muted)
 
     func startConversation() { presentConversation(.create, invitation: nil, hostStart: .muted) }
     func prepareConversation() { presentConversation(.create, invitation: nil, hostStart: .prejoin) }
     func startConversationInBrowser() { presentConversation(.create, invitation: nil, hostStart: .browser) }
+    func testConversationLocally() {
+        guard supportsCallRecovery else { return }
+        presentConversation(.createLocal, invitation: nil, hostStart: .muted)
+    }
+    func retryConversation() {
+        presentConversation(lastHostStart.method, invitation: nil, hostStart: lastHostStart.mode)
+    }
 
     private func presentConversation(_ method: ConversationMethod, invitation: String?, hostStart: HostStart = .prejoin) {
         guard conversationAvailable, let helper = client as? ConversationHelper else {
@@ -293,9 +325,12 @@ final class CameraModel: ObservableObject {
             return
         }
         guard !openingConversation, !closingConversation, conversationPrejoin == nil else { return }
+        let role: ConversationRole = method == .openLink ? .guest : .host
+        if role == .host { lastHostStart = (method, hostStart) }
         openingConversation = true
+        conversationProgress = role == .host ? .listener : nil
         conversationNotice = nil
-        conversationSetup = nil
+        conversationFault = nil
         invitationRevision += 1
         let revision = invitationRevision
         helper.requestConversation(method, roomID: nil, invitation: invitation) { [weak self] reply in
@@ -306,12 +341,12 @@ final class CameraModel: ObservableObject {
                 return
             }
             self.openingConversation = false
-            let role: ConversationRole = method == .create ? .host : .guest
+            self.conversationProgress = nil
             guard let prejoin, prejoin.admission.role == role,
                   ConversationMediaSurface.validPage(prejoin.pageURL, room: prejoin.admission.room.roomID) else {
                 if let prejoin { self.releaseAdmission(prejoin) { _ in } }
                 let fault: ConversationFault? = self.decode(reply["error"])
-                self.conversationSetup = fault?.setup
+                self.conversationFault = fault
                 self.conversationNotice = ConversationNotice(
                     text: Self.conversationProblem(code: fault?.code ?? self.errorCode(reply), setup: fault?.setup, role: role),
                     problem: true, role: role, opening: true)
@@ -319,6 +354,7 @@ final class CameraModel: ObservableObject {
             }
             self.openedInvitation = invitation.map { SHA256.hash(data: Data($0.utf8)) }
             self.conversationPrejoin = prejoin
+            self.nextRouteCheck = Date().addingTimeInterval(8)
             switch hostStart {
             case .muted: self.showConversation(startMuted: true)
             case .prejoin: self.joinConversationHere()
@@ -441,6 +477,24 @@ final class CameraModel: ObservableObject {
                 self.clearConversationPrejoin()
                 self.conversationNotice = ConversationNotice(text: current?.state == .expired ? "The conversation expired." : "Conversation closed.")
             }
+        }
+    }
+
+    func checkConversationRoute() {
+        guard supportsCallRecovery, ready, !checkingConversationRoute,
+              let prejoin = conversationPrejoin, prejoin.admission.role == .host,
+              prejoin.pageURL.scheme == "https", let helper = client as? ConversationHelper else { return }
+        let revision = invitationRevision
+        checkingConversationRoute = true
+        helper.requestConversation(.checkRoute, roomID: prejoin.admission.room.roomID, invitation: nil) { [weak self] reply in
+            guard let self, self.invitationRevision == revision else { return }
+            self.checkingConversationRoute = false
+            self.nextRouteCheck = Date().addingTimeInterval(8)
+            let reachable = reply["result"] as? Bool == true
+            guard reachable != self.conversationRouteReachable else { return }
+            self.conversationRouteReachable = reachable
+            self.conversationSurface?.updateInvitationRoute(reachable)
+            self.changed()
         }
     }
 
@@ -612,6 +666,10 @@ final class CameraModel: ObservableObject {
             guard let self = self else { return }
             if reply["event"] as? String == "capture_stopped" {
                 self.capture.captureEnded(self.errorCode(reply).map(self.problemText))
+            } else if reply["event"] as? String == "conversation_setup_progress" {
+                if self.openingConversation, let value = reply["result"] as? String {
+                    self.conversationProgress = ConversationSetupStage(rawValue: value) ?? self.conversationProgress
+                }
             } else { self.showError(reply) }
             self.changed()
         }
@@ -833,6 +891,10 @@ final class CameraModel: ObservableObject {
         guard !quitting else { return }
         sharing.tick()
         refreshBrowserHost()
+        let phase = conversationActivity?.phase
+        if client.idle, Date() >= nextRouteCheck, phase == .waiting || phase == .prejoin {
+            checkConversationRoute()
+        }
         let oldPermission = permission
         refreshPermission()
         if oldPermission != permission, permission == "authorized" { refreshDevices() }

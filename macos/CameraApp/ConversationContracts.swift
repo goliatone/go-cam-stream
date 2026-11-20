@@ -2,6 +2,8 @@ import Foundation
 
 enum ConversationMethod: String, Codable {
     case create = "conversation_create"
+    case createLocal = "conversation_create_local"
+    case checkRoute = "conversation_check_route"
     case openLink = "conversation_open_link"
     case status = "conversation_status"
     case end = "conversation_end"
@@ -14,6 +16,7 @@ struct NativeConversationRequest: Encodable, CustomStringConvertible, CustomDebu
     let method: ConversationMethod
     var roomID: String?
     var invitationURL: String?
+    var setupProgress: Bool? = nil
 
     var description: String { "[conversation request redacted]" }
     var debugDescription: String { description }
@@ -22,6 +25,7 @@ struct NativeConversationRequest: Encodable, CustomStringConvertible, CustomDebu
         case version, id, method
         case roomID = "room_id"
         case invitationURL = "invitation_url"
+        case setupProgress = "setup_progress"
     }
 }
 
@@ -83,8 +87,27 @@ struct ConversationPrejoin: Decodable, CustomStringConvertible, CustomDebugStrin
 
 protocol ConversationHelper: AnyObject {
     var conversationVersion: Int { get }
+    var callRecoveryVersion: Int { get }
     func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?,
                              completion: @escaping ([String: Any]) -> Void)
+}
+
+extension ConversationHelper {
+    var callRecoveryVersion: Int { 0 }
+}
+
+enum ConversationSetupStage: String {
+    case listener
+    case publicRoute = "public_route"
+    case relay
+
+    var message: String {
+        switch self {
+        case .listener: return "Checking the local call server…"
+        case .publicRoute: return "Checking the guest link…"
+        case .relay: return "Testing the call relay…"
+        }
+    }
 }
 
 /// Sanitized host setup classification. Older helpers omit it; unknown values
@@ -94,19 +117,26 @@ enum ConversationSetup: String {
     case invalidConfiguration = "invalid_configuration"
     case runtimeUnavailable = "runtime_unavailable"
     case startFailed = "start_failed"
+    case listenerInUse = "listener_in_use"
+    case publicRouteUnreachable = "public_route_unreachable"
+    case callAssetsUnavailable = "call_assets_unavailable"
+    case relayConfigurationInvalid = "invalid_relay_configuration"
+    case relayUnavailable = "relay_unavailable"
 }
 
 struct ConversationFault: Decodable {
     let code: String
     let retryable: Bool
     let setup: ConversationSetup?
+    let port: UInt16?
 
-    enum CodingKeys: String, CodingKey { case code, retryable, setup }
+    enum CodingKeys: String, CodingKey { case code, retryable, setup, port }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         code = try container.decode(String.self, forKey: .code)
         retryable = try container.decodeIfPresent(Bool.self, forKey: .retryable) ?? false
         setup = (try? container.decodeIfPresent(String.self, forKey: .setup)).flatMap { $0.flatMap(ConversationSetup.init) }
+        port = try? container.decodeIfPresent(UInt16.self, forKey: .port)
     }
 }
 

@@ -317,6 +317,32 @@ func (s *Service) Close() {
 	}
 }
 
+// HasLiveRooms also advances expiry when neither participant is polling.
+func (s *Service) HasLiveRooms() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.options.Clock()
+	for _, room := range s.rooms.rooms {
+		room.refresh(now)
+		if room.terminal == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// TerminalState exposes only ended or expired for an unguessable page ID.
+// Opening the guest page never reserves a seat or reads participant state.
+func (s *Service) TerminalState(ref api.RoomRef) api.RoomState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if room := s.rooms.get(ref.RoomID); room != nil {
+		room.refresh(s.options.Clock())
+		return room.terminal
+	}
+	return ""
+}
+
 func (r *room) active() error {
 	switch r.terminal {
 	case api.RoomExpired:

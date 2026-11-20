@@ -28,6 +28,7 @@ type AppRequest struct {
 	Sharing           *api.NativeShareArguments `json:"sharing,omitempty"`
 	RoomID            string                    `json:"room_id,omitempty"`
 	InvitationURL     string                    `json:"invitation_url,omitempty"`
+	SetupProgress     bool                      `json:"setup_progress,omitempty"`
 }
 
 func (AppRequest) String() string   { return "[native app request redacted]" }
@@ -38,6 +39,7 @@ type AppError struct {
 	Message   string                `json:"message"`
 	Retryable *bool                 `json:"retryable,omitempty"`
 	Setup     api.ConversationSetup `json:"setup,omitempty"`
+	Port      uint16                `json:"port,omitempty"`
 }
 type AppReply struct {
 	Version int       `json:"version"`
@@ -77,13 +79,13 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 	}
 	if strings.HasPrefix(r.Method, "conversation_") {
 		request := api.NativeConversationRequest{Version: r.Version, ID: r.ID, Method: r.Method,
-			RoomID: r.RoomID, InvitationURL: r.InvitationURL}
+			RoomID: r.RoomID, InvitationURL: r.InvitationURL, SetupProgress: r.SetupProgress}
 		if r.Config != nil || r.PreviewGeneration != "" || r.Sharing != nil || request.Validate() != nil {
 			return r, api.ErrInvalidConversationRequest
 		}
 		return r, nil
 	}
-	if r.RoomID != "" || r.InvitationURL != "" {
+	if r.RoomID != "" || r.InvitationURL != "" || r.SetupProgress {
 		return r, errors.New("unexpected conversation payload")
 	}
 	if strings.HasPrefix(r.Method, "sharing_") {
@@ -133,6 +135,7 @@ type appSession struct {
 	lastShare          *api.ShareView
 	conversationAssets fs.FS
 	conversation       *conversationhost.Runtime
+	localConversation  *conversationhost.Runtime
 	conversationGuest  *api.NativeConversationPrejoin
 }
 
@@ -157,10 +160,11 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	a.sharing = a.startSharing(ctx)
 	defer func() { _ = a.sharing.close() }()
 	defer func() { a.conversation.Close() }()
+	defer func() { a.localConversation.Close() }()
 	defer func() { _ = a.releaseConversationGuest(context.WithoutCancel(ctx), "") }()
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion}
+	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion, CallRecovery: 1}
 	var updates <-chan time.Time
 	if a.sharing != nil {
 		ready.Sharing = api.ShareNativeVersion

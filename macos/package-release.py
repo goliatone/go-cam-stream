@@ -166,6 +166,9 @@ def package(args):
         (result / 'SHA256SUMS').write_text(f"{sha(dmg)}  {dmg.name}\n{sha(result / 'release.json')}  release.json\n")
         verify(result, require_notarized=not args.development)
         result.rename(destination)
+    if args.development:
+        print(f'App: {destination / app.name}')
+        print(f'DMG: {destination / dmg.name}')
     print(destination)
     return destination
 

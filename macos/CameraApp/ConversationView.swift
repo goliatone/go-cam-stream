@@ -7,6 +7,14 @@ struct ConversationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let feedback = model.conversationRouteFeedback {
+                FeedbackCard(feedback: feedback, perform: model.perform, identifier: "conversation-route-error")
+                if model.checkingConversationRoute { ProgressView("Checking the guest link…").controlSize(.small) }
+            }
+            if model.conversationPrejoin?.admission.role == .host, model.conversationPrejoin?.pageURL.scheme == "http" {
+                Label("This call only works on this Mac. Open the invitation in a browser on this Mac.", systemImage: "desktopcomputer")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             if let surface = model.conversationSurface {
                 // The call page offers Copy Invitation in its waiting tile; the Call menu keeps it too.
                 if model.capture.active {
@@ -44,6 +52,9 @@ struct ConversationView: View {
                             Menu("More start options") {
                                 Button("Set Up Devices First", action: model.prepareConversation)
                                 Button("Host in Browser", action: model.startConversationInBrowser)
+                                if model.supportsCallRecovery {
+                                    Button("Test on This Mac", action: model.testConversationLocally)
+                                }
                             }.fixedSize()
                         }.disabled(!canStart)
                         Text(model.helperBlockedReason ?? "Your camera and microphone start off.")
@@ -65,8 +76,14 @@ struct ConversationView: View {
                         }
                     }.padding(8)
                 }
-                if model.openingConversation { ProgressView("Opening conversation…").controlSize(.small) }
+                if model.openingConversation {
+                    ProgressView(model.conversationProgress?.message ?? "Opening the invitation…").controlSize(.small)
+                }
                 Spacer()
+            }
+            if model.hasConversationDiagnostics {
+                Button("Copy Diagnostics", action: model.copyConversationDiagnostics)
+                    .accessibilityHint("Copies the app version and setup reason.")
             }
             // The chooser shows problems in the recovery card; elsewhere they stay inline.
             if let notice = model.conversationNotice, !(notice.problem && chooser && model.conversationFeedback != nil) {

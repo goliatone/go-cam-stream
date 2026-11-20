@@ -77,6 +77,24 @@ function redemptions(...replies: Array<{ status: number; body: unknown }>) {
 
 const failure = (code: string, status = 409) => ({ status, body: { error: { code, retryable: code === "room_full" } } });
 
+test("an ended link shows its terminal state immediately without offering Join", () => {
+  const fetcher = redemptions(failure("ended", 410));
+  render(<Conversation invitation={null} native={undefined} initialBlocked="ended" />);
+  expect(screen.getByRole("heading", { name: "This conversation has ended" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+test("a waiting host can share again after the app verifies a recovered route", async () => {
+  render(<Conversation invitation={null} native={nativeHost(async () => true)} />);
+  const name = { name: "Copy invitation" };
+  await screen.findByRole("button", name);
+  act(() => { window.dispatchEvent(new CustomEvent("camstream:invitation-route", { detail: false })); });
+  await waitFor(() => expect(screen.queryByRole("button", name)).toBeNull());
+  act(() => { window.dispatchEvent(new CustomEvent("camstream:invitation-route", { detail: true })); });
+  await screen.findByRole("button", name);
+});
+
 /** Turns both prejoin toggles off, so Join enters with no devices. */
 function joinWithoutDevices() {
   fireEvent.click(screen.getByRole("button", { name: "Camera" }));

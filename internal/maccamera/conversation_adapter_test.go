@@ -48,21 +48,21 @@ func TestConversationSetupClassification(t *testing.T) {
 			}
 		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupInvalid},
 		{name: "invalid settings", prepare: func(t *testing.T, dir string) {
-			writeSettings(t, dir, config.Conversations{RelayOnly: true, Loopback: true})
+			writeSettings(t, dir, config.Conversations{Loopback: true, TrustedOrigins: []string{"http://example.test"}})
 		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupInvalid},
 		{name: "missing relay credentials", prepare: func(t *testing.T, dir string) {
 			writeSettings(t, dir, relay)
-		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupInvalid},
+		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupRelayConfig},
 		{name: "invalid relay credentials", prepare: func(t *testing.T, dir string) {
 			writeSettings(t, dir, relay)
 			writeFixture(t, filepath.Join(dir, "conversation-relay.json"), `{"api_token": "`+secret+`"}`)
-		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupInvalid},
+		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupRelayConfig},
 		{name: "listener address in use", prepare: func(t *testing.T, dir string) {
 			writeSettings(t, dir, external)
-		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupUnavailable, retrying: true},
+		}, assets: true, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupPortInUse, retrying: true},
 		{name: "call page missing from the build", prepare: func(t *testing.T, dir string) {
 			writeSettings(t, dir, config.Conversations{Loopback: true})
-		}, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupUnavailable, retrying: true},
+		}, method: api.ConversationNativeCreate, code: api.RoomMediaUnreachable, setup: api.ConversationSetupAssets},
 		{name: "guest without settings", prepare: func(*testing.T, string) {}, assets: true,
 			method: api.ConversationNativeOpen, code: api.RoomPermissionDenied, setup: api.ConversationSetupMissing},
 	} {
@@ -82,8 +82,18 @@ func TestConversationSetupClassification(t *testing.T) {
 			if room, ok := value.(api.NativeConversationPrejoin); fault == nil || ok && room.PageURL != "" {
 				t.Fatalf("setup failure returned a result: %v", fault)
 			}
+			if test.method == api.ConversationNativeCreate && value != nil {
+				t.Fatal("a failed host start must return only the fault")
+			}
 			if fault.Code != string(test.code) || fault.Setup != test.setup || fault.Retryable == nil || *fault.Retryable != test.retrying {
 				t.Fatalf("got %s/%s retryable=%v, want %s/%s retryable=%v", fault.Code, fault.Setup, fault.Retryable, test.code, test.setup, test.retrying)
+			}
+			var port uint16
+			if test.setup == api.ConversationSetupPortInUse {
+				port = uint16(busy.Addr().(*net.TCPAddr).Port)
+			}
+			if fault.Port != port {
+				t.Fatalf("projected port %d, want %d", fault.Port, port)
 			}
 			encoded, err := json.Marshal(AppReply{Version: 1, ID: request.ID, Error: fault})
 			if err != nil {
@@ -95,6 +105,20 @@ func TestConversationSetupClassification(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConversationLocalRecoveryWithoutSettings(t *testing.T) {
+	a := appSession{service: testService(t), conversationAssets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}}}
+	defer func() { a.localConversation.Close() }()
+	value, fault := a.dispatch(t.Context(), AppRequest{Method: api.ConversationNativeLocal})
+	room, ok := value.(api.NativeConversationPrejoin)
+	if fault != nil || !ok || !strings.HasPrefix(room.InvitationURL, "http://127.0.0.1:") || a.conversation != nil {
+		t.Fatalf("same-Mac start failed: %v", fault)
+	}
+	_, fault = a.dispatch(t.Context(), AppRequest{Method: api.ConversationNativeEnd, RoomID: room.Admission.Room.RoomID})
+	if fault != nil {
+		t.Fatalf("same-Mac room did not end: %v", fault)
 	}
 }
 

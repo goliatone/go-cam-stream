@@ -13,7 +13,7 @@ import (
 )
 
 // conversationSetupError pairs a projected room fault with a sanitized setup
-// classification. Only the code and classification cross the owner pipe.
+// classification. Only the code, classification and an optional port cross the owner pipe.
 type conversationSetupError struct {
 	setup api.ConversationSetup
 	err   error
@@ -36,6 +36,9 @@ func conversationAppError(err error) *AppError {
 		retryable := setup.setup.Retryable()
 		reply.Setup = setup.setup
 		reply.Retryable = &retryable
+		if busy, ok := errors.AsType[conversationhost.ListenerInUse](err); ok {
+			reply.Port = busy.Port
+		}
 	}
 	return reply
 }
@@ -52,27 +55,87 @@ func (a *appSession) dispatchConversation(ctx context.Context, request AppReques
 	case api.ConversationNativeLeave:
 		err := a.releaseConversationGuest(ctx, request.RoomID)
 		return nil, conversationAppError(err)
-	case api.ConversationNativeCreate:
-		if a.conversation == nil {
-			runtime, err := a.startConversationHost(ctx)
-			if err != nil {
-				return nil, conversationAppError(err)
+	case api.ConversationNativeCreate, api.ConversationNativeLocal:
+		var progress func(api.ConversationSetupStage)
+		if request.SetupProgress && a.encoder != nil {
+			progress = func(stage api.ConversationSetupStage) {
+				_ = a.encoder.Encode(AppReply{Version: 1, ID: request.ID, Event: "conversation_setup_progress", Result: stage})
 			}
-			a.conversation = runtime
 		}
-		value, err := a.conversation.Create(ctx)
-		return value, conversationAppError(err)
-	}
-	if a.conversation == nil {
-		return nil, conversationAppError(conversations.Fault(api.RoomMediaUnreachable))
+		value, err := a.createConversation(ctx, request.Method == api.ConversationNativeLocal, progress)
+		if err != nil {
+			return nil, conversationAppError(err)
+		}
+		return value, nil
 	}
 	ref := api.RoomRef{RoomID: request.RoomID}
-	if request.Method == api.ConversationNativeStatus {
-		value, err := a.conversation.Status(ctx, ref)
-		return value, conversationAppError(err)
+	for _, runtime := range []*conversationhost.Runtime{a.conversation, a.localConversation} {
+		if runtime == nil {
+			continue
+		}
+		value, err := runtime.Status(ctx, ref)
+		if err != nil {
+			continue
+		}
+		switch request.Method {
+		case api.ConversationNativeStatus:
+			return value, nil
+		case api.ConversationNativeCheckRoute:
+			if value.State == api.RoomEnded || value.State == api.RoomExpired {
+				return nil, conversationAppError(conversations.Fault(api.RoomAccessEnded))
+			}
+			if err := runtime.CheckRoute(ctx); err != nil {
+				return nil, conversationAppError(classifyConversationStart(err))
+			}
+			return true, nil
+		case api.ConversationNativeEnd:
+			if value.State == api.RoomEnded || value.State == api.RoomExpired {
+				return value, nil
+			}
+			value, err := runtime.End(ctx, ref)
+			return value, conversationAppError(err)
+		}
 	}
-	value, err := a.conversation.End(ctx, ref)
-	return value, conversationAppError(err)
+	return nil, conversationAppError(conversations.Fault(api.RoomInvitationInvalid))
+}
+
+func (a *appSession) createConversation(ctx context.Context, local bool, progress func(api.ConversationSetupStage)) (api.NativeConversationPrejoin, error) {
+	slot := &a.conversation
+	if local {
+		slot = &a.localConversation
+	}
+	if progress != nil {
+		progress(api.ConversationSetupListenerStage)
+	}
+	if *slot != nil {
+		value, err := (*slot).Create(ctx, progress)
+		if !errors.Is(err, conversationhost.ErrListenerClosed) {
+			return value, classifyConversationStart(err)
+		}
+		*slot = nil
+	}
+	runtime, err := a.startConversationHost(ctx, local)
+	if err != nil {
+		return api.NativeConversationPrejoin{}, err
+	}
+	value, err := runtime.Create(ctx, progress)
+	if err != nil {
+		runtime.Close()
+		return api.NativeConversationPrejoin{}, classifyConversationStart(err)
+	}
+	*slot = runtime
+	return value, nil
+}
+
+func classifyConversationStart(err error) error {
+	switch {
+	case errors.Is(err, conversationhost.ErrRouteUnreachable):
+		return setupFault(api.ConversationSetupUnreachable, api.RoomMediaUnreachable, err)
+	case errors.Is(err, conversationhost.ErrRelayUnavailable):
+		return setupFault(api.ConversationSetupRelay, api.RoomMediaUnreachable, err)
+	default:
+		return err
+	}
 }
 
 func (a *appSession) releaseConversationGuest(ctx context.Context, roomID string) error {
@@ -98,6 +161,10 @@ func (a *appSession) conversationSettings() (config.Conversations, api.Conversat
 		return config.Conversations{}, api.ConversationSetupInvalid, err
 	}
 	if err := settings.Validate(); err != nil {
+		relay := (config.Sharing{Relay: settings.Relay}).WithDefaults()
+		if relay.Validate() != nil || (settings.RelayOnly && relay.Relay.Mode == config.SharingRelayDisabled) {
+			return config.Conversations{}, api.ConversationSetupRelayConfig, err
+		}
 		return config.Conversations{}, api.ConversationSetupInvalid, err
 	}
 	return settings, "", nil
@@ -118,21 +185,26 @@ func (a *appSession) openConversationLink(ctx context.Context, link string) (api
 	return conversations.RedeemNativeLink(ctx, link, trusted, nil)
 }
 
-func (a *appSession) startConversationHost(ctx context.Context) (*conversationhost.Runtime, error) {
-	settings, setup, err := a.conversationSettings()
-	if err != nil {
-		return nil, setupFault(setup, api.RoomMediaUnreachable, err)
+func (a *appSession) startConversationHost(ctx context.Context, local bool) (*conversationhost.Runtime, error) {
+	settings := config.Conversations{Loopback: true}
+	if !local {
+		var setup api.ConversationSetup
+		var err error
+		settings, setup, err = a.conversationSettings()
+		if err != nil {
+			return nil, setupFault(setup, api.RoomMediaUnreachable, err)
+		}
 	}
 	var relay conversations.RelayIssuer
 	mode := (config.Sharing{Relay: settings.Relay}).WithDefaults().Relay
 	if mode.Mode != config.SharingRelayDisabled {
 		var credentials api.NativeRelayCredentials
 		if err := readJSON(filepath.Join(a.service.Dir, "conversation-relay.json"), &credentials); err != nil {
-			return nil, setupFault(api.ConversationSetupInvalid, api.RoomMediaUnreachable, err)
+			return nil, setupFault(api.ConversationSetupRelayConfig, api.RoomMediaUnreachable, err)
 		}
 		provider, err := nativeRelay(mode, &credentials)
 		if err != nil {
-			return nil, setupFault(api.ConversationSetupInvalid, api.RoomMediaUnreachable, err)
+			return nil, setupFault(api.ConversationSetupRelayConfig, api.RoomMediaUnreachable, err)
 		}
 		relay = conversations.SharedRelay{Provider: provider}
 	}
@@ -141,11 +213,16 @@ func (a *appSession) startConversationHost(ctx context.Context) (*conversationho
 		assets = bundledGuestAssets("Conversations")
 	}
 	runtime, err := conversationhost.Start(ctx, settings, relay, assets)
+	_, portInUse := errors.AsType[conversationhost.ListenerInUse](err)
 	switch {
 	case err == nil:
 		return runtime, nil
+	case portInUse:
+		return nil, setupFault(api.ConversationSetupPortInUse, api.RoomMediaUnreachable, err)
 	case errors.Is(err, conversationhost.ErrSettings):
 		return nil, setupFault(api.ConversationSetupInvalid, api.RoomMediaUnreachable, err)
+	case errors.Is(err, conversationhost.ErrAssetsUnavailable):
+		return nil, setupFault(api.ConversationSetupAssets, api.RoomMediaUnreachable, err)
 	case errors.Is(err, conversationhost.ErrUnavailable):
 		return nil, setupFault(api.ConversationSetupUnavailable, api.RoomMediaUnreachable, err)
 	default:

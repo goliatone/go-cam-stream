@@ -18,21 +18,30 @@ import (
 const assetPrefix = "/conversation-assets/"
 
 var assetName = regexp.MustCompile(`^app-[A-Za-z0-9_-]+\.(js|css)$`)
+var assetReference = regexp.MustCompile(`/conversation-assets/(app-[A-Za-z0-9_-]+\.(?:js|css))`)
 
 // NewSite combines the room API with the standalone call frontend. The
 // listener exposes only guest routes, even when the host uses the same page.
-func NewSite(origin string, loopback bool, files fs.FS, state conversations.Workflows, bus *conversations.Commands) (http.Handler, error) {
+func NewSite(origin string, loopback bool, files fs.FS, state *conversations.Service, bus *conversations.Commands) (http.Handler, error) {
 	guest, err := newAPI(origin, loopback, state, bus)
 	if err != nil || files == nil {
 		return nil, api.ErrInvalidConversationRequest
 	}
 	bundle, err := fs.ReadFile(files, "index.html")
-	if err != nil {
+	if err != nil || len(bundle) == 0 {
 		return nil, api.ErrInvalidConversationRequest
+	}
+	for _, match := range assetReference.FindAllSubmatch(bundle, -1) {
+		asset, err := fs.Stat(files, string(match[1]))
+		if err != nil || !asset.Mode().IsRegular() || asset.Size() == 0 {
+			return nil, api.ErrInvalidConversationRequest
+		}
 	}
 	canonical, _ := config.ConversationOrigin(origin, loopback)
 	authority, _ := url.Parse(canonical)
 	mux := http.NewServeMux()
+	ended := terminalPage(bundle, "ended")
+	expired := terminalPage(bundle, "expired")
 	mux.Handle("/conversation-api/v1/rooms/", guest)
 	mux.HandleFunc("GET "+api.ConversationPage, func(w http.ResponseWriter, r *http.Request) {
 		if !api.ValidShareID(r.PathValue("room_id")) {
@@ -40,7 +49,14 @@ func NewSite(origin string, loopback bool, files fs.FS, state conversations.Work
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(bundle))
+		page := bundle
+		switch state.TerminalState(roomRef(r)) {
+		case api.RoomEnded:
+			page = ended
+		case api.RoomExpired:
+			page = expired
+		}
+		http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(page))
 	})
 	mux.HandleFunc("GET "+assetPrefix, func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, assetPrefix)
@@ -68,4 +84,8 @@ func NewSite(origin string, loopback bool, files fs.FS, state conversations.Work
 		}
 		mux.ServeHTTP(w, r)
 	}), nil
+}
+
+func terminalPage(bundle []byte, state string) []byte {
+	return bytes.Replace(bundle, []byte("</head>"), []byte(`<meta name="camstream-room-state" content="`+state+`"></head>`), 1)
 }

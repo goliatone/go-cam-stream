@@ -14,6 +14,8 @@ type SharedRelay struct {
 	Provider sharing.RelayIssuer
 }
 
+func (r SharedRelay) Probe(ctx context.Context) error { return sharing.TestRelay(ctx, r.Provider) }
+
 func (r SharedRelay) Issue(ctx context.Context, room api.RoomRef, _ api.RoomGeneration, expires time.Time) (RoomRelay, error) {
 	grant := sharing.RelayGrant{
 		Attempt:  sharing.ViewerAttempt{ShareID: room.RoomID, ViewerID: handle(), AttemptID: handle()},

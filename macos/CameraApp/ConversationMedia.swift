@@ -29,6 +29,11 @@ final class ConversationMediaSurface: NSObject, WKNavigationDelegate, WKUIDelega
     private var stopped = false
     private var stopWaiters: [() -> Void] = []
 
+    func updateInvitationRoute(_ reachable: Bool) {
+        guard ready, !closed, role == .host else { return }
+        view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('camstream:invitation-route', { detail: \(reachable) }))") { _, _ in }
+    }
+
     init?(prejoin: ConversationPrejoin, camera: CameraModel, startMuted: Bool = false, ended: @escaping (String?) -> Void) {
         let page = prejoin.pageURL
         guard Self.validPage(page, room: prejoin.admission.room.roomID),

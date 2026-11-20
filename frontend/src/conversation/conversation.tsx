@@ -89,13 +89,24 @@ function StateCard({ icon, title, native, meta, detail, alert, children }: {
   </div>;
 }
 
-export function Conversation({ invitation, native, host = null }: {
+export function Conversation({ invitation, native, host = null, initialBlocked = null }: {
   invitation: Invitation | null; native: NativeCall | undefined; host?: HostHandoff | null;
+  initialBlocked?: "ended" | "expired" | null;
 }) {
   const [admission, setAdmission] = useState<RoomAdmission | null>(null);
   const [room, setRoom] = useState<RoomView | null>(null);
   const [error, setError] = useState("");
-  const [blocked, setBlocked] = useState<Blocked | null>(null);
+  const [blocked, setBlocked] = useState<Blocked | null>(initialBlocked);
+  const [invitationRouteReady, setInvitationRouteReady] = useState(true);
+  useEffect(() => {
+    if (!native) return;
+    const update = (event: Event) => {
+      const reachable = (event as CustomEvent<unknown>).detail;
+      if (typeof reachable === "boolean") setInvitationRouteReady(reachable);
+    };
+    window.addEventListener("camstream:invitation-route", update);
+    return () => window.removeEventListener("camstream:invitation-route", update);
+  }, [native]);
   const [audioNotice, setAudioNotice] = useState("");
   // Mac and host pages open their admission at once, so the first frame already says so.
   const opening = native !== undefined || host !== null;
@@ -594,7 +605,7 @@ export function Conversation({ invitation, native, host = null }: {
     leave: () => void leave(), openApp: releasePreview, copyLink: () => void copyLink(),
   };
   const callModel: CallModel = {
-    role, native: native !== undefined, canCopyInvitation: !!native?.copyInvitation, phase,
+    role, native: native !== undefined, canCopyInvitation: !!native?.copyInvitation && invitationRouteReady, phase,
     remoteCamera, remoteMic, incoming, incomingAudio, playbackMuted, local, micOn, cameraOn,
     pending, inputErrors, busy, leaving: leaving.current, devices, choices, speaker,
     expiresAt: room?.expires_at ?? "", connectedSince,

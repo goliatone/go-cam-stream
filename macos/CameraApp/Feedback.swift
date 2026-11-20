@@ -8,6 +8,7 @@ struct Feedback: Equatable {
     enum Action: Equatable {
         case allowCamera, openCameraSettings, refreshCameras, startCamera, quit
         case openSetupGuide, showSettingsFolder, retryConversation, startNewConversation
+        case checkConversationRoute, testLocalConversation, retryRelay, openInstallGuide
 
         var title: String {
             switch self {
@@ -20,6 +21,10 @@ struct Feedback: Equatable {
             case .showSettingsFolder: return "Show Settings Folder"
             case .retryConversation: return "Try Again"
             case .startNewConversation: return "Start New Conversation"
+            case .checkConversationRoute: return "Check Connection"
+            case .testLocalConversation: return "Test on This Mac"
+            case .retryRelay: return "Test Relay and Retry"
+            case .openInstallGuide: return "Open Install Guide"
             }
         }
     }
@@ -33,6 +38,7 @@ struct Feedback: Equatable {
 
 extension CameraModel {
     static let setupGuide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md#conversations")!
+    static let installGuide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md#install-update-and-rollback")!
 
     /// The stream problem with the actions that can fix it now.
     var cameraFeedback: Feedback? {
@@ -69,6 +75,22 @@ extension CameraModel {
         case .runtimeUnavailable?, .startFailed?:
             return Feedback(tone: .problem, title: "Calls couldn't start", message: notice.text,
                             actions: host ? [.retryConversation, .openSetupGuide] : [.openSetupGuide])
+        case .listenerInUse?:
+            let port = conversationSetupPort.map { "Call port \($0)" } ?? "The call port"
+            return Feedback(tone: .problem, title: "\(port) is already in use", message: notice.text,
+                            actions: [.retryConversation, .openSetupGuide])
+        case .publicRouteUnreachable?:
+            return Feedback(tone: .problem, title: "Guests can't reach this Mac", message: notice.text,
+                            actions: supportsCallRecovery ? [.retryConversation, .testLocalConversation] : [.retryConversation, .openSetupGuide])
+        case .callAssetsUnavailable?:
+            return Feedback(tone: .problem, title: "Call files are missing from this app", message: notice.text,
+                            actions: [.openInstallGuide])
+        case .relayConfigurationInvalid?:
+            return Feedback(tone: .problem, title: "Call relay settings need attention", message: notice.text,
+                            actions: [.showSettingsFolder, .openSetupGuide])
+        case .relayUnavailable?:
+            return Feedback(tone: .problem, title: "The call relay is unavailable", message: notice.text,
+                            actions: [.retryRelay, .showSettingsFolder])
         case nil:
             if notice.opening {
                 return Feedback(tone: .problem, title: host ? "Calls couldn't start" : "Couldn't join the conversation",
@@ -78,6 +100,27 @@ extension CameraModel {
             return Feedback(tone: .problem, title: "The conversation stopped", message: notice.text,
                             actions: host && canStartConversation ? [.startNewConversation] : [])
         }
+    }
+
+    var conversationRouteFeedback: Feedback? {
+        guard !conversationRouteReachable, conversationPrejoin?.admission.role == .host else { return nil }
+        return Feedback(tone: .problem, title: "Guests can't reach this Mac",
+                        message: "Check that the tunnel is running and forwards your call address to this Mac.",
+                        actions: [.checkConversationRoute, .openSetupGuide])
+    }
+
+    var hasConversationDiagnostics: Bool {
+        (conversationNotice?.problem == true && conversationSetup != nil) || conversationRouteFeedback != nil
+    }
+
+    func copyConversationDiagnostics() {
+        guard hasConversationDiagnostics else { return }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let reason = conversationRouteFeedback != nil ? ConversationSetup.publicRouteUnreachable : conversationSetup
+        var lines = ["Camstream Camera \(version)", "Call setup: \(reason?.rawValue ?? "unknown")"]
+        if reason == .listenerInUse, let port = conversationSetupPort { lines.append("Port: \(port)") }
+        writeClipboard(lines.joined(separator: "\n"))
+        AccessibilityNotification.Announcement("Call diagnostics copied.").post()
     }
 
     func revealSettingsFolder() { NSWorkspace.shared.open(directory) }
@@ -91,7 +134,11 @@ extension CameraModel {
         case .quit: NSApp.terminate(nil)
         case .openSetupGuide: openSetupGuide()
         case .showSettingsFolder: revealSettingsFolder()
-        case .retryConversation, .startNewConversation: startConversation()
+        case .retryConversation, .retryRelay: retryConversation()
+        case .startNewConversation: startConversation()
+        case .checkConversationRoute: checkConversationRoute()
+        case .testLocalConversation: testConversationLocally()
+        case .openInstallGuide: openCallInstallGuide()
         }
     }
 }

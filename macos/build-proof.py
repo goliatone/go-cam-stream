@@ -10,7 +10,9 @@ import plistlib
 import shutil
 import subprocess
 import tempfile
+from uuid import uuid4
 
+from conversation_build import BUILD_ID_KEY, stamp_conversation_page
 from runtime_pack import DEFAULT_CACHE, DEFAULT_LOCK, ROOT, inspect_macho, load_lock, selected_pack, unpack_locked, runtime_tools
 
 
@@ -39,6 +41,7 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
         raise ValueError("use a Developer ID Application signing identity")
     executable = "CamstreamCamera" if production else "CameraProof"
     bundle_name = "Camstream Camera" if production else "Camstream Camera Proof"
+    build_id = uuid4().hex if production else None
     root = ROOT
     contents = app / "Contents"
     for name in ("MacOS", "Helpers", "Frameworks", "Resources"):
@@ -56,6 +59,7 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
             env={**os.environ, "CAMSTREAM_CONVERSATION_OUT_DIR": str(conversations)})
         if not (conversations / "index.html").is_file():
             raise ValueError("Conversation guest artifact is missing")
+        stamp_conversation_page(conversations / "index.html", build_id)
     for name in runtime_tools(lock):
         shutil.copy2(runtime / "tools" / name, contents / "Helpers" / name)
     for name in ("licenses", "sources", "recipe"):
@@ -89,7 +93,8 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
             "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": False,
             "CFBundlePackageType": "APPL", "CFBundleVersion": version, "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": lock["target"]["minimum_macos"], "NSHighResolutionCapable": True,
-            "CFBundleURLTypes": url_types, **permission_text
+            "CFBundleURLTypes": url_types, **permission_text,
+            **({BUILD_ID_KEY: build_id} if build_id else {}),
         }, file)
     entitlements = str(root / ("macos/CameraApp/entitlements.plist" if production else "macos/CameraProof/entitlements.plist"))
     inspect_macho(contents / "MacOS" / executable, lock["target"])
@@ -98,6 +103,7 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
         sign(binary, identity, entitlements)
     sign(app, identity, entitlements)
     run("codesign", "--verify", "--deep", "--strict", str(app))
+    return build_id
 
 
 def main(production=False):
@@ -123,9 +129,11 @@ def main(production=False):
             runtime = Path(temp) / "runtime"
             unpack_locked(archive, runtime, lock)
             staged = Path(temp) / app.name
-            assemble(runtime, staged, lock, production, args.version, args.sign_identity)
+            build_id = assemble(runtime, staged, lock, production, args.version, args.sign_identity)
             staged.rename(app)
         print(f"Hardened app ({'ad-hoc' if args.sign_identity == '-' else 'Developer ID; not yet notarized'}): {app}")
+        if build_id:
+            print(f"Build ID: {build_id}")
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"App build failed: {error}\n")
 

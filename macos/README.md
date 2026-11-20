@@ -2,15 +2,19 @@
 
 ## Menu-bar app
 
-Build the local Apple Silicon/macOS 26+ development app from the prepared pack:
+From the repository root, build the development app on Apple Silicon/macOS 26+
+with Go, Xcode tools, Python, Node/npm and the prepared runtime pack:
 
 ```sh
-(cd frontend && npm ci)
-python3 macos/build-app.py
+./taskfile mac:build
 ```
 
-Open `dist/Camstream Camera.app` in Finder. Allow camera access, select a webcam,
-choose a camera name (stream ID), and save settings. Saving never starts capture.
+The task installs locked frontend dependencies and uses the checkout's `.version`.
+Each run creates a fresh bundle under `dist/macos/camstream-camera-VERSION/build.XXXXXX/`.
+Open the `Camstream Camera.app` path printed at the end, or pass a fresh `.app`
+path to `./taskfile mac:build` to choose the destination.
+To stream, allow camera access, select a webcam, choose a camera name (stream ID),
+and save settings. Saving never starts capture.
 For sound, turn on **Enable microphone**, choose **Allow Microphone** if needed,
 select a microphone, and save. Microphone audio is off by default; permission
 grant, selection, Save and reopening never start capture. Denial leaves video-only
@@ -170,18 +174,24 @@ that capture was released. If that confirmation is missing, the call device acti
 the helper to confirm cleanup first and never stops a live stream. The stream error stays
 on the camera screen until an explicit Start or Save succeeds.
 
-Call start and invitation errors carry a closed setup cause when the helper
-knows it: `not_configured`, `invalid_configuration`, `runtime_unavailable` or
-`start_failed`. The cause never includes paths, file contents, provider
-credentials or invitation material, and valid settings say nothing about
-reachability from another network. The Conversations tab shows the cause in a
-card with its next step: **Calls aren't set up on this Mac** (or **Joining isn't
-set up on this Mac**) and **Call settings need attention** offer **Open Setup
-Guide** and **Show Settings Folder**. A runtime or start failure offers **Try
-Again**. A build without call support says so and offers no action. Older
-helpers get neutral text with **Try Again** and the guide. A host whose call
-stops can choose **Start New Conversation**. A pasted invitation shows the
-server that issued it, while its secret stays masked. The call page reports its phase and local
+During startup the app shows which call check is running. Free a conflicting port,
+then choose **Try Again**. For a public link failure, check the tunnel or choose
+**Test on This Mac** and open the resulting invitation in a browser on this Mac.
+You can also start a local test from **More start options**. **Show Settings Folder**
+opens the private settings for configuration failures. **Test Relay and Retry**
+rechecks the configured TURN relay and retries the original start. **Open Install
+Guide** points to app replacement when bundled call files are missing. **Copy
+Diagnostics** copies the app version, reason and conflicting port when applicable.
+A waiting host can choose **Check Connection** after correcting a public route
+outage. Copying becomes available again once the check passes.
+
+After **End**, guests opening the old invitation see **This conversation has
+ended** during the 30-second grace period. The helper then frees the port if no
+other room is active. While the listener is down, the public tunnel has no
+local call page to serve.
+
+A pasted invitation shows the server that issued it while its secret stays masked.
+The call page reports its phase and local
 camera/mic state through the trusted bridge as
 `{"state":{"version":1,"room":…,"role":…,"phase":…,"camera":…,"microphone":…}}`
 with optional device names. The app accepts it only from the main frame of the
@@ -191,24 +201,49 @@ request answers `busy` for a live stream and `unavailable` when cleanup is
 unconfirmed. A browser-hosted room shows the owner's room phase with its inputs
 marked unknown.
 
-The loopback listener uses a fresh `127.0.0.1` port for each app session. For
+The loopback listener selects a fresh `127.0.0.1` port when it opens. For
 native paste on the same Mac from a separate test helper, enable loopback and
 add that exact origin to `trusted_origins`. For an HTTPS deployment, set
 `ingress.mode` to `external_https`, `ingress.public_base_url` to the public
 HTTPS origin and `ingress.guest_listen` to a dedicated loopback address and port.
 Preserve the public Host in the reverse proxy and forward `/r/`,
-`/conversation-assets/` and `/conversation-api/v1/` to that listener. A Mac guest
+`/conversation-assets/` and `/conversation-api/v1/` to that listener. Before
+showing **Copy Invitation**, the app checks a unique response from its listener
+through the configured public HTTPS route. This check uses no capture device or
+guest grant. A Mac guest
 adds the host's HTTPS origin to its own `trusted_origins`. TURN uses the
 existing relay configuration with `credential_ref` set to `owner-relay` and
 private mode-0600 `conversation-relay.json` for provider credentials.
 
-Run synthetic loopback proof against a development bundle from this checkout:
+For this development environment, use `https://camstream.getctx.com` with the
+Mac app listener `127.0.0.1:18894`. The T06 harnesses use
+`https://camstream-t06.getctx.com` at `127.0.0.1:18893`. Each hostname must
+forward to its own loopback port with its own connector.
+
+Build from the current checkout and run the synthetic loopback proof:
 
 ```sh
-CAMSTREAM_PROOF_APP="$PWD/dist/Camstream Camera.app" \
-CAMSTREAM_PROOF_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-go test -race -v ./scripts/conversation-proof -run '^TestIntegratedConversation$'
+./taskfile test:conversation
 ```
+
+Set `CAMSTREAM_PROOF_CHROME` to an absolute Chrome executable path if Chrome is
+installed elsewhere. The task prints the fresh app path and build ID, then runs
+all four pairings against that bundle.
+
+For a manual test, quit the previous app, open the bundle printed by
+`test:conversation` or `mac:build`, and start a room. Before opening its invitation,
+verify the running app and the origin the browser will use:
+
+```sh
+./taskfile verify:conversation-build "$app" https://calls.example.com
+```
+
+Set `app` to the printed `.app` path. Use only the origin, including the port for
+`http://127.0.0.1` loopback calls. The command checks the running app's ID and
+compares the served page and its JavaScript and CSS with the bundle. The app
+also shows its ID under **About Camstream Camera**. In an open browser tab, read
+the loaded page's ID in the developer console with
+`document.querySelector('meta[name="camstream-build-id"]')?.content`.
 
 ### Camera sharing
 
@@ -259,12 +294,13 @@ a guest listener. The managed public/private fixture lets the managed-ingress
 follow-up register its modes through the same setup contract. External HTTPS, relay
 and physical sleep checks belong to the signed-candidate proof.
 
-Run the combined local browser smoke with an assembled app and Chrome. It
+Run the combined local browser smoke with Chrome and `app` set to the bundle
+path printed by `mac:build`. It
 checks the packaged helper's capability, then plays synthetic video from
 the Go owner session in the bundled guest page:
 
 ```sh
-CAMSTREAM_TEST_SHARING_APP="$PWD/dist/Camstream Camera.app" \
+CAMSTREAM_TEST_SHARING_APP="$app" \
 CAMSTREAM_TEST_SHARING_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 go test -race ./internal/maccamera -run '^TestNativeSharingGuestBundleChrome$' -count=1
 ```
@@ -297,16 +333,18 @@ The camera DMG and Linux server archive use one explicit `MAJOR.MINOR.PATCH`
 version. Runtime dependencies retain their independent versions and locked hashes.
 No build command bumps a version, commits, creates a tag, pushes or publishes.
 
-Local development DMG (Apple Silicon Mac with Go/Xcode and the prepared pack):
+Build a local development DMG with the same prerequisites:
 
 ```sh
-python3 macos/package-release.py 0.1.0 --development
-python3 macos/package-release.py --verify dist/releases/camstream-camera-0.1.0-darwin-arm64-development
+./taskfile mac:package
 ```
 
-This produces a clearly labeled development DMG, app, `release.json` and
-`SHA256SUMS` in a new version directory. The DMG contains the app, an Applications
-shortcut and installation instructions. Existing output is never overwritten.
+Each run creates a fresh directory under `dist/releases/camstream-camera-VERSION/`
+and prints the full app and DMG paths. The release directory also contains
+`release.json` and `SHA256SUMS`. To verify it again, pass the printed release
+directory to `python3 macos/package-release.py --verify`. Pass an output directory
+to `./taskfile mac:package` to place the versioned release there.
+The DMG contains the app, an Applications shortcut and installation instructions.
 The app includes every runtime tool, license/source archive, runtime provenance
 and application/runtime version metadata. Settings are never packaged.
 

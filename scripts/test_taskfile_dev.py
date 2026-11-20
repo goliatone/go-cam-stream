@@ -1,4 +1,4 @@
-"""Check dev port arguments and forwarding without building or starting media."""
+"""Check development Taskfile commands without building or starting media."""
 import os
 from pathlib import Path
 import shutil
@@ -84,6 +84,56 @@ class DevPortTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertNotIn("BUILD", result.stdout)
                 self.assertNotIn("PORT:", result.stdout)
+
+
+class MacBuildTests(unittest.TestCase):
+    def test_default_builds_use_fresh_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "frontend").mkdir()
+            (root / ".version").write_text("0.1.4\n")
+            builds = root / "dist/macos/camstream-camera-0.1.4"
+            existing = builds / "Camstream Camera.app"
+            existing.mkdir(parents=True)
+            marker = existing / "original"
+            marker.touch()
+
+            for _ in range(2):
+                result = subprocess.run(
+                    ["bash", "-c", 'source "$1"; SCRIPT_DIR="$2"; VERSION_FILE="$2/.version"; '
+                     'npm() { :; }; python3() { mkdir "$5"; }; mac:build',
+                     "test", str(ROOT / "taskfile"), str(root)],
+                    cwd=root, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertTrue(marker.is_file())
+            self.assertEqual(len(list(builds.glob("build.*/Camstream Camera.app"))), 2)
+
+    def test_default_packages_use_fresh_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "frontend").mkdir()
+            (root / ".version").write_text("0.1.4\n")
+            releases = root / "dist/releases"
+            name = "camstream-camera-0.1.4-darwin-arm64-development"
+            existing = releases / name
+            existing.mkdir(parents=True)
+            marker = existing / "original"
+            marker.touch()
+
+            for _ in range(2):
+                result = subprocess.run(
+                    ["bash", "-c", 'source "$1"; SCRIPT_DIR="$2"; VERSION_FILE="$2/.version"; '
+                     'npm() { :; }; python3() { [[ "$3" == --development ]] && '
+                     'mkdir "$5/camstream-camera-$2-darwin-arm64-development"; }; mac:package',
+                     "test", str(ROOT / "taskfile"), str(root)],
+                    cwd=root, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertTrue(marker.is_file())
+            self.assertEqual(len(list(releases.glob(f"camstream-camera-0.1.4/build.*/{name}"))), 2)
 
 
 if __name__ == "__main__":
