@@ -1,0 +1,51 @@
+{
+  "description": "Native sharing setup projections for registered ingress capabilities. Core registers only external_https. The managed entries use representative mode IDs so the managed-ingress follow-up can register its modes through the same setup and configure contract; the follow-up owns the final IDs.",
+  "core": {
+    "ingress_modes": [{"mode": "external_https", "audience": "public"}],
+    "ingress_mode": "external_https",
+    "ingress_state": "ready",
+    "relay_state": "ready",
+    "saved": {
+      "public_base_url": "https://view.example.test",
+      "guest_listen": "127.0.0.1:8890",
+      "relay_mode": "cloudflare_turn",
+      "relay_credential_set": true
+    }
+  },
+  "managed_public_private": {
+    "ingress_modes": [
+      {"mode": "external_https", "audience": "public"},
+      {"mode": "tailscale_funnel", "audience": "public"},
+      {"mode": "tailscale_serve", "audience": "private_tailnet"}
+    ],
+    "ingress_mode": "tailscale_serve",
+    "ingress_state": "ready",
+    "relay_state": "ready",
+    "saved": {"relay_mode": "cloudflare_turn", "relay_credential_set": true}
+  },
+  "managed_configure": {
+    "version": 1,
+    "id": "request-5",
+    "method": "sharing_configure",
+    "sharing": {
+      "settings": {
+        "ingress": {"mode": "tailscale_funnel"},
+        "relay": {"mode": "cloudflare_turn"}
+      }
+    }
+  },
+  "private_changed": {
+    "version": 1,
+    "event": "sharing_changed",
+    "result": {
+      "share_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "camera_id": "local-camera",
+      "state": "available",
+      "media": "idle",
+      "audience": "private_tailnet",
+      "expires_at": "2026-11-17T23:15:00Z",
+      "viewers": 0,
+      "viewer_limit": 1
+    }
+  }
+}

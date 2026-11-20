@@ -14,13 +14,20 @@ protocol CameraHelper: AnyObject {
     func request(_ method: String, config: CameraConfig?, previewGeneration: String?, completion: @escaping ([String: Any]) -> Void)
     func shutdown()
 }
+// Sharing is an additive capability of the same owner pipe. Requests are typed
+// envelopes; sharing_changed events reach only the sharing model.
+protocol SharingHelper: AnyObject {
+    var sharingVersion: Int { get }
+    var onSharingEvent: (([String: Any]) -> Void)? { get set }
+    func requestSharing(_ method: SharingMethod, arguments: NativeSharingRequest.Arguments?, completion: @escaping ([String: Any]) -> Void)
+}
 extension CameraHelper {
     func request(_ method: String, config: CameraConfig? = nil, previewGeneration: String? = nil, completion: @escaping ([String: Any]) -> Void) {
         request(method, config: config, previewGeneration: previewGeneration, completion: completion)
     }
 }
 
-final class HelperClient: CameraHelper {
+final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
     typealias Reply = [String: Any]
     private struct Request {
         let id: String
@@ -31,6 +38,7 @@ final class HelperClient: CameraHelper {
     var onEvent: ((Reply) -> Void)?
     var onFailure: (() -> Void)?
     var onExit: (() -> Void)?
+    var onSharingEvent: ((Reply) -> Void)?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -43,6 +51,8 @@ final class HelperClient: CameraHelper {
     private var ready = false
     private(set) var previewVersion = 0
     private(set) var audioVersion = 0
+    private(set) var sharingVersion = 0
+    private(set) var conversationVersion = 0
     var idle: Bool { ready && current == nil && queue.isEmpty && !closing }
 
     func launch(executable: URL, directory: URL) {
@@ -108,6 +118,40 @@ final class HelperClient: CameraHelper {
         pump()
     }
 
+    // Arguments may carry write-only relay credentials. They are encoded only
+    // into the owner pipe and never logged or retained after the write.
+    func requestSharing(_ method: SharingMethod, arguments: NativeSharingRequest.Arguments?, completion: @escaping (Reply) -> Void) {
+        guard ready, !closing, queue.count < 8 else { fail(); return }
+        guard sharingVersion >= 1 else { completion(["error": ["code": "sharing_unsupported"]]); return }
+        sequence += 1
+        let id = "request-\(sequence)"
+        guard var data = try? JSONEncoder().encode(NativeSharingRequest(version: 1, id: id, method: method, sharing: arguments)) else { fail(); return }
+        data.append(10)
+        queue.append(Request(id: id, data: data, completion: completion))
+        pump()
+    }
+
+    func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?, completion: @escaping (Reply) -> Void) {
+        guard ready, !closing, queue.count < 8, conversationVersion == 1 else {
+            completion(["error": ["code": "incompatible_client"]])
+            return
+        }
+        guard invitation?.utf8.count ?? 0 <= 8192 else {
+            completion(["error": ["code": "invitation_invalid"]])
+            return
+        }
+        sequence += 1
+        let id = "request-\(sequence)"
+        let request = NativeConversationRequest(id: id, method: method, roomID: roomID, invitationURL: invitation)
+        guard var data = try? JSONEncoder().encode(request), data.count < 16384 else {
+            completion(["error": ["code": "invitation_invalid"]])
+            return
+        }
+        data.append(10)
+        queue.append(Request(id: id, data: data, completion: completion))
+        pump()
+    }
+
     private func pump() {
         guard !closing, current == nil, !queue.isEmpty, let input = input else { return }
         current = queue.removeFirst()
@@ -132,7 +176,11 @@ final class HelperClient: CameraHelper {
                    (reply["result"] as? Reply)?["protocol"] as? Int == 1 {
                     previewVersion = (reply["result"] as? Reply)?["preview"] as? Int ?? 0
                     audioVersion = (reply["result"] as? Reply)?["audio"] as? Int ?? 0
+                    sharingVersion = (reply["result"] as? Reply)?["sharing"] as? Int ?? 0
+                    conversationVersion = (reply["result"] as? Reply)?["conversations"] as? Int ?? 0
                     deadline?.invalidate(); ready = true; onReady?()
+                } else if event == "sharing_changed", ready, sharingVersion >= 1, reply["result"] is Reply {
+                    onSharingEvent?(reply)
                 } else if event == "capture_stopped" || event == "session_error" {
                     onEvent?(reply)
                 } else { fail(); return }

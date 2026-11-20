@@ -1,0 +1,171 @@
+{
+  "create": {
+    "version": 1,
+    "id": "request-1",
+    "method": "sharing_create",
+    "sharing": {"camera_id": "local-camera", "options": {"duration_seconds": 900, "viewer_limit": 1}}
+  },
+  "created": {
+    "share": {
+      "share_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "camera_id": "local-camera",
+      "state": "available",
+      "media": "idle",
+      "audience": "public",
+      "expires_at": "2026-11-17T23:15:00Z",
+      "viewers": 0,
+      "viewer_limit": 1
+    },
+    "link": {"url": "https://view.example.test/s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA#testonly.invalid.example"}
+  },
+  "setup": {
+    "ingress_modes": [{"mode": "external_https", "audience": "public"}],
+    "ingress_mode": "disabled",
+    "ingress_state": "setup_needed",
+    "relay_state": "setup_needed"
+  },
+  "setup_empty": {"ingress_modes": [], "ingress_mode": "disabled", "ingress_state": "setup_needed", "relay_state": "setup_needed"},
+  "redeem": {"invitation": "testonly.invalid.example"},
+  "redeemed": {"expires_at": "2026-11-17T23:15:00Z", "csrf_token": "fixture-csrf"},
+  "first_play": {},
+  "admitted": {
+    "viewer_id": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    "attempt_id": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "expires_at": "2026-11-17T23:15:00Z"
+  },
+  "offer": {"attempt_id": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI", "offer": {"type": "offer", "sdp": "v=0\r\n"}},
+  "at_capacity": {"error": {"code": "capacity_reached", "message": "This camera is already being viewed.", "retryable": true}},
+  "expired": {"error": {"code": "expired", "message": "This viewing invitation has expired.", "retryable": false}},
+  "revoked": {"error": {"code": "revoked", "message": "This viewing invitation is no longer available.", "retryable": false}},
+  "native_ready": {
+    "version": 1,
+    "event": "ready",
+    "result": {
+      "protocol": 1,
+      "preview": 1,
+      "audio": 1,
+      "sharing": 1
+    }
+  },
+  "native_setup": {
+    "version": 1,
+    "id": "request-2",
+    "method": "sharing_setup"
+  },
+  "native_setup_reply": {
+    "version": 1,
+    "id": "request-2",
+    "result": {
+      "ingress_modes": [
+        {
+          "mode": "external_https",
+          "audience": "public"
+        }
+      ],
+      "ingress_mode": "external_https",
+      "ingress_state": "ready",
+      "relay_state": "ready",
+      "saved": {
+        "public_base_url": "https://view.example.test",
+        "guest_listen": "127.0.0.1:8890",
+        "relay_mode": "cloudflare_turn",
+        "relay_credential_set": true
+      }
+    }
+  },
+  "native_configure": {
+    "version": 1,
+    "id": "request-3",
+    "method": "sharing_configure",
+    "sharing": {
+      "settings": {
+        "ingress": {
+          "mode": "external_https",
+          "public_base_url": "https://view.example.test",
+          "guest_listen": "127.0.0.1:8890"
+        },
+        "relay": {
+          "mode": "cloudflare_turn"
+        }
+      },
+      "relay_credentials": {
+        "key_id": "fixture-key",
+        "api_token": "fixture-write-only-token"
+      }
+    }
+  },
+  "native_configured": {
+    "version": 1,
+    "id": "request-3",
+    "result": {
+      "ingress_modes": [
+        {
+          "mode": "external_https",
+          "audience": "public"
+        }
+      ],
+      "ingress_mode": "external_https",
+      "ingress_state": "ready",
+      "relay_state": "ready",
+      "saved": {
+        "public_base_url": "https://view.example.test",
+        "guest_listen": "127.0.0.1:8890",
+        "relay_mode": "cloudflare_turn",
+        "relay_credential_set": true
+      }
+    }
+  },
+  "native_relay_test": {
+    "version": 1,
+    "id": "request-4",
+    "method": "sharing_test_relay"
+  },
+  "native_relay_failure": {
+    "version": 1,
+    "id": "request-4",
+    "error": {
+      "code": "relay_unavailable",
+      "message": "Check the configured connection relay.",
+      "retryable": true
+    }
+  },
+  "native_changed": {
+    "version": 1,
+    "event": "sharing_changed",
+    "result": {
+      "share_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "camera_id": "local-camera",
+      "state": "available",
+      "media": "idle",
+      "audience": "public",
+      "expires_at": "2026-11-17T23:15:00Z",
+      "viewers": 0,
+      "viewer_limit": 1
+    }
+  },
+  "reconnect": {
+    "viewer_id": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+  },
+  "readmitted": {
+    "viewer_id": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    "attempt_id": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    "expires_at": "2026-11-17T23:15:00Z",
+    "ice_servers": [
+      {
+        "urls": [
+          "turns:relay.example.test:443?transport=tcp"
+        ],
+        "username": "fixture-viewer",
+        "credential": "fixture-temporary",
+        "expires_at": "2026-11-17T23:15:00Z"
+      }
+    ]
+  },
+  "stale_attempt": {
+    "error": {
+      "code": "stale_viewer_attempt",
+      "message": "Restart the viewing connection.",
+      "retryable": true
+    }
+  }
+}

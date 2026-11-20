@@ -171,13 +171,14 @@ function dev:webcams {
     printf 'INDEX\tWEBCAM\n%s\n\nUse: ./taskfile dev:serve --webcam=INDEX\n' "${devices}"
 }
 
-## dev:serve [PORT | --port PORT] [--config FILE] [--webcam[=INDEX]]
+## dev:serve [PORT | --port PORT] [--config FILE] [--webcam[=INDEX]] [--media-address IPv4]
 ## Build and serve with config/dev.yaml; override with --config or CAMSTREAM_CONFIG.
 ## Re-run after source changes. Ctrl-C gracefully stops the server.
 function dev:serve {
     local config="${CAMSTREAM_CONFIG:-${SCRIPT_DIR}/config/dev.yaml}"
     local webcam=""
     local port="" port_set=false
+    local media_address="" media_set=false
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --port)
@@ -198,6 +199,21 @@ function dev:serve {
                 fi
                 port="${1#--port=}"; port_set=true; shift
                 ;;
+            --media-address|--media-address=*)
+                if [ "${media_set}" = true ]; then
+                    echo "Specify --media-address only once." >&2; return 2
+                fi
+                media_set=true
+                if [ "$1" = --media-address ]; then
+                    if [ "$#" -lt 2 ]; then echo "--media-address requires this Mac's private IPv4 address." >&2; return 2; fi
+                    media_address="$2"; shift 2
+                else
+                    media_address="${1#*=}"; shift
+                fi
+                if ! [[ "${media_address}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+                    echo "--media-address requires this Mac's private IPv4 address." >&2; return 2
+                fi
+                ;;
             --config)
                 if [ "$#" -lt 2 ] || [ -z "$2" ]; then
                     echo "--config requires a file path." >&2
@@ -217,11 +233,12 @@ function dev:serve {
                 shift
                 ;;
             -h|--help)
-                echo "Usage: $0 dev:serve [PORT | --port PORT] [--config FILE] [--webcam[=INDEX]]"
+                echo "Usage: $0 dev:serve [PORT | --port PORT] [--config FILE] [--webcam[=INDEX]] [--media-address IPv4]"
                 echo "Default: config/dev.yaml; override with CAMSTREAM_CONFIG or --config."
                 echo "Port defaults to the config listen port (bundled: 8081). Example: $0 dev:serve 8087"
                 echo "Mac bundled config: --webcam uses video device 0; --webcam=INDEX selects another. No audio."
                 echo "List camera indices with: $0 dev:webcams"
+                echo "Mac Firefox: --media-address IPv4 opts WebRTC media into one private local interface; HTTP/control stay loopback."
                 return 0
                 ;;
             *) echo "Unknown dev:serve argument: $1" >&2; return 2 ;;
@@ -242,6 +259,9 @@ function dev:serve {
     if [ -n "${webcam}" ] && { [ "$(uname -s)" != Darwin ] || [ ! "${config}" -ef "${SCRIPT_DIR}/config/dev.yaml" ]; }; then
         echo "--webcam requires macOS and the bundled config/dev.yaml (omit custom --config/CAMSTREAM_CONFIG)." >&2
         return 2
+    fi
+    if [ "${media_set}" = true ] && [ "$(uname -s)" != Darwin ]; then
+        echo "--media-address is supported only by the native Mac development host." >&2; return 2
     fi
     # A previous invocation or environment cannot opt into camera capture.
     unset CAMSTREAM_DEV_SOURCE_FFMPEG CAMSTREAM_DEV_WEBCAM_DEVICE
@@ -287,9 +307,12 @@ NODE
         config="${SCRIPT_DIR}/.cache/dev/config.yaml"
     fi
     "${SCRIPT_DIR}/bin/camstream" config validate --config "${config}" || return "$?"
+    if [ -n "${media_address}" ]; then
+        echo "WebRTC media will bind ${media_address} on the configured media ports (TCP/UDP as configured). HTTP and worker control remain loopback."
+    fi
     echo "Starting local development server..."
     # Replace the task runner so signals reach the server without a go-run wrapper.
-    CAMSTREAM_DEV_PORT="${port}" exec "${SCRIPT_DIR}/bin/camstream-dev" serve --config "${config}"
+    CAMSTREAM_DEV_MEDIA_ADDRESS="${media_address}" CAMSTREAM_DEV_PORT="${port}" exec "${SCRIPT_DIR}/bin/camstream-dev" serve --config "${config}"
 }
 
 ##

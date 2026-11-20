@@ -296,3 +296,49 @@ disabled. `management-recovery-smoke.mjs` takes `SMOKE_ORIGIN_CONTAINER` and che
 restored grants, failed Watch, explicit reset, lost reset response and viewer
 denial. Stop the owned app container gracefully to finish the harness and verify
 `cleanup=true`. The fixture identity header and restart signal are test-only.
+
+## Shared camera guest page
+
+Camera Sharing's guest page is a separate entry (`share/index.html` and
+`src/share/`) built into `dist-share/`: an `index.html` plus a flat `assets/`
+directory served under `/share-assets/`. The helper's guest listener serves the
+page at `/s/{share_id}`, and packaging copies `dist-share/` to the app's
+`Contents/Resources/Sharing`. The page has no management controls and no
+secret-bearing diagnostics.
+
+- Opening the link reads the invitation from the URL fragment, removes it from
+  the address bar and history entry, then exchanges it over HTTPS for an
+  HttpOnly guest cookie. Opening the link again in the same tab removes the new
+  fragment too. Nothing is kept in browser storage, so a reload without the
+  fragment asks for the original link.
+- Opening the page holds no viewer place. **Play** admits one viewer and
+  negotiates receive-only video. **Live** appears once frames are presented.
+  The page says **Video only**, attaches no audio, shows no sound or microphone
+  controls and never asks for camera or microphone permission.
+- A dropped connection keeps the last frame under a **Reconnecting** badge and
+  keeps this tab's place for 30 seconds. The page then releases the place and
+  offers **Retry**, which admits again if the link is still valid and a place
+  is free. Video that stops arriving shows **Video paused** with **Retry**.
+- An expired, stopped or invalid link ends playback, clears the video and
+  offers no action. A full camera, an unreachable camera and an offline device
+  offer **Retry**. Leaving the page releases its place.
+- In-app browsers get a hint to open the link in Safari or Chrome. A browser
+  without WebRTC video keeps the link in the address bar, so opening it
+  elsewhere carries the complete link. Background playback is not promised.
+
+```sh
+npm run build:share   # typecheck, build dist-share/ and validate it
+npm run preview:share # serve dist-share/ with local fixtures on port 4174
+```
+
+`scripts/share-artifact.mjs` checks the listener's layout and limits: an
+`index.html` of at most 256 KiB and allowlisted flat asset names of at most
+4 MiB each. It also checks the guest CSP (no inline scripts, styles or event
+handlers, no `data:` URIs, only `/share-assets/` references), rejects storage,
+cookie and capture APIs, and enforces gzip budgets of 16 kB of JavaScript and
+4 kB of CSS. `scripts/share-fixture-server.mjs` serves the built page with the
+listener's headers and answers the guest API with the published example shapes.
+The first letter of the share ID selects a scenario, and `/` links each one. The
+fixtures carry no media: an accepted offer gets an answer whose connection
+cannot complete. Live playback is verified by the combined local smoke and the
+external HTTPS proof. `dist-share/` is generated and ignored by Git.

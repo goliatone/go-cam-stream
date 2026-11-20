@@ -153,3 +153,16 @@ Only these principals can add cameras. Each addition grants its creator view,
 diagnose and reconnect access; enabling management grants no existing-camera
 access. Remove management permission without removing the state directory to keep
 saved playback. Never remove a store to work around a startup validation error.
+
+## Camera sharing origin and relay
+
+Sharing starts disabled. Use a dedicated HTTPS origin with a trusted TLS certificate.
+Forward `/s/`, `/share-api/v1/shares/` and `/share-assets/` to the configured
+loopback guest listener. Preserve the public Host and the browser's Origin.
+The Mac helper verifies the route through the HTTPS endpoint before issuing a
+link. Keep operator APIs, RTSP, and MediaMTX signaling and control private.
+
+Configure TURN separately from HTTPS ingress. For Cloudflare TURN, use the host
+account's key ID and API token. For coturn, configure its TURN URLs and matching
+shared secret. Keep the long-lived credentials in private host storage. The
+helper issues temporary credentials after guest admission.

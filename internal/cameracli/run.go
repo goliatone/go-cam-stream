@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goliatone/go-cam-stream/internal/maccamera"
+	"github.com/goliatone/go-cam-stream/internal/sharing"
 )
 
 const usage = `camstream-camera: macOS webcam to authenticated RTSP
@@ -56,6 +57,23 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 }
 
 func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) error {
+	if args[0] == "__sharing-media" {
+		if len(args) < 3 {
+			return errors.New("missing private sharing media command")
+		}
+		tools, err := maccamera.ResolveTools()
+		if err != nil {
+			return err
+		}
+		switch args[1] {
+		case "ffmpeg":
+			return sharing.SuperviseMediaProcess(ctx, in, tools.FFmpeg, args[2:])
+		case "mediamtx":
+			return sharing.SuperviseMediaProcess(ctx, in, tools.MediaMTX, args[2:])
+		default:
+			return errors.New("unknown private sharing media tool")
+		}
+	}
 	dir, err := maccamera.DefaultDir()
 	if err != nil {
 		return err

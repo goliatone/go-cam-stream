@@ -44,6 +44,65 @@ export const CSRF_HEADER = "X-CSRF-Token";
 export const DIAGNOSE_COMMAND = "camera.diagnose.v1";
 export const RECONNECT_COMMAND = "camera.reconnect.v1";
 
+// Camera Sharing guest wire contracts. Operator status and link copy are native-only.
+export const SHARE_API_PREFIX = "/share-api/v1/shares";
+export const SHARE_ASSET_PREFIX = "/share-assets/";
+export const SHARE_CSRF_HEADER = "X-CSRF-Token";
+export interface RedeemShareRequest { invitation: string }
+export interface RedeemShareResult { expires_at: string; csrf_token: string }
+export interface AdmitShareViewerRequest { viewer_id?: string }
+export interface ShareICECredentials {
+  urls: readonly string[];
+  username: string;
+  credential: string;
+  expires_at: string;
+}
+export interface AdmitShareViewerResult {
+  viewer_id: string;
+  attempt_id: string;
+  expires_at: string;
+  ice_servers?: readonly ShareICECredentials[];
+}
+export interface ShareViewerAttempt { attempt_id: string }
+export interface OpenShareViewerRequest extends ShareViewerAttempt { offer: SDPOffer }
+export interface OpenShareViewerResult { answer: SDPAnswer }
+
+export const CONVERSATION_API_PREFIX = "/conversation-api/v1/rooms";
+export const CONVERSATION_VERSION = 1;
+
+export type RoomState =
+  | "waiting" | "joining" | "connected" | "reconnecting" | "ended" | "expired" | "failed";
+export type RoomRole = "host" | "guest";
+export interface RoomPublication { microphone: boolean; camera: boolean }
+export interface RoomParticipant {
+  role: RoomRole;
+  joined: boolean;
+  publication: RoomPublication;
+}
+export interface RoomView {
+  room_id: string;
+  version: number;
+  state: RoomState;
+  generation: number;
+  expires_at: string;
+  participants: RoomParticipant[];
+}
+export interface RoomAdmission { room: RoomView; role: RoomRole; token: string }
+export interface RoomJoinRequest { generation: number; publication: RoomPublication }
+export interface JoinedRoom { room: RoomView; ice_servers?: ShareICECredentials[]; relay_only: boolean }
+export interface RoomSignal { generation: number; type: "offer" | "answer"; sdp: string }
+export interface RoomPoll { room: RoomView; signal?: RoomSignal }
+export interface RoomConnectionRequest { generation: number; connected: boolean }
+export interface RoomFault { code: string; retryable: boolean }
+export interface RoomDownload { url: string; version: string; sha256: string }
+export type ShareErrorCode =
+  | "invalid_request" | "invalid_invitation" | "expired" | "revoked" | "capacity_reached"
+  | "share_already_active" | "stale_viewer_attempt" | "camera_unavailable" | "ingress_unavailable"
+  | "relay_unavailable" | "media_unreachable" | "unsupported_offer" | "permission_denied" | "rate_limited";
+export interface ShareErrorResponse {
+  error: { code: ShareErrorCode; message: string; retryable: boolean };
+}
+
 // Camera management wire contracts; see data/api/management.go.
 export interface CatalogRevision { runtime_epoch: string; generation: number }
 export interface Capabilities { can_manage_cameras: boolean; recovery_scope: string; runtime_epoch: string }

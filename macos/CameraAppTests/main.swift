@@ -237,3 +237,110 @@ try runAudioTests(repo: repo, check: { check($0, $1) })
 print("PASS: \(checks) native checks including T03 audio fixtures and microphone flows (capture off)")
 try runAudioTransportTests(fixture: fixture, check: { check($0, $1) })
 print("PASS: \(checks) total native checks including old/new helper audio negotiation (capture off)")
+
+try runSharingTests(repo: repo, check: { check($0, $1) })
+print("PASS: \(checks) native checks including T08 sharing states and published contract fixtures (capture off)")
+try runSharingTransportTests(fixture: fixture, check: { check($0, $1) })
+let conversationExamples = try Data(contentsOf: repo.appendingPathComponent("data/api/conversation_examples.json"))
+let conversationViews = try JSONSerialization.jsonObject(with: conversationExamples) as! [String: Any]
+for (name, state) in [("waiting", ConversationState.waiting), ("connected", .connected),
+                      ("reconnecting", .reconnecting), ("ended", .ended)] {
+    let data = try JSONSerialization.data(withJSONObject: conversationViews[name]!)
+    let room = try JSONDecoder().decode(ConversationRoomView.self, from: data)
+    check(room.state == state && room.version == 1, "conversation state decodes")
+}
+runCaptureHandoffTests(conversation: conversationViews["waiting"] as! [String: Any], check: { check($0, $1) })
+print("PASS: \(checks) native checks including call capture handoff after stream stop or failure")
+runCallActivityTests(examples: conversationViews, check: { check($0, $1) })
+print("PASS: \(checks) native checks including call activity and host setup state")
+let sharingExamplesForActivity = try JSONSerialization.jsonObject(with: Data(contentsOf: repo.appendingPathComponent("data/api/sharing_examples.json"))) as! [String: Any]
+runActivityTests(conversations: conversationViews, sharing: sharingExamplesForActivity, check: { check($0, $1) })
+print("PASS: \(checks) native checks including shared activity status, menus and end confirmation")
+runRecoveryTests(conversations: conversationViews, check: { check($0, $1) })
+print("PASS: \(checks) native checks including first-run reasons and recovery actions")
+runInvitationTests(conversations: conversationViews, check: { check($0, $1) })
+print("PASS: \(checks) native checks including host invitation copy and browser-hosted room state")
+try runConnectionTests(check: { check($0, $1) })
+print("PASS: \(checks) native checks including the connection checklist and RTSP address copy")
+do {
+    let fixtureCamera = FixtureSharingCamera()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    var browserURL: URL?
+    let app = CameraModel(client: fixtureCamera, permissions: FixturePermissions(), directory: directory,
+                          openBrowser: { browserURL = $0; return true })
+    let invitation = "camstream://conversation/join?v=1#fixture"
+    let sampleRoom = conversationViews["waiting"] as! [String: Any]
+    let sampleRoomID = sampleRoom["room_id"] as! String
+    fixtureCamera.conversationReply = ["result": [
+        "page_url": "https://call.example.test/r/" + sampleRoomID,
+        "admission": ["room": sampleRoom, "role": "guest", "token": "fixture-grant"],
+    ]]
+    app.openConversationInvitation(invitation)
+    check(fixtureCamera.incomingInvitations.isEmpty, "incoming invitation waits for helper readiness")
+    app.launch()
+    check(fixtureCamera.incomingInvitations == [invitation], "ready helper receives the pending invitation once")
+    check(app.conversationPrejoin?.admission.role == .guest && app.conversationPrejoin?.pageURL.fragment == nil,
+          "invitation returns a clean prejoin URL and scoped guest admission")
+    check(app.section == 3 && app.conversationSurface != nil, "incoming invitation opens the native conversation panel")
+    check(!ConversationMediaSurface.validPage(URL(string: "https://call.example.test/r/other")!, room: sampleRoomID),
+          "native prejoin rejects another room")
+    check(!ConversationMediaSurface.validPage(URL(string: "http://call.example.test/r/" + sampleRoomID)!, room: sampleRoomID),
+          "native prejoin rejects insecure remote pages")
+    check(!app.conversationCapture && !fixtureCamera.methods.contains("start"), "prejoin leaves the camera stopped")
+    app.openConversationInvitation(invitation)
+    check(fixtureCamera.incomingInvitations.count == 1, "reopening a pending prejoin does not redeem twice")
+    guard let lease = app.claimConversationCapture(stop: {}) else { preconditionFailure("stopped camera should allow a call lease") }
+    check(app.conversationCapture && !app.canStart, "call capture excludes independent RTSP start")
+    check(app.claimConversationCapture(stop: {}) == nil, "another call cannot take over the capture lease")
+    app.releaseConversationCapture(UUID())
+    check(app.conversationCapture, "an old owner cannot release the active lease")
+    app.releaseConversationCapture(lease)
+    check(!app.conversationCapture, "media teardown releases the lease")
+    app.closeConversation()
+    check(fixtureCamera.methods.contains("conversation_leave"), "closing native guest prejoin releases its seat via the owner pipe")
+    fixtureCamera.heldConversationMethods = [.openLink]
+    app.openConversationInvitation(invitation)
+    app.closeConversation()
+    let oldLeaves = fixtureCamera.methods.filter { $0 == "conversation_leave" }.count
+    fixtureCamera.pendingConversation.removeValue(forKey: .openLink)?(fixtureCamera.conversationReply)
+    fixtureCamera.heldConversationMethods = []
+    check(app.conversationSurface == nil && fixtureCamera.methods.filter { $0 == "conversation_leave" }.count == oldLeaves + 1,
+          "late redemption after close releases the seat without reopening the panel")
+    fixtureCamera.conversationReply = ["result": [
+        "page_url": "https://call.example.test/r/" + sampleRoomID,
+        "invitation_url": "https://call.example.test/r/" + sampleRoomID + "#fixture",
+        "admission": ["room": sampleRoom, "role": "host", "token": "host-fixture-grant"],
+    ]]
+    app.startConversation()
+    check(app.canCopyConversation && app.conversationSurface != nil && !app.conversationCapture,
+          "starting a conversation opens the Mac room immediately with capture idle")
+    app.closeConversation()
+    check(fixtureCamera.methods.contains("conversation_end"), "closing a host view ends the room through its owner")
+    let created = fixtureCamera.conversationReply
+    app.startConversationInBrowser()
+    check(app.hostInBrowser && browserURL?.fragment == "host=host-fixture-grant", "host grants stay in the handoff fragment")
+    check(app.conversationCapture && !app.canStart, "browser host reserves the local camera pipeline")
+    fixtureCamera.conversationReply = ["result": conversationViews["ended"]!]
+    app.tick()
+    check(!app.hostInBrowser && app.conversationPrejoin == nil && !app.conversationCapture,
+          "browser End returns the Mac host to the chooser and releases capture ownership")
+
+    fixtureCamera.conversationReply = created
+    app.prepareConversation()
+    check(app.conversationSurface != nil && !app.conversationCapture, "optional device setup opens prejoin with capture idle")
+    fixtureCamera.heldConversationMethods = [.end]
+    fixtureCamera.sharing.replies[.hostSleep] = ["result": [:]]
+    var sleepAcknowledged = false
+    app.prepareForSleep { sleepAcknowledged = true }
+    check(!sleepAcknowledged && fixtureCamera.pendingConversation[.end] != nil,
+          "sleep waits for outstanding conversation revocation")
+    fixtureCamera.pendingConversation.removeValue(forKey: .end)?(["result": [:]])
+    let sleepDeadline = Date().addingTimeInterval(1)
+    while !sleepAcknowledged && Date() < sleepDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(sleepAcknowledged, "sleep acknowledges after conversation and sharing teardown")
+    _ = app.quit()
+    check(app.conversationPrejoin == nil && app.conversationSurface == nil, "quitting closes the prejoin view and discards admission")
+}
+print("PASS: \(checks) total native checks including sharing helper transport (capture off)")

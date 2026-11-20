@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    static let guide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md")!
     private let model = CameraModel()
     private var window: NSWindow!
     private var status: NSStatusItem!
-    private var toggle: NSMenuItem!
-    private var stateItem: NSMenuItem!
-    private var appToggle: NSMenuItem!
+    private var menus: AppMenus!
+    private var hostPower: HostPowerMonitor?
     private var quitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -18,69 +18,43 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindow
             NSApp.terminate(nil)
             return
         }
-        let main = NSMenu(), application = NSMenuItem()
-        main.addItem(application)
-        let appMenu = NSMenu()
-        appMenu.autoenablesItems = false
-        appMenu.delegate = self
-        application.submenu = appMenu
-        appToggle = NSMenuItem(title: "Start Camera", action: #selector(toggleCapture), keyEquivalent: "")
-        appToggle.target = self; appMenu.addItem(appToggle)
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Settings…", action: #selector(settings), keyEquivalent: ",").target = self
-        appMenu.addItem(withTitle: "Connection Details", action: #selector(connection), keyEquivalent: "l").target = self
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Camstream Camera", action: #selector(quit), keyEquivalent: "q").target = self
-        let editItem = NSMenuItem(), edit = NSMenu(title: "Edit")
-        editItem.submenu = edit; main.addItem(editItem)
-        for (title, action, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
-            edit.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
-        }
-        NSApp.mainMenu = main
+        menus = AppMenus(model: model)
+        menus.showSection = { [weak self] section in self?.model.section = section; self?.showWindow() }
+        menus.confirmEnd = { [weak self] in self?.confirmEnd(closingWindow: false) }
+        menus.openHelp = { NSWorkspace.shared.open(CameraApp.guide) }
+        NSApp.mainMenu = menus.main
+        NSApp.windowsMenu = menus.windowMenu
+        NSApp.helpMenu = menus.helpMenu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Camstream Camera"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.minSize = NSSize(width: 900, height: 680)
+        window.minSize = NSSize(width: 640, height: 520)
         window.contentView = NSHostingView(rootView: CameraView(model: model))
         window.center()
-        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.isVisible = true
         status.button?.title = ""
         status.button?.imagePosition = .imageOnly
-        let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
-        stateItem = NSMenuItem(title: "Camera stopped", action: nil, keyEquivalent: ""); stateItem.isEnabled = false
-        menu.addItem(stateItem); menu.addItem(.separator())
-        toggle = NSMenuItem(title: "Start Camera", action: #selector(toggleCapture), keyEquivalent: "")
-        toggle.target = self; menu.addItem(toggle)
-        for (title, action) in [("Connection Details…", #selector(connection)), ("Settings…", #selector(settings))] {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Camstream Camera", action: #selector(quit), keyEquivalent: "q")
-        quit.target = self; menu.addItem(quit)
-        status.menu = menu
+        status.menu = menus.status
         model.didChange = { [weak self] in self?.updateMenu() }
         model.didExit = { [weak self] in if self?.quitting == true { NSApp.reply(toApplicationShouldTerminate: true) } }
+        hostPower = HostPowerMonitor(onSleep: { [model] acknowledge in
+            model.prepareForSleep(acknowledge: acknowledge)
+        }, onWake: { [model] in model.wakeFromSleep() })
+        model.sharing.observesHostPower = hostPower != nil
         model.launch()
+        updateMenu()
         showWindow()
     }
-    func menuWillOpen(_ menu: NSMenu) { model.refreshPermission(); updateMenu() }
     private func updateMenu() {
         guard status != nil else { return }
-        stateItem.title = model.statusSummary
-        toggle.title = model.capture.active ? "Stop Camera" : "Start Camera"
-        toggle.isEnabled = model.capture.active ? model.canStop : model.canStart
-        appToggle.title = toggle.title
-        appToggle.isEnabled = toggle.isEnabled
-        let symbol = model.capture.phase == .streaming ? "video.fill" : "video"
-        let icon = NSImage(systemSymbolName: symbol, accessibilityDescription: "Camstream Camera")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 17, weight: .regular))
-        icon?.isTemplate = true
-        status.button?.image = icon
-        status.button?.toolTip = "Camstream Camera: \(model.statusSummary)"
-        status.button?.setAccessibilityLabel("Camstream Camera: \(model.statusSummary)")
+        menus.update()
+        let activity = model.activity
+        status.button?.image = activity.statusImage
+        status.button?.toolTip = activity.tooltip
+        status.button?.setAccessibilityLabel(activity.label)
     }
     private func showWindow() {
         window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
@@ -89,17 +63,53 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindow
     private func updatePreviewVisibility() {
         model.setWindowVisible(window != nil && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
     }
-    func windowWillClose(_ notification: Notification) { model.setWindowVisible(false) }
+
+    /// Asks before a conversation ends or the guest leaves. Keep Call and
+    /// Cancel are the default for Return and Escape; End and Leave use the
+    /// existing teardown once.
+    private func confirmEnd(closingWindow: Bool) {
+        guard let confirmation = model.endConfirmation else {
+            if closingWindow { window.close() }
+            return
+        }
+        if !closingWindow { showWindow() }
+        guard window.attachedSheet == nil else { return }
+        let alert = confirmation.alert()
+        let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak alert] event in
+            guard event.keyCode == 53, let sheet = alert?.window, sheet.isKeyWindow else { return event }
+            sheet.sheetParent?.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+            return nil
+        }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            if let escape { NSEvent.removeMonitor(escape) }
+            guard let self, EndConfirmation.confirmed(response) else { return }
+            self.model.closeConversation()
+            if closingWindow { self.window.close() }
+        }
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard model.endConfirmation != nil else { return true }
+        confirmEnd(closingWindow: true)
+        return false
+    }
+    func windowWillClose(_ notification: Notification) {
+        model.setWindowVisible(false)
+        // Ordinary closes keep the stream and share. A conversation reaches
+        // here only after confirmation, or while one is still opening.
+        model.closeConversation()
+    }
     func windowDidMiniaturize(_ notification: Notification) { model.setWindowVisible(false) }
     func windowDidDeminiaturize(_ notification: Notification) { updatePreviewVisibility() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }
     func applicationDidHide(_ notification: Notification) { model.setWindowVisible(false) }
     func applicationDidUnhide(_ notification: Notification) { updatePreviewVisibility() }
-    @objc private func settings() { model.section = 0; showWindow() }
-    @objc private func connection() { model.section = 1; showWindow() }
-    @objc private func toggleCapture() { if model.capture.active { model.stop() } else { model.start() } }
-    @objc private func quit() { NSApp.terminate(nil) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let invitation = urls.first(where: { $0.scheme == "camstream" }) else { return }
+        model.openConversationInvitation(invitation.absoluteString)
+        if window != nil { showWindow() }
+    }
     func applicationDidBecomeActive(_ notification: Notification) { model.refreshPermission() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

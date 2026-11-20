@@ -43,6 +43,19 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
     contents = app / "Contents"
     for name in ("MacOS", "Helpers", "Frameworks", "Resources"):
         (contents / name).mkdir(parents=True)
+    if production:
+        # Build from the same checkout and validate the exact bytes that will
+        # be signed. A shared dist directory can contain stale assets.
+        guest = contents / "Resources" / "Sharing"
+        run("npm", "run", "build:share", cwd=root / "frontend",
+            env={**os.environ, "CAMSTREAM_SHARE_OUT_DIR": str(guest)})
+        if not (guest / "index.html").is_file():
+            raise ValueError("Camera Sharing guest artifact is missing")
+        conversations = contents / "Resources" / "Conversations"
+        run("npm", "run", "build:conversation", cwd=root / "frontend",
+            env={**os.environ, "CAMSTREAM_CONVERSATION_OUT_DIR": str(conversations)})
+        if not (conversations / "index.html").is_file():
+            raise ValueError("Conversation guest artifact is missing")
     for name in runtime_tools(lock):
         shutil.copy2(runtime / "tools" / name, contents / "Helpers" / name)
     for name in ("licenses", "sources", "recipe"):
@@ -60,20 +73,23 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
         env={**os.environ, "CGO_ENABLED": "0", "GOOS": "darwin", "GOARCH": "arm64", "GOWORK": "off", "GOFLAGS": ""})
     sources = sorted((root / "macos/CameraApp").glob("*.swift")) if production else [
         root / "macos/CameraProof/StartIntent.swift", root / "macos/CameraProof/main.swift"]
+    native_flags = ["-import-objc-header", str(root / "macos/CameraApp/HostPowerMessages.h")] if production else []
     run("xcrun", "swiftc", "-swift-version", "5", "-target", "arm64-apple-macosx" + lock["target"]["minimum_macos"],
-        "-framework", "AppKit", "-framework", "AVFoundation",
+        "-framework", "AppKit", "-framework", "AVFoundation", *native_flags,
         *[str(p) for p in sources], "-o", str(contents / "MacOS" / executable))
     permission_text = {"NSCameraUsageDescription": "Share the built-in webcam as a private RTSP camera while this app is running."}
     if production:
-        permission_text["NSCameraUsageDescription"] = "Share the webcam in a private stream only when you choose Start Camera."
-        permission_text["NSMicrophoneUsageDescription"] = "Include microphone sound in your private stream only when you enable microphone audio and choose Start Camera."
+        permission_text["NSCameraUsageDescription"] = "Use your webcam when you start a private stream or explicitly enable it in a conversation."
+        permission_text["NSMicrophoneUsageDescription"] = "Use your microphone when you enable it for a private stream or explicitly enable it in a conversation."
+    url_types = [{"CFBundleURLName": "com.goliatone.camstream.camera.conversation",
+                  "CFBundleURLSchemes": ["camstream"], "CFBundleTypeRole": "Viewer"}] if production else []
     with (contents / "Info.plist").open("wb") as file:
         plistlib.dump({"CFBundleExecutable": executable,
             "CFBundleIdentifier": "com.goliatone.camstream.camera" + ("" if production else ".proof"),
             "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": False,
             "CFBundlePackageType": "APPL", "CFBundleVersion": version, "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": lock["target"]["minimum_macos"], "NSHighResolutionCapable": True,
-            **permission_text
+            "CFBundleURLTypes": url_types, **permission_text
         }, file)
     entitlements = str(root / ("macos/CameraApp/entitlements.plist" if production else "macos/CameraProof/entitlements.plist"))
     inspect_macho(contents / "MacOS" / executable, lock["target"])

@@ -5,6 +5,7 @@
 Build the local Apple Silicon/macOS 26+ development app from the prepared pack:
 
 ```sh
+(cd frontend && npm ci)
 python3 macos/build-app.py
 ```
 
@@ -13,11 +14,36 @@ choose a camera name (stream ID), and save settings. Saving never starts capture
 For sound, turn on **Enable microphone**, choose **Allow Microphone** if needed,
 select a microphone, and save. Microphone audio is off by default; permission
 grant, selection, Save and reopening never start capture. Denial leaves video-only
-use available by disabling microphone audio. Choose **Start Camera** explicitly. The camera icon in the menu bar offers Start/Stop,
-Connection Details, Settings and Quit. Closing the window leaves the menu-bar
-app running; the Dock entry and app menu also provide access to the controls.
-The icon is outlined while stopped and filled while live; its menu and accessibility label report the full capture state.
-Quit waits for helper-owned capture cleanup. Reopening starts stopped.
+use available by disabling microphone audio. Choose **Start Camera** explicitly.
+
+**Save Settings** and **Start Camera** stay in a bar at the bottom of Setup.
+While Start is unavailable, the bar names the step that blocks it, for example
+**Allow camera access first.** or **Save your changes first.**, and VoiceOver
+reads the same reason as the button's hint. A stream problem appears at the top
+of Setup with the actions that apply: **Allow Camera**, **Open Camera Settings**,
+**Try Again** or **Refresh Cameras**. Permission advice appears only while access
+is not allowed. If the helper stops, the app offers only **Quit Camstream
+Camera**; reopen it to continue. The window narrows to 640 × 520 pt. Below about
+860 pt it uses one column, with settings first while stopped and the preview
+first while live.
+
+The menu-bar icon, its menu, its tooltip and the window header share one status
+summary: the camera stream, any share link (public or tailnet, end time and
+viewers) and any open conversation (role, phase and local camera/mic when
+known). The icon is outlined while stopped, filled while live, crossed out after
+a stream error and a phone during a call; an active share link adds a link
+badge. The menu offers Start/Stop Camera, Copy Share Link and Stop Sharing while
+a link exists, Start Conversation, or Show Call and End/Leave Conversation…
+during a call, plus Sharing, Connection Details, Settings and Quit. The app
+menus include About, Hide (⌘H), Close Window (⌘W), Undo/Redo, the four sections
+(⌘1–⌘4), Start/Stop Camera (⇧⌘S), Save Settings (⌘S), connection-file export,
+the Call actions, Minimize (⌘M), Zoom and a Help link to this guide.
+
+Closing the window leaves the menu-bar app, the camera stream and any share
+running. During a conversation it asks first: a host chooses **End
+Conversation** or **Keep Call**, a guest **Leave** or **Cancel**. Return and
+Escape keep the call. The Dock entry and app menus also provide access to the
+controls. Quit waits for helper-owned capture cleanup. Reopening starts stopped.
 
 If the camera icon is missing, check **System Settings → Menu Bar → Allow in the
 Menu Bar → Camstream Camera**. A crowded menu bar can also hide it behind a
@@ -30,16 +56,20 @@ the camera icon farther right, then restore the other item. The Dock entry and
 computer, choose **Private network** and enter this Mac’s reachable private IP or
 hostname. The listener uses all IPv4 interfaces, with authenticated readers; use
 a trusted LAN/VPN and keep the port off the public internet. Settings are locked
-while capture is starting, live or stopping.
+while capture is starting, live or stopping, and while a conversation uses the
+camera. Setup says why and which action unlocks them.
 
-Connection Details shows a credential-free endpoint. **Export Connection Files**
-creates mode-0600 YAML and environment files while stopped or live; it does not
-stop capture, change settings or rotate credentials. **Show Files in Finder**
-reveals existing private files, including after relaunch, without displaying the
-password in the app or clipboard. Both access modes require reader credentials.
-For video-only web onboarding, keep capture running and choose **Add Camera →
-Import Mac files**, select both files, then **Test connection → Save Camera →
-Watch Camera**. YAML-only import requires entering the private .env credentials.
+Connection Details leads with a numbered server checklist. Step 1, **Export
+Connection Files**, creates mode-0600 YAML and environment files while stopped or
+live; it does not stop capture, change settings or rotate credentials. **Show
+Files in Finder** reveals existing private files, including after relaunch,
+without displaying the password in the app or clipboard. The remaining steps are
+**Add Camera → Import Mac files** with both files in the web app, then **Test
+connection → Save Camera → Watch Camera**, while the camera keeps running. The
+checklist marks only what the app can see: an export since the settings were last
+saved and a running camera. Below it, **Copy RTSP Address (needs the exported
+password)** copies the credential-free address; both access modes require reader
+credentials. YAML-only import requires entering the private .env credentials.
 For startup YAML deployments, merge the camera/grant and supply environment values
 separately. Export does not automatically pair with or restart a server.
 
@@ -59,7 +89,9 @@ capture failures. Unexpected helper exit requires quitting/reopening the app.
 
 `build-app.py` shares the proof’s verified offline assembler and accepts the same
 `--runtime-pack`, `--cache`, `--download`, `--output` and `--version` flags. The
-bundle is ad-hoc hardened and includes the pinned runtime, sources and notices.
+app and DMG builders use the installed frontend dependencies to build and
+validate the guest viewer in the bundle before signing. The bundle includes
+the pinned runtime, sources and notices.
 The local app is not a published release. Use the release packager below for a
 versioned DMG. Earlier video-only Developer ID/notarized app, capture and replacement checks
 passed on macOS 26.7.1. The runtime-3 development app passes local assembly,
@@ -71,12 +103,7 @@ signed delivery remain T04. Hosted download and oldest-OS validation remain sepa
 Camera-free app state and transport checks:
 
 ```sh
-app_check_dir=$(mktemp -d)
-xcrun swiftc -swift-version 5 -module-cache-path "$app_check_dir/modules" \
-  macos/CameraApp/{CameraState,CameraPermissions,HelperClient,PreviewReader,PreviewController,CameraModel}.swift \
-  macos/CameraAppTests/{AudioFixtures,AudioTests,main}.swift -o "$app_check_dir/camera-app-tests"
-"$app_check_dir/camera-app-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
-rm -rf "$app_check_dir"
+bash scripts/test-camera-app.sh
 ```
 
 The native tests use T03's shared audio JSON, fake permission/device providers,
@@ -91,6 +118,156 @@ production bundle or an end-to-end capture proof.
 checks production microphone usage text/entitlement selection through mocked
 assembly, preserving the camera-only proof identity. Production builds select
 `CameraApp/entitlements.plist`; no permission grant is requested by packaging.
+
+### Conversations
+
+For a same-Mac development call, set `"loopback": true` in the private
+`conversation-settings.json` in `~/Library/Application Support/camstream-camera-app`.
+Use mode `0600` and restart the app after changing host settings. In
+**Conversations**, choose **Start Conversation**. The Mac enters the room with
+its camera and microphone off. While it waits, the call area offers **Copy
+invitation**; the app copies the link and the call page never sees it. **Copy
+Invitation** is also in the Call menu, the menu-bar menu and the call's **More**
+menu. Open the link in Chrome on the same Mac. The page shows your preview with
+**Microphone** and **Camera** toggles, which start on for a browser guest, and
+one **Join** button. The line under **Join** says which inputs it will use.
+Nothing is captured until you choose **Preview camera and mic** (or **Preview
+camera**) or **Join**. Respond to any device permission prompts. The chips under
+the preview choose the camera, the microphone and, where the browser can route
+audio, the speaker. In Camstream, **Turn on camera and mic** in your own view
+enables both inputs with one click. Respond to any macOS prompts.
+
+In the call, the other person's video fills the window and your mirrored view
+floats in a corner. Drag it, or focus it and use the arrow keys, to move it to
+another corner. It can also swap with the other video, shrink to a **You** pill,
+or be hidden from **More**. The dock holds **Microphone** and **Camera**, each
+with a device menu, then **More** and **End** (host) or **Leave** (guest). A
+host confirms **End conversation** or chooses **Keep call**, because End closes
+the room for both people. The top bar shows the call time or status and, once
+the other person joins, **Sound** for incoming audio. Controls fade after three
+seconds without input and return on pointer movement, a tap, a key press or
+focus. They stay up while a menu or popover is open or the pointer is over them.
+Your view and the name tag sit clear of the dock while it shows; a press on
+them finishes before they move. While an input is starting, the input controls
+and device menus keep focus but wait for it. If one input fails, the call keeps the working input. The failed control is
+marked and a popover explains the problem with **Try again** and **Choose
+camera** or **Choose microphone**. Bars beside the other person's name show when
+their microphone sends sound, and VoiceOver announces the first incoming audio.
+
+A browser guest who finds the room full sees **Someone else is already in this
+conversation**, and **Join** becomes **Try again**. Turning both toggles off
+joins without devices. An ended, expired or invalid link says so, stops offering
+Join and asks for a new invitation. A guest whose call ends is told to ask the
+host for a new invitation. A browser guest who leaves can **Rejoin** while the
+host keeps the conversation open. A host whose call stops starts a new one from
+the app. While hosting in the
+browser, the app shows the room state and keeps **Copy Invitation** as the main
+action until the guest arrives. To test Chrome → Mac with a single camera and
+microphone, keep the Mac inputs off. **More start options** offers a Mac prejoin or browser host.
+Stop the existing camera stream before enabling Mac call devices or hosting in the browser.
+After a stream stops or fails, call devices become available once the helper confirms
+that capture was released. If that confirmation is missing, the call device action asks
+the helper to confirm cleanup first and never stops a live stream. The stream error stays
+on the camera screen until an explicit Start or Save succeeds.
+
+Call start and invitation errors carry a closed setup cause when the helper
+knows it: `not_configured`, `invalid_configuration`, `runtime_unavailable` or
+`start_failed`. The cause never includes paths, file contents, provider
+credentials or invitation material, and valid settings say nothing about
+reachability from another network. The Conversations tab shows the cause in a
+card with its next step: **Calls aren't set up on this Mac** (or **Joining isn't
+set up on this Mac**) and **Call settings need attention** offer **Open Setup
+Guide** and **Show Settings Folder**. A runtime or start failure offers **Try
+Again**. A build without call support says so and offers no action. Older
+helpers get neutral text with **Try Again** and the guide. A host whose call
+stops can choose **Start New Conversation**. A pasted invitation shows the
+server that issued it, while its secret stays masked. The call page reports its phase and local
+camera/mic state through the trusted bridge as
+`{"state":{"version":1,"room":…,"role":…,"phase":…,"camera":…,"microphone":…}}`
+with optional device names. The app accepts it only from the main frame of the
+open call after admission, shows an input as on only while the call holds the
+device lease, and clears the state when the call closes. A refused device
+request answers `busy` for a live stream and `unavailable` when cleanup is
+unconfirmed. A browser-hosted room shows the owner's room phase with its inputs
+marked unknown.
+
+The loopback listener uses a fresh `127.0.0.1` port for each app session. For
+native paste on the same Mac from a separate test helper, enable loopback and
+add that exact origin to `trusted_origins`. For an HTTPS deployment, set
+`ingress.mode` to `external_https`, `ingress.public_base_url` to the public
+HTTPS origin and `ingress.guest_listen` to a dedicated loopback address and port.
+Preserve the public Host in the reverse proxy and forward `/r/`,
+`/conversation-assets/` and `/conversation-api/v1/` to that listener. A Mac guest
+adds the host's HTTPS origin to its own `trusted_origins`. TURN uses the
+existing relay configuration with `credential_ref` set to `owner-relay` and
+private mode-0600 `conversation-relay.json` for provider credentials.
+
+Run synthetic loopback proof against a development bundle from this checkout:
+
+```sh
+CAMSTREAM_PROOF_APP="$PWD/dist/Camstream Camera.app" \
+CAMSTREAM_PROOF_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+go test -race -v ./scripts/conversation-proof -run '^TestIntegratedConversation$'
+```
+
+### Camera sharing
+
+The **Sharing** view (app menu **Sharing**, menu-bar **Sharing…**) shows routine
+sharing first, then the one-time **Sharing settings**. Sharing requires a helper
+that advertises the sharing capability. With an older helper the view reports
+sharing as unavailable and sends no sharing request.
+
+Set up once:
+
+1. **Guest page** lists only the guest access methods the helper registers.
+   **Your HTTPS address** takes the HTTPS origin guests open, without a path,
+   query or fragment. Route that origin through your own domain, TLS certificate
+   and proxy to the loopback proxy target, `127.0.0.1:8890` by default
+   (**Advanced → Proxy target**).
+2. **Connection relay** defaults to Cloudflare TURN. Enter the **Key ID** and
+   **API token** from the TURN key in your Cloudflare dashboard, save, then
+   choose **Test Connection** until it reports **Relay ready**. Relay credentials are write-only: the app never shows a saved value,
+   and a replacement needs both fields. **Advanced** offers self-hosted coturn
+   (1–8 `turn:`/`turns:` URLs and the shared secret) or **No relay**.
+
+The helper validates saved settings strictly. Errors show local guidance and
+never helper text. Settings stay locked while a link exists.
+
+For routine use, choose **Start Camera**, then **Share Camera**. **Options** sets
+the link lifetime (15 minutes, 1 hour by default, or 8 hours) and viewers at a
+time (1–3, default 1). The card leads with who can open the link (**Shared
+publicly** or **Shared on your tailnet**) and its absolute end time, marks it as a
+**Public link** or **Tailnet link** apart from the private stream, and shows the
+viewers watching against the limit and the video state; anyone with the link can
+watch until that time. If viewers can't reach the guest page, the card says so
+and that Camstream checks again every few seconds; the helper re-checks the
+HTTPS address on its own, so there is no separate check action. **Copy Link** asks
+the helper for the link and writes it only to the clipboard; the app never shows
+or stores it. **Stop Sharing** ends the link and every viewer's video without
+confirmation and keeps the camera running. **Share Again** always creates a new
+link. Stop Camera, Quit, host sleep, capture failure or helper loss ends sharing.
+After wake or relaunch, use Share Again for a fresh link. Opening Sharing or creating a link never
+starts capture. Sharing is video only, with one fixed quality profile and no
+microphone, PIN or approval controls. While a link is active the menu-bar menu
+shows its end time and viewer count with **Copy Share Link** and **Stop Sharing**.
+
+The sharing checks in the camera-free suite replay `data/api/sharing_examples.json`
+and `macos/fixtures/sharing-ingress-modes.json` through in-memory fixtures and
+`CameraAppTests/fake-sharing-helper.py`. They cover setup, relay test, share,
+copy, stop, expiry, camera stop, sleep handling and helper loss without capture, network access or
+a guest listener. The managed public/private fixture lets the managed-ingress
+follow-up register its modes through the same setup contract. External HTTPS, relay
+and physical sleep checks belong to the signed-candidate proof.
+
+Run the combined local browser smoke with an assembled app and Chrome. It
+checks the packaged helper's capability, then plays synthetic video from
+the Go owner session in the bundled guest page:
+
+```sh
+CAMSTREAM_TEST_SHARING_APP="$PWD/dist/Camstream Camera.app" \
+CAMSTREAM_TEST_SHARING_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+go test -race ./internal/maccamera -run '^TestNativeSharingGuestBundleChrome$' -count=1
+```
 
 ## Minimum macOS validation
 

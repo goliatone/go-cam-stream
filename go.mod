@@ -3,6 +3,7 @@ module github.com/goliatone/go-cam-stream
 go 1.27.4
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/goliatone/go-admin v0.145.1
 	github.com/goliatone/go-admin/quickstart v0.145.1
 	github.com/goliatone/go-auth v0.45.7
@@ -12,9 +13,13 @@ require (
 	github.com/goliatone/go-logger v0.10.1
 	github.com/goliatone/go-router v0.65.0
 	github.com/goliatone/go-secrets v0.2.0
+	github.com/goliatone/go-urlkit v0.7.0
 	github.com/pion/sdp/v3 v3.0.20
+	github.com/pion/turn/v5 v5.1.2
 	github.com/pion/webrtc/v4 v4.2.25
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -91,7 +96,6 @@ require (
 	github.com/gofiber/template/v2 v2.1.4 // indirect
 	github.com/gofiber/utils v1.2.0 // indirect
 	github.com/gofiber/utils/v2 v2.6.2 // indirect
-	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/goliatone/go-auth/adapters/featuregate v0.45.7 // indirect
 	github.com/goliatone/go-cms v0.60.8 // indirect
 	github.com/goliatone/go-composite-fs v0.3.0 // indirect
@@ -117,7 +121,6 @@ require (
 	github.com/goliatone/go-template v0.3.1 // indirect
 	github.com/goliatone/go-theme v0.5.2 // indirect
 	github.com/goliatone/go-uploader v0.4.0 // indirect
-	github.com/goliatone/go-urlkit v0.7.0 // indirect
 	github.com/goliatone/go-users v0.27.6 // indirect
 	github.com/goliatone/hashid v0.2.3 // indirect
 	github.com/goodsign/monday v1.0.2 // indirect
@@ -169,7 +172,6 @@ require (
 	github.com/pion/srtp/v3 v3.1.3 // indirect
 	github.com/pion/stun/v4 v4.0.1 // indirect
 	github.com/pion/transport/v5 v5.1.1 // indirect
-	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/richardlehane/mscfb v1.0.8 // indirect
@@ -218,10 +220,8 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

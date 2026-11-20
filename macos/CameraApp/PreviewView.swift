@@ -17,7 +17,7 @@ struct PreviewView: View {
                         Text(message).multilineTextAlignment(.center)
                     }.foregroundStyle(.white.opacity(0.85)).padding(20)
                 }
-            }.frame(height: 240).clipped()
+            }.frame(height: streaming || preview.image != nil ? 240 : 110).clipped()
             HStack {
                 Label(status, systemImage: preview.phase == .live ? "circle.fill" : "info.circle")
                     .foregroundStyle(preview.phase == .live ? Color.green : Color.secondary)

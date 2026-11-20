@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex, nofollow" />
+    <!-- The guest listener sends the same policy as a header. Repeating it here
+         keeps the page within it behind a proxy that drops the header. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self' blob:; connect-src 'self'; font-src 'self'; base-uri 'none'"
+    />
+    <link rel="icon" href="./favicon.svg" />
+    <title>Shared camera</title>
+  </head>
+  <body>
+    <div id="guest"></div>
+    <script type="module" src="../src/share/main.tsx"></script>
+  </body>
+</html>

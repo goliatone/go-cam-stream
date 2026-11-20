@@ -97,7 +97,15 @@ struct CaptureState {
     private(set) var audioEnabled = false
     private(set) var audioState = "disabled"
     private(set) var audioPackets = 0
+    /// The helper confirmed that this app session owns no running capture:
+    /// launch, a matched Stop acknowledgement, a capture_stopped event for the
+    /// current run, a successful configure or a Start the helper refused before
+    /// running. A failure without that evidence leaves ownership unresolved.
+    private(set) var released = true
     var active: Bool { [.starting, .streaming, .stopping].contains(phase) }
+    /// Call devices may be claimed only after confirmed cleanup. The stream
+    /// error stays visible for recovery on the camera screen.
+    var releasedForCall: Bool { (phase == .stopped || phase == .error) && released }
 
     mutating func start(audioEnabled: Bool = false) -> Int {
         self.audioEnabled = audioEnabled
@@ -107,6 +115,7 @@ struct CaptureState {
         phase = .starting
         problem = nil
         frames = 0
+        released = false
         return generation
     }
     mutating func started(_ token: Int) {
@@ -119,7 +128,10 @@ struct CaptureState {
         audioState = audioEnabled ? "stopping" : "disabled"
         problem = nil
     }
-    mutating func stopped() { phase = .stopped; frames = 0; problem = nil; audioPackets = 0; audioState = audioEnabled ? "stopped" : "disabled" }
+    mutating func stopped() {
+        phase = .stopped; frames = 0; problem = nil; audioPackets = 0; audioState = audioEnabled ? "stopped" : "disabled"
+        released = true
+    }
     mutating func status(_ state: String, frames: Int, audio: MicrophoneStatus? = nil) {
         guard phase == .starting || phase == .streaming else { return }
         if audioEnabled, let audio = audio, audio.enabled {
@@ -129,19 +141,32 @@ struct CaptureState {
         // Starting may briefly poll stopped before the supervisor socket exists.
         // capture_stopped, not a transient poll, resolves this transition.
     }
-    mutating func failed(_ message: String) {
+    /// `released` records cleanup evidence that arrived with the failure. Nil
+    /// keeps the previous evidence, as for a settings or discovery failure.
+    mutating func failed(_ message: String, released confirmed: Bool? = nil) {
         generation += 1
         phase = .error
         audioState = audioEnabled ? "failed" : "disabled"
         audioPackets = 0
         frames = 0
         problem = message
+        if let confirmed { released = confirmed }
     }
+    /// Only a run the app still considers starting or streaming can end here,
+    /// so a stale event cannot release ownership during or after Stop.
     mutating func captureEnded(_ error: String?) {
         guard phase == .starting || phase == .streaming else { return }
-        if let error = error { failed(error) }
-        else if phase != .error { stopped() }
+        if let error = error { failed(error, released: true) }
+        else { stopped() }
     }
+    /// A matched Stop acknowledgement after an unresolved failure confirms
+    /// cleanup without hiding the original error.
+    mutating func confirmReleased() {
+        guard phase == .error || phase == .stopped else { return }
+        released = true
+    }
+    /// Helper loss leaves ownership unknown until the process is reaped.
+    mutating func ownershipLost() { released = false }
 }
 
 func cameraMessage(_ code: String) -> String {

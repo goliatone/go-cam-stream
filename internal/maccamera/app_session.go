@@ -7,22 +7,29 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"time"
+
+	"github.com/goliatone/go-cam-stream/data/api"
+	"github.com/goliatone/go-cam-stream/internal/sharing"
 )
 
 // AppRequest/Reply are the version-one NDJSON contract used by the native shell.
 // All fields are bounded and no error embeds a raw process/configuration error.
 type AppRequest struct {
-	Version           int     `json:"version"`
-	ID                string  `json:"id"`
-	Method            string  `json:"method"`
-	Config            *Config `json:"config,omitempty"`
-	PreviewGeneration string  `json:"preview_generation,omitempty"`
+	Version           int                       `json:"version"`
+	ID                string                    `json:"id"`
+	Method            string                    `json:"method"`
+	Config            *Config                   `json:"config,omitempty"`
+	PreviewGeneration string                    `json:"preview_generation,omitempty"`
+	Sharing           *api.NativeShareArguments `json:"sharing,omitempty"`
 }
 
 type AppError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable *bool  `json:"retryable,omitempty"`
 }
 type AppReply struct {
 	Version int       `json:"version"`
@@ -60,6 +67,16 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 	if d.Decode(new(any)) != io.EOF || r.Version != 1 || !safeID.MatchString(r.ID) {
 		return r, errors.New("invalid request")
 	}
+	if strings.HasPrefix(r.Method, "sharing_") {
+		request := api.NativeShareRequest{Version: r.Version, ID: r.ID, Method: r.Method, Sharing: r.Sharing}
+		if r.Config != nil || r.PreviewGeneration != "" || request.Validate() != nil {
+			return r, api.ErrInvalidSharingRequest
+		}
+		return r, nil
+	}
+	if r.Sharing != nil {
+		return r, errors.New("unexpected sharing payload")
+	}
 	if r.Method == "configure" {
 		if r.Config == nil {
 			return r, errors.New("missing config")
@@ -86,12 +103,15 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 }
 
 type appSession struct {
-	service *Service
-	encoder *json.Encoder
-	run     func(context.Context) error
-	running <-chan error
-	stop    context.CancelFunc
-	failure *AppError
+	service       *Service
+	encoder       *json.Encoder
+	run           func(context.Context) error
+	running       <-chan error
+	stop          context.CancelFunc
+	failure       *AppError
+	sharingInputs appSharingInputs
+	sharing       *appSharing
+	lastShare     *api.ShareView
 }
 
 // AppSession binds all owned capture to the native parent's stdin pipe. EOF,
@@ -112,16 +132,31 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer in.Close() //nolint:errcheck // Unblock the protocol reader on shutdown.
+	a.sharing = a.startSharing(ctx)
+	defer func() { _ = a.sharing.close() }()
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	if err = a.encoder.Encode(AppReply{Version: 1, Event: "ready", Result: map[string]int{"protocol": 1, "preview": 1, "audio": 1}}); err != nil {
+	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1}
+	var updates <-chan time.Time
+	if a.sharing != nil {
+		ready.Sharing = api.ShareNativeVersion
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		updates = ticker.C
+	}
+	if err = a.encoder.Encode(AppReply{Version: 1, Event: "ready", Result: ready}); err != nil {
 		return err
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-updates:
+			if err := a.emitSharing(ctx); err != nil {
+				return err
+			}
 		case captureErr := <-a.running:
+			a.stopSharing()
 			a.stop()
 			a.running = nil
 			a.stop = nil
@@ -141,6 +176,10 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 			r, decodeErr := decodeAppRequest(line)
 			if decodeErr != nil {
 				reply := AppReply{Version: 1, Error: appError("invalid_request")}
+				if errors.Is(decodeErr, api.ErrInvalidSharingRequest) && safeID.MatchString(r.ID) {
+					reply.ID = r.ID
+					reply.Error = sharingAppError(decodeErr)
+				}
 				if _, ok := errors.AsType[audioError](decodeErr); ok {
 					reply.ID = r.ID
 					reply.Error = CaptureFailure(decodeErr)
@@ -182,12 +221,47 @@ func readRequests(ctx context.Context, in io.Reader, cancel context.CancelFunc) 
 }
 
 func (a *appSession) stopOwned() {
+	a.stopSharing()
 	if a.stop != nil {
 		a.stop()
 		<-a.running //nolint:errcheck // Cancellation is intentional; waiting guarantees owned capture is reaped.
 		a.running = nil
 		a.stop = nil
 	}
+}
+
+func (a *appSession) stopSharing() {
+	if a.sharing != nil && a.sharing.state != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), api.ShareHealthyStopLimit)
+		defer cancel()
+		_ = a.sharing.state.StopCamera(ctx, sharedCameraID)
+	}
+}
+
+func sharingAppError(err error) *AppError {
+	if err == nil {
+		return nil
+	}
+	body := sharing.ErrorProjection(err)
+	return &AppError{Code: string(body.Code), Message: body.Message, Retryable: &body.Retryable}
+}
+
+func (a *appSession) emitSharing(ctx context.Context) error {
+	if a.sharing.state == nil {
+		return nil
+	}
+	view, err := a.sharing.state.Status(sharing.WithOperator(ctx), sharedCameraID)
+	if err != nil {
+		return err
+	}
+	if a.lastShare == nil && view.ShareID == "" {
+		return nil
+	}
+	if a.lastShare != nil && reflect.DeepEqual(*a.lastShare, view) {
+		return nil
+	}
+	a.lastShare = &view
+	return a.encoder.Encode(AppReply{Version: 1, Event: api.ShareNativeChanged, Result: view})
 }
 
 func (a *appSession) startOwned(ctx context.Context) (any, *AppError) {
@@ -220,6 +294,13 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
+	if strings.HasPrefix(r.Method, "sharing_") {
+		if a.sharing == nil {
+			return nil, sharingAppError(sharing.Fault(api.ShareIngressUnavailable))
+		}
+		value, err := a.sharing.dispatch(ctx, r)
+		return value, sharingAppError(err)
+	}
 	switch r.Method {
 	case "preview_attach", "preview_detach":
 		return a.dispatchPreview(ctx, r)

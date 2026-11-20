@@ -28,14 +28,28 @@ class NativePermissionTests(unittest.TestCase):
                 app = root / 'Fixture.app'
                 signed = []
                 assemble = builder['assemble']
+                def run_fixture(*args, **kwargs):
+                    if args[:3] == ('npm', 'run', 'build:share'):
+                        guest = Path(kwargs['env']['CAMSTREAM_SHARE_OUT_DIR'])
+                        guest.mkdir()
+                        (guest / 'index.html').write_text('fixture guest entry')
+                    if args[:3] == ('npm', 'run', 'build:conversation'):
+                        guest = Path(kwargs['env']['CAMSTREAM_CONVERSATION_OUT_DIR'])
+                        guest.mkdir()
+                        (guest / 'index.html').write_text('fixture conversation entry')
+
                 # Fixture filesystem follows the real assembler; tool execution is disabled.
-                with patch.dict(assemble.__globals__, run=lambda *args, **kw: None,
+                with patch.dict(assemble.__globals__, run=run_fixture,
                                 inspect_macho=lambda *args: None,
                                 sign=lambda path, identity, entitlements: signed.append((path, entitlements))):
                     assemble(runtime, app, lock, production=production)
                 info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
                 self.assertIn('NSCameraUsageDescription', info)
                 self.assertEqual('NSMicrophoneUsageDescription' in info, production)
+                schemes = [scheme for entry in info.get('CFBundleURLTypes', []) for scheme in entry['CFBundleURLSchemes']]
+                self.assertEqual(schemes, ['camstream'] if production else [])
+                self.assertEqual((app / 'Contents/Resources/Sharing/index.html').is_file(), production)
+                self.assertEqual((app / 'Contents/Resources/Conversations/index.html').is_file(), production)
                 self.assertTrue(signed)
                 for _, entitlement in signed:
                     values = plistlib.loads(Path(entitlement).read_bytes())

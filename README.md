@@ -176,6 +176,28 @@ manual settings or the Mac app's exact YAML/credentials export. A successful tes
 requires decoded video and confirmed preview cleanup. Additions belong to their
 creator, and existing playback continues through Save.
 
+The Mac companion requires credentials even for `rtsp://localhost:18556/macbook`.
+Open **Connection Details → Export Connection Files → Show Files in Finder**
+while capture runs, then use **Import Mac files** with both files in the web app.
+For manual entry, use the username/password from the private `.env` file.
+Anonymous access receives RTSP `401 Unauthorized`;
+changing browsers or adding a STUN server does not supply camera credentials.
+
+For Firefox on the same Mac, start the development host with an explicit private
+media address (use your Mac's current private IPv4):
+
+```sh
+./taskfile dev:serve 8087 --media-address 192.168.1.70
+```
+
+Open `http://127.0.0.1:8087/`. Keep the camera RTSP address on localhost when the
+camera and server share the Mac. Only WebRTC media binds to the selected private
+interface and the configured media ports; HTTP and worker control stay loopback.
+The address must be assigned to this Mac; wildcard/public addresses are rejected.
+Omit the flag to retain the loopback-only default. The Firefox failure occurs
+between server and browser, separately from RTSP credentials; the loopback browser
+preference alone did not fix it. See [browser compatibility](docs/browser-client-compatibility.md).
+
 Enable exact manager principals and persistent private state in
 [management configuration](config/README.md#managed-camera-state). The tagged
 native development host enables its local principal automatically. See the

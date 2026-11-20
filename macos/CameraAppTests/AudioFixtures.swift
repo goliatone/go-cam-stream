@@ -26,6 +26,8 @@ final class FixtureCameraHelper: CameraHelper {
     var configuration = CameraConfig()
     var inventory: [[String: Any]] = [["id": "fixture: mic-1", "name": "Microphone"], ["id": "fixture: mic-2", "name": "Microphone"]]
     var status: [String: Any] = ["state": "stopped"]
+    /// False until settings are saved, like a first launch.
+    var configured = true
     var hold: String?
     var pending: [([String: Any]) -> Void] = []
     private var directory = URL(fileURLWithPath: "/tmp/unused")
@@ -34,8 +36,12 @@ final class FixtureCameraHelper: CameraHelper {
         methods.append(method)
         if hold == method { pending.append(completion); return }
         switch method {
-        case "config": completion(["result": try! configuration.helperObject(audioSupported: audioVersion == 1)])
-        case "configure": configuration = config!; completion(["result": try! configuration.helperObject(audioSupported: audioVersion == 1)])
+        case "config":
+            completion(configured ? ["result": try! configuration.helperObject(audioSupported: audioVersion == 1)]
+                                  : ["error": ["code": "not_configured"]])
+        case "configure":
+            configuration = config!; configured = true
+            completion(["result": try! configuration.helperObject(audioSupported: audioVersion == 1)])
         case "devices": completion(["result": [["index": "0", "name": "MacBook Pro Camera"]]])
         case "audio_devices": completion(["result": inventory])
         case "start": status = ["state": "starting"]; completion(["result": status])
