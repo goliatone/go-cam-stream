@@ -12,16 +12,16 @@ import (
 )
 
 const (
-	SharePagePath        = "/s/{share_id}"
-	ShareAssetPrefix     = "/share-assets/"
-	ShareAssetEntry      = "index.html"
-	ShareAPIPrefix       = "/share-api/v1/shares/"
-	ShareRedeemPath      = ShareAPIPrefix + "{share_id}/redeem"
-	ShareViewersPath     = ShareAPIPrefix + "{share_id}/viewers"
-	ShareViewerPath      = ShareViewersPath + "/{viewer_id}"
-	ShareOfferPath       = ShareViewerPath + "/offer"
-	ShareCSRFHeader      = "X-CSRF-Token"
-	ShareGuestCookieName = "__Host-camstream-share"
+	SharePagePath          = "/s/{share_id}"
+	ShareAssetPrefix       = "/share-assets/"
+	ShareAssetEntry        = "index.html"
+	ShareAPIPrefix         = "/share-api/v1/shares/"
+	ShareRedeemPath        = ShareAPIPrefix + "{share_id}/redeem"
+	ShareViewersPath       = ShareAPIPrefix + "{share_id}/viewers"
+	ShareViewerPath        = ShareViewersPath + "/{viewer_id}"
+	ShareOfferPath         = ShareViewerPath + "/offer"
+	ShareCSRFHeader        = "X-CSRF-Token"
+	ShareGuestCookiePrefix = "__Host-camstream-share-"
 
 	ShareCreateCommand      = "sharing.create.v1"
 	ShareCopyCommand        = "sharing.copy_link.v1"
@@ -39,6 +39,7 @@ const (
 	ShareNativeSetup      = "sharing_setup"
 	ShareNativeConfigure  = "sharing_configure"
 	ShareNativeTestRelay  = "sharing_test_relay"
+	ShareNativeHostSleep  = "sharing_host_sleep"
 	ShareNativeChanged    = "sharing_changed"
 	ShareInvitationMax    = 4096
 	ShareOfferMax         = 32 * 1024
@@ -330,10 +331,11 @@ type ShareSavedSettings struct {
 }
 
 type NativeShareReady struct {
-	Protocol int `json:"protocol"`
-	Preview  int `json:"preview,omitempty"`
-	Audio    int `json:"audio,omitempty"`
-	Sharing  int `json:"sharing,omitempty"`
+	Protocol      int `json:"protocol"`
+	Preview       int `json:"preview,omitempty"`
+	Audio         int `json:"audio,omitempty"`
+	Sharing       int `json:"sharing,omitempty"`
+	Conversations int `json:"conversations,omitempty"`
 }
 
 type NativeShareEvent[T any] struct {
@@ -410,7 +412,7 @@ func (r NativeShareRequest) Validate() error {
 		return ErrInvalidSharingRequest
 	}
 	a := r.Sharing
-	if r.Method == ShareNativeSetup || r.Method == ShareNativeTestRelay {
+	if r.Method == ShareNativeSetup || r.Method == ShareNativeTestRelay || r.Method == ShareNativeHostSleep {
 		if a == nil {
 			return nil
 		}

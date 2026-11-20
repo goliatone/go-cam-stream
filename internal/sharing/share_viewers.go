@@ -24,7 +24,7 @@ func (s *Service) AdmitViewer(ctx context.Context, msg AdmitShareViewer) (api.Ad
 	var host *HostRelay
 	if s.opts.Relay != nil {
 		grant := RelayGrant{Attempt: viewer.scope, NotAfter: sh.deadline}
-		issueCtx, cancel := context.WithTimeout(ctx, min(negotiationTimeout, sh.deadline.Sub(s.opts.Clock())))
+		issueCtx, cancel := context.WithTimeout(ctx, earlier(viewer.negotiation, sh.deadline).Sub(s.opts.Clock()))
 		credentials, issueErr := s.opts.Relay.Issue(issueCtx, grant)
 		cancel()
 		if issueErr == nil {
@@ -43,7 +43,7 @@ func (s *Service) AdmitViewer(ctx context.Context, msg AdmitShareViewer) (api.Ad
 	if _, err := s.active(sh.view.ShareID); err != nil {
 		return api.AdmitShareViewerResult{}, err
 	}
-	if sh.viewers[viewer.scope.ViewerID] != viewer || !s.opts.Clock().Before(viewer.negotiation) {
+	if sh.viewers[viewer.scope.ViewerID] != viewer || viewer.expired(s.opts.Clock()) {
 		return api.AdmitShareViewerResult{}, fault(api.ShareStaleAttempt)
 	}
 	viewer.relay, viewer.ready = host, true
@@ -63,6 +63,8 @@ func (s *Service) reserve(ctx context.Context, msg AdmitShareViewer) (*shareStat
 	var previous *viewerState
 	id := msg.ViewerID
 	now := s.opts.Clock()
+	negotiation := now.Add(negotiationTimeout)
+	var reconnect time.Time
 	if id == "" {
 		if len(sh.viewers) >= sh.view.Limit {
 			return nil, nil, nil, fault(api.ShareViewerAtCapacity)
@@ -70,14 +72,19 @@ func (s *Service) reserve(ctx context.Context, msg AdmitShareViewer) (*shareStat
 		id = handle()
 	} else {
 		previous = sh.viewers[id]
-		if previous == nil || previous.cookie != cookie || previous.expired(now) || (previous.peer == "" && previous.reconnect.IsZero()) {
+		if previous == nil || previous.cookie != cookie || previous.expired(now) || previous.peer == "" {
 			return nil, nil, nil, fault(api.ShareStaleAttempt)
 		}
+		reconnect = previous.reconnect
+		if reconnect.IsZero() {
+			reconnect = now.Add(api.ShareReconnectWindow)
+		}
+		negotiation = earlier(negotiation, reconnect)
 		cancelViewer(previous)
 	}
 	viewer := &viewerState{
 		scope: ViewerAttempt{ShareID: msg.ShareID, ViewerID: id, AttemptID: handle()}, cookie: cookie,
-		negotiation: now.Add(negotiationTimeout),
+		negotiation: negotiation, reconnect: reconnect,
 	}
 	sh.viewers[id] = viewer
 	return sh, viewer, previous, nil
@@ -89,17 +96,23 @@ func (s *Service) MediaLive(scope ViewerAttempt) {
 	defer s.mu.Unlock()
 	sh := s.shares[scope.ShareID]
 	if sh != nil {
-		if v := sh.viewers[scope.ViewerID]; v != nil && v.scope == scope && v.reconnect.IsZero() {
+		if v := sh.viewers[scope.ViewerID]; v != nil && v.scope == scope && !v.expired(s.opts.Clock()) {
 			v.live = true
+			v.reconnect = time.Time{}
 		}
 	}
 }
 
 func (v *viewerState) expired(now time.Time) bool {
-	if !v.reconnect.IsZero() {
-		return !now.Before(v.reconnect)
+	return (!v.reconnect.IsZero() && !now.Before(v.reconnect)) ||
+		(v.peer == "" && !now.Before(v.negotiation))
+}
+
+func earlier(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
 	}
-	return v.peer == "" && !now.Before(v.negotiation)
+	return b
 }
 
 func (s *Service) drop(sh *shareState, v *viewerState) {
@@ -120,7 +133,7 @@ func (s *Service) OpenViewer(ctx context.Context, msg OpenShareViewer) (api.Open
 		s.mu.Unlock()
 		return api.OpenShareViewerResult{}, err
 	}
-	if !v.ready || v.peer != "" || v.done != nil || !v.reconnect.IsZero() || v.expired(s.opts.Clock()) {
+	if !v.ready || v.peer != "" || v.done != nil || v.expired(s.opts.Clock()) {
 		s.mu.Unlock()
 		return api.OpenShareViewerResult{}, fault(api.ShareStaleAttempt)
 	}
@@ -134,7 +147,8 @@ func (s *Service) OpenViewer(ctx context.Context, msg OpenShareViewer) (api.Open
 	cancel()
 
 	s.mu.Lock()
-	current := s.shares[msg.ShareID] == sh && sh.viewers[msg.ViewerID] == v && s.opts.Clock().Before(sh.deadline)
+	now := s.opts.Clock()
+	current := s.shares[msg.ShareID] == sh && sh.viewers[msg.ViewerID] == v && now.Before(sh.deadline) && !v.expired(now)
 	if current && openErr == nil && !canceled && peer.ID != "" {
 		v.peer = peer.ID
 		close(v.done)
@@ -202,9 +216,10 @@ func (s *Service) TransportLost(scope ViewerAttempt) {
 		return
 	}
 	v := sh.viewers[scope.ViewerID]
-	if v == nil || v.scope != scope || v.peer == "" || !v.reconnect.IsZero() {
+	if v == nil || v.scope != scope || (v.peer == "" && v.done == nil) || !v.reconnect.IsZero() {
 		return
 	}
+	v.live = false
 	v.reconnect = s.opts.Clock().Add(api.ShareReconnectWindow)
 }
 

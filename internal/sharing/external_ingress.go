@@ -22,12 +22,13 @@ const ingressProbeHeader = "X-Camstream-Sharing-Probe"
 // ExternalIngress owns its loopback HTTP listener. The operator's TLS endpoint
 // must forward the guest routes and preserve the public Host.
 type ExternalIngress struct {
-	mu      sync.Mutex
-	cfg     config.SharingIngress
-	handler http.Handler
-	client  *http.Client
-	server  *http.Server
-	binding IngressBinding
+	mu                  sync.Mutex
+	cfg                 config.SharingIngress
+	handler             http.Handler
+	client              *http.Client
+	server              *http.Server
+	binding             IngressBinding
+	probeURL, challenge string
 }
 
 func NewExternalIngress(cfg config.SharingIngress, handler http.Handler, client *http.Client) (*ExternalIngress, error) {
@@ -47,6 +48,9 @@ func (i *ExternalIngress) Start(ctx context.Context) (IngressBinding, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.server != nil {
+		if !i.reachable(ctx, i.probeURL, i.challenge) {
+			return IngressBinding{}, fault(api.ShareIngressUnavailable)
+		}
 		return i.binding, nil
 	}
 	origin, err := i.cfg.PublicOrigin()
@@ -85,26 +89,43 @@ func (i *ExternalIngress) Start(ctx context.Context) (IngressBinding, error) {
 			i.handler.ServeHTTP(w, r)
 		}),
 		ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 6 * time.Second, WriteTimeout: 24 * time.Second,
-		IdleTimeout: 20 * time.Second, MaxHeaderBytes: 16 * 1024, ErrorLog: log.New(io.Discard, "", 0),
+		// Tab-specific guest cookies are bounded by maxGuests and expire with
+		// their shares. Allow a shared browser to carry multiple tabs' cookies.
+		IdleTimeout: 20 * time.Second, MaxHeaderBytes: 64 * 1024, ErrorLog: log.New(io.Discard, "", 0),
 	}
 	go func() { _ = server.Serve(listener) }()
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if !i.probe(probeCtx, origin+probePath, challenge) {
+	if !i.reachable(ctx, origin+probePath, challenge) {
 		_ = server.Close()
 		return IngressBinding{}, fault(api.ShareIngressUnavailable)
 	}
 	i.server = server
 	i.binding = IngressBinding{Origin: origin, Audience: api.SharePublicAudience}
+	i.probeURL, i.challenge = origin+probePath, challenge
 	return i.binding, nil
 }
 
-func (i *ExternalIngress) probe(ctx context.Context, target, challenge string) bool {
+// Check measures the operator's HTTPS route without changing the owned listener.
+func (i *ExternalIngress) Check(ctx context.Context) error {
+	i.mu.Lock()
+	target, challenge := i.probeURL, i.challenge
+	i.mu.Unlock()
+	if target == "" || !i.reachable(ctx, target, challenge) {
+		return fault(api.ShareIngressUnavailable)
+	}
+	return nil
+}
+
+func (i *ExternalIngress) reachable(ctx context.Context, target, challenge string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	// Prevent a cached success from standing in for the current route.
+	target += "?check=" + handle()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return false
 	}
 	req.Header.Set(ingressProbeHeader, challenge)
+	req.Header.Set("Cache-Control", "no-cache")
 	res, err := i.client.Do(req)
 	if err != nil {
 		return false
@@ -121,6 +142,7 @@ func (i *ExternalIngress) Stop(ctx context.Context) error {
 	}
 	server := i.server
 	i.server, i.binding = nil, IngressBinding{}
+	i.probeURL, i.challenge = "", ""
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

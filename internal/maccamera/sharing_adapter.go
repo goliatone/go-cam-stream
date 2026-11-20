@@ -13,11 +13,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/config"
 	"github.com/goliatone/go-cam-stream/data/api"
 	"github.com/goliatone/go-cam-stream/internal/sharing"
-	httptransport "github.com/goliatone/go-cam-stream/internal/transport/http"
+	"github.com/goliatone/go-cam-stream/internal/transport/http/shareguest"
 )
 
 const sharedCameraID = "local-camera"
@@ -38,8 +37,7 @@ type appSharing struct {
 	tokens     sharing.InvitationTokens
 	saved      savedSharing
 	state      *sharing.Service
-	bus        *admin.CommandBus
-	reg        admin.CommandRegistrationHandle
+	commands   *sharing.Commands
 	cancel     context.CancelFunc
 	sweepDone  chan struct{}
 	relay      sharing.RelayIssuer
@@ -51,7 +49,7 @@ type savedSharing struct {
 	Credentials *api.NativeRelayCredentials `json:"credentials,omitempty"`
 }
 
-func bundledSharingAssets() fs.FS {
+func bundledGuestAssets(name string) fs.FS {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil
@@ -61,7 +59,7 @@ func bundledSharingAssets() fs.FS {
 	if filepath.Base(helpers) != "Helpers" || filepath.Base(contents) != "Contents" {
 		return nil
 	}
-	return os.DirFS(filepath.Join(contents, "Resources", "Sharing"))
+	return os.DirFS(filepath.Join(contents, "Resources", name))
 }
 
 func readSharingKey(dir string) (sharing.InvitationTokens, error) {
@@ -88,7 +86,7 @@ func readSharingKey(dir string) (sharing.InvitationTokens, error) {
 func (a *appSession) startSharing(ctx context.Context) *appSharing {
 	inputs := a.sharingInputs
 	if inputs.assets == nil {
-		inputs.assets = bundledSharingAssets()
+		inputs.assets = bundledGuestAssets("Sharing")
 		if inputs.assets != nil {
 			exe, err := os.Executable()
 			if err != nil {
@@ -157,12 +155,12 @@ func (a *appSharing) open(saved savedSharing) error {
 	if err != nil {
 		return err
 	}
-	bus := admin.NewCommandBus(true)
-	handler, err := httptransport.GuestSharing(a.inputs.assets, bus)
-	if err != nil {
-		return err
-	}
-	ingress, err := sharing.NewExternalIngress(settings.Ingress, handler, a.inputs.proxyClient)
+	// The listener starts only after the configured service receives Create.
+	// Resolve the handler before publishing this service on the owner pipe.
+	var handler http.Handler
+	ingress, err := sharing.NewExternalIngress(settings.Ingress, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r)
+	}), a.inputs.proxyClient)
 	if err != nil {
 		return err
 	}
@@ -184,24 +182,28 @@ func (a *appSharing) open(saved savedSharing) error {
 		cancel()
 		return err
 	}
-	reg, err := sharing.Register(bus, state)
+	commands := sharing.NewCommands(state)
+	handler, err = shareguest.New(a.inputs.assets, commands)
 	if err != nil {
+		commands.Close()
 		cancel()
 		return err
 	}
 	done := make(chan struct{})
 	go func() { defer close(done); state.Run(ctx) }()
-	a.state, a.bus, a.reg, a.cancel, a.sweepDone, a.relay = state, bus, reg, cancel, done, relay
+	a.state, a.commands, a.cancel, a.sweepDone, a.relay = state, commands, cancel, done, relay
 	a.saved = saved
 	return nil
 }
 
 func (a *appSharing) relayFor(saved savedSharing) (sharing.RelayIssuer, error) {
-	settings := saved.Settings.WithDefaults().Relay
+	return nativeRelay(saved.Settings.WithDefaults().Relay, saved.Credentials)
+}
+
+func nativeRelay(settings config.SharingRelay, secret *api.NativeRelayCredentials) (sharing.RelayIssuer, error) {
 	if settings.Mode == config.SharingRelayDisabled {
 		return nil, nil
 	}
-	secret := saved.Credentials
 	if settings.CredentialRef != sharedCredentialRef || secret == nil {
 		return nil, sharing.Fault(api.ShareRelayUnavailable)
 	}
@@ -223,7 +225,8 @@ func (a *appSharing) close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	<-a.sweepDone
-	err := errors.Join(a.state.Close(ctx), a.reg.Close())
+	err := a.state.Close(ctx)
+	a.commands.Close()
 	a.state = nil
 	return err
 }
@@ -291,6 +294,8 @@ func (a *appSharing) dispatch(ctx context.Context, r AppRequest) (any, error) {
 			return nil, sharing.Fault(api.ShareRelayUnavailable)
 		}
 		return a.setup(), nil
+	case api.ShareNativeHostSleep:
+		return struct{}{}, a.state.StopCamera(ctx, sharedCameraID)
 	case api.ShareNativeStatus:
 		return a.state.Status(ctx, args.CameraID)
 	case api.ShareNativeCreate:
@@ -298,11 +303,11 @@ func (a *appSharing) dispatch(ctx context.Context, r AppRequest) (any, error) {
 		if args.Options != nil {
 			request.Options = *args.Options
 		}
-		return sharing.Dispatch[api.CreateShareResult](ctx, a.bus, sharing.CreateShare{CreateShareRequest: request})
+		return sharing.Dispatch[api.CreateShareResult](ctx, a.commands, sharing.CreateShare{CreateShareRequest: request})
 	case api.ShareNativeCopy:
-		return sharing.Dispatch[api.ShareLink](ctx, a.bus, sharing.CopyShareLink{ShareRef: api.ShareRef{ShareID: args.ShareID}})
+		return sharing.Dispatch[api.ShareLink](ctx, a.commands, sharing.CopyShareLink{ShareRef: api.ShareRef{ShareID: args.ShareID}})
 	case api.ShareNativeRevoke:
-		return sharing.Dispatch[api.ShareView](ctx, a.bus, sharing.RevokeShare{ShareRef: api.ShareRef{ShareID: args.ShareID}})
+		return sharing.Dispatch[api.ShareView](ctx, a.commands, sharing.RevokeShare{ShareRef: api.ShareRef{ShareID: args.ShareID}})
 	default:
 		return nil, api.ErrInvalidSharingRequest
 	}

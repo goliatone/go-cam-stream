@@ -6,11 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
+
+	"github.com/goliatone/go-cam-stream/config"
+	"github.com/goliatone/go-cam-stream/data/api"
+	"github.com/goliatone/go-cam-stream/internal/conversations"
 )
 
 type sessionProbe struct {
@@ -136,6 +142,95 @@ func TestAppSessionOwnerCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestAppSessionConversationOpenFailsClosedWithoutSettings(t *testing.T) {
+	probe := newSessionProbe(t, testService(t), func(ctx context.Context) error {
+		t.Error("opening an invitation started capture")
+		<-ctx.Done()
+		return nil
+	})
+	ready := probe.receive(t)
+	if result, ok := ready.Result.(map[string]any); ready.Event != "ready" || !ok || result["conversations"] != float64(api.ConversationVersion) {
+		t.Fatal("conversation capability missing from ready reply")
+	}
+	const secret = "private-invitation-fragment"
+	request := AppRequest{Version: 1, ID: "open", Method: api.ConversationNativeOpen, InvitationURL: "https://unknown.test/r/fixture#" + secret}
+	if err := json.NewEncoder(probe.in).Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	reply := probe.receive(t)
+	encoded, err := json.Marshal(reply)
+	if err != nil || reply.ID != request.ID || reply.Error == nil || reply.Error.Code != string(api.RoomPermissionDenied) || bytes.Contains(encoded, []byte(secret)) {
+		t.Fatal("unexpected owner pipe rejection")
+	}
+	request.Method = "start"
+	encoded, err = json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeAppRequest(encoded); err == nil {
+		t.Fatal("capture command accepted an invitation payload")
+	}
+	_ = probe.in.Close()
+	probe.finished(t)
+}
+
+func TestAppSessionConversationListenerOutlivesCreateRequest(t *testing.T) {
+	service := testService(t)
+	if err := writeJSON(filepath.Join(service.Dir, "conversation-settings.json"), config.Conversations{Loopback: true}); err != nil {
+		t.Fatal(err)
+	}
+	a := appSession{service: service, conversationAssets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}}}
+	defer func() { a.conversation.Close() }()
+	value, problem := a.dispatch(t.Context(), AppRequest{Method: api.ConversationNativeCreate})
+	room, ok := value.(api.NativeConversationPrejoin)
+	if !ok || problem != nil {
+		t.Fatal("owner could not create a conversation")
+	}
+	page, err := url.Parse(room.PageURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := page.Scheme + "://" + page.Host
+	guest := testService(t)
+	settings := config.Conversations{Loopback: true, TrustedOrigins: []string{origin}}
+	if err := writeJSON(filepath.Join(guest.Dir, "conversation-settings.json"), settings); err != nil {
+		t.Fatal(err)
+	}
+	probe := newSessionProbe(t, guest, nil)
+	probe.receive(t)
+	open := AppRequest{Version: 1, ID: "open-link", Method: api.ConversationNativeOpen, InvitationURL: room.InvitationURL}
+	if err := json.NewEncoder(probe.in).Encode(open); err != nil {
+		t.Fatal(err)
+	}
+	if reply := probe.receive(t); reply.Error != nil || reply.ID != open.ID {
+		t.Fatal("guest helper could not redeem after Create completed")
+	}
+	leave := AppRequest{Version: 1, ID: "leave", Method: api.ConversationNativeLeave, RoomID: room.Admission.Room.RoomID}
+	if err := json.NewEncoder(probe.in).Encode(leave); err != nil {
+		t.Fatal(err)
+	}
+	if reply := probe.receive(t); reply.Error != nil || reply.ID != leave.ID {
+		t.Fatal("native leave before loading the page failed")
+	}
+	if err := json.NewEncoder(probe.in).Encode(open); err != nil {
+		t.Fatal(err)
+	}
+	if reply := probe.receive(t); reply.Error != nil {
+		t.Fatal("native leave retained the guest slot")
+	}
+	_ = probe.in.Close()
+	probe.finished(t)
+	if _, err := conversations.RedeemLoopbackLink(t.Context(), room.InvitationURL, []string{origin}); err != nil {
+		t.Fatal("guest owner EOF retained the slot")
+	}
+	if _, fault := a.dispatch(t.Context(), AppRequest{Method: api.ConversationNativeEnd, RoomID: room.Admission.Room.RoomID}); fault != nil {
+		t.Fatal("owner could not end the room")
+	}
+	if _, err := conversations.RedeemLoopbackLink(t.Context(), room.InvitationURL, []string{origin}); err != conversations.Fault(api.RoomAccessEnded) {
+		t.Fatal("ended room still permits admission")
 	}
 }
 

@@ -17,11 +17,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 	"github.com/goliatone/go-cam-stream/config"
 	"github.com/goliatone/go-cam-stream/data/api"
 )
@@ -328,7 +331,7 @@ func TestNativeSharingBackendChrome(t *testing.T) {
 	}
 	expect("live")
 	expect("reconnected")
-	if r := p.call(t, api.ShareNativeRevoke, &api.NativeShareArguments{ShareID: created.Share.ShareID}); r.Error != nil {
+	if r := p.call(t, api.ShareNativeHostSleep, nil); r.Error != nil {
 		t.Fatal(r.Error)
 	}
 	expect("revoked")
@@ -357,4 +360,169 @@ func TestNativeSharingBackendChrome(t *testing.T) {
 		t.Fatal("sharing resumed after owner relaunch")
 	}
 	relaunch.end(t)
+}
+
+func TestNativeSharingGuestBundleChrome(t *testing.T) {
+	app, chrome := os.Getenv("CAMSTREAM_TEST_SHARING_APP"), os.Getenv("CAMSTREAM_TEST_SHARING_CHROME")
+	if app == "" || chrome == "" {
+		t.Skip("set the locally assembled Mac app and Chrome paths")
+	}
+	bundle := filepath.Join(app, "Contents")
+	helpers := filepath.Join(bundle, "Helpers")
+	owner := filepath.Join(helpers, "camstream-camera")
+	tools := Tools{MediaMTX: filepath.Join(helpers, "mediamtx"), FFmpeg: filepath.Join(helpers, "ffmpeg"), FFprobe: filepath.Join(helpers, "ffprobe")}
+
+	// Check the packaged helper resolves the signed resources on its normal
+	// entry point before replacing the camera source with synthetic media.
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	cmd := exec.CommandContext(ctx, owner, "app-session", "--dir", filepath.Join(t.TempDir(), "private"))
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	var ready api.NativeShareEvent[api.NativeShareReady]
+	decodeErr := json.NewDecoder(stdout).Decode(&ready)
+	_ = stdin.Close()
+	exitErr := cmd.Wait()
+	cancel()
+	if decodeErr != nil || exitErr != nil || ready.Event != "ready" || ready.Result.Sharing != api.ShareNativeVersion {
+		t.Fatalf("assembled helper reported event %q and sharing version %d: decode %v, exit %v",
+			ready.Event, ready.Result.Sharing, decodeErr, exitErr)
+	}
+
+	s := testService(t)
+	s.Tools = tools
+	source := nativeFixtureSource(t, tools)
+	address := probePort(t)
+	target, err := url.Parse("http://" + address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverse := httputil.NewSingleHostReverseProxy(target)
+	proxy := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Referer") != "" {
+			t.Error("guest request carried a referrer")
+		}
+		reverse.ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+	p := openSharingPipe(t, s, appSharingInputs{
+		assets: os.DirFS(filepath.Join(bundle, "Resources", "Sharing")), proxyClient: proxy.Client(),
+		supervisor: owner, source: func(context.Context, string) (string, error) { return source, nil }, localMedia: true,
+	})
+	settings := config.Sharing{Ingress: config.SharingIngress{Mode: config.SharingIngressExternal, PublicBaseURL: proxy.URL, GuestListen: address}}
+	if r := p.call(t, api.ShareNativeConfigure, &api.NativeShareArguments{Settings: &settings}); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if r := p.call(t, "start", nil); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	r := p.call(t, api.ShareNativeCreate, &api.NativeShareArguments{CameraID: sharedCameraID, Options: &api.ShareOptions{ViewerLimit: 2}})
+	if r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	data, err := json.Marshal(r.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created api.CreateShareResult
+	if err := json.Unmarshal(data, &created); err != nil {
+		t.Fatal(err)
+	}
+
+	spki := sha256.Sum256(proxy.Certificate().RawSubjectPublicKeyInfo)
+	options := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chrome), chromedp.Flag("ignore-certificate-errors-spki-list", base64.StdEncoding.EncodeToString(spki[:])),
+		chromedp.Flag("autoplay-policy", "no-user-gesture-required"), chromedp.Flag("no-proxy-server", true),
+		chromedp.Flag("host-resolver-rules", "MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"), chromedp.Flag("disable-breakpad", true),
+		chromedp.Flag("disable-crash-reporter", true), chromedp.Flag("use-mock-keychain", true))
+	browserBudget, stopBudget := context.WithTimeout(t.Context(), 50*time.Second)
+	defer stopBudget()
+	browserCtx, stopBrowser := chromedp.NewExecAllocator(browserBudget, options...)
+	defer stopBrowser()
+	browser, closeFirst := chromedp.NewContext(browserCtx)
+	defer closeFirst()
+	if err := chromedp.Run(browser); err != nil {
+		t.Fatal(err)
+	}
+	other, closeSecond := chromedp.NewContext(browser)
+	defer closeSecond()
+	if err := chromedp.Run(other); err != nil {
+		t.Fatal(err)
+	}
+	tabs := []context.Context{browser, other}
+	tabError := func(tab context.Context, operation error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(tab, time.Second)
+		defer cancel()
+		var status struct {
+			Class      string
+			Visibility string
+			Frames     int
+		}
+		_ = chromedp.Run(ctx, chromedp.Evaluate(`({
+			Class: document.querySelector(".guest-stage")?.className,
+			Visibility: document.visibilityState,
+			Frames: document.querySelector("video")?.getVideoPlaybackQuality().totalVideoFrames
+		})`, &status))
+		t.Fatalf("guest browser state %+v: %v", status, operation)
+	}
+	runTabs := func(timeout time.Duration, actions ...chromedp.Action) {
+		t.Helper()
+		var wg sync.WaitGroup
+		errs := make([]error, len(tabs))
+		for i, tab := range tabs {
+			wg.Go(func() {
+				ctx, cancel := context.WithTimeout(tab, timeout)
+				defer cancel()
+				errs[i] = chromedp.Run(ctx, actions...)
+			})
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				tabError(tabs[i], err)
+			}
+		}
+	}
+	runTabs(12*time.Second,
+		chromedp.Navigate(created.Link.URL),
+		chromedp.Poll(`!location.hash && document.querySelector("button")?.textContent.trim() === "Play"`, nil,
+			chromedp.WithPollingInterval(100*time.Millisecond)),
+	)
+	runTabs(4*time.Second, chromedp.Evaluate(`document.querySelector(".guest-action").click()`, nil))
+	for _, tab := range tabs {
+		// Authorize both tabs together, then observe real presented frames
+		// with each tab visible to the browser.
+		ctx, cancel := context.WithTimeout(tab, 18*time.Second)
+		err := chromedp.Run(ctx, page.BringToFront(),
+			chromedp.Poll(`(() => {
+				const video = document.querySelector("video");
+				return video?.videoWidth > 0 && video.srcObject?.getAudioTracks().length === 0 &&
+					video.getVideoPlaybackQuality().totalVideoFrames >= 10;
+			})()`, nil))
+		cancel()
+		if err != nil {
+			tabError(tab, err)
+		}
+	}
+	if r := p.call(t, api.ShareNativeRevoke, &api.NativeShareArguments{ShareID: created.Share.ShareID}); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	runTabs(20*time.Second, chromedp.Poll(`document.body.innerText.includes("Sharing has stopped") && !document.querySelector("video")?.srcObject`, nil,
+		chromedp.WithPollingInterval(100*time.Millisecond)))
+	runTabs(8*time.Second, chromedp.Navigate(created.Link.URL),
+		chromedp.Poll(`!location.hash && document.body.innerText.includes("Sharing has stopped")`, nil,
+			chromedp.WithPollingInterval(100*time.Millisecond)))
+	p.end(t)
 }

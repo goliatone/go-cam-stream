@@ -67,6 +67,7 @@ type IngressBinding struct {
 // operator's route under operator control. Stop only acts on owned resources.
 type Ingress interface {
 	Start(context.Context) (IngressBinding, error)
+	Check(context.Context) error
 	Stop(context.Context) error
 }
 

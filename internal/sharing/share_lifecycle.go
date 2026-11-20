@@ -29,6 +29,7 @@ func (s *Service) end(sh *shareState, reason api.ShareState) []*viewerState {
 		peers = append(peers, v)
 	}
 	sh.view.State, sh.view.Media = reason, api.ShareMediaIdle
+	sh.view.Error = nil
 	sh.viewers, sh.link = nil, api.ShareLink{}
 	if len(s.history) == maxTerminal {
 		delete(s.terminal, s.history[0])
@@ -126,6 +127,12 @@ func (s *Service) Sweep(ctx context.Context) error {
 }
 
 func (s *Service) Run(ctx context.Context) {
+	healthDone := make(chan struct{})
+	go func() {
+		defer close(healthDone)
+		s.monitorIngress(ctx)
+	}()
+	defer func() { <-healthDone }()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -134,6 +141,47 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			_ = s.Sweep(ctx)
+		}
+	}
+}
+
+func (s *Service) monitorIngress(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkIngress(ctx)
+		}
+	}
+}
+
+func (s *Service) checkIngress(ctx context.Context) {
+	s.mu.Lock()
+	shares := make([]*shareState, 0, len(s.shares))
+	for _, sh := range s.shares {
+		shares = append(shares, sh)
+	}
+	s.mu.Unlock()
+	if len(shares) == 0 {
+		return
+	}
+	health := s.opts.Ingress.Check(ctx)
+	state := api.ShareAvailable
+	var problem *api.ShareErrorBody
+	if health != nil {
+		state = api.ShareDegraded
+		body := ErrorProjection(fault(api.ShareIngressUnavailable))
+		problem = &body
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range shares {
+		if s.shares[sh.view.ShareID] == sh {
+			sh.view.State = state
+			sh.view.Error = problem
 		}
 	}
 }

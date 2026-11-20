@@ -111,6 +111,10 @@ func project(sh *shareState) api.ShareView {
 	view := sh.view
 	deadline := sh.deadline
 	view.ExpiresAt = &deadline
+	if view.Error != nil {
+		diagnostic := *view.Error
+		view.Error = &diagnostic
+	}
 	view.Viewers = len(sh.viewers)
 	for _, viewer := range sh.viewers {
 		switch {
@@ -156,6 +160,7 @@ func (s *Service) Status(ctx context.Context, camera string) (api.ShareView, err
 	view := project(sh)
 	if !s.opts.Clock().Before(sh.deadline) {
 		view.State, view.Media = api.ShareExpired, api.ShareMediaIdle
+		view.Error = nil
 	}
 	return view, nil
 }
@@ -206,30 +211,13 @@ func (s *Service) Redeem(ctx context.Context, msg RedeemShare) (RedeemedGuest, e
 		return RedeemedGuest{}, fault(api.ShareInvalidInvitation)
 	}
 
-	// Reuse the cookie only if it already names a live server-issued session.
-	cookie := caller(ctx).cookie
-	hasCookie := false
-	if api.ValidShareID(string(cookie)) {
-		cookieHash := digest(string(cookie))
-		for key, guest := range s.guests {
-			if key.cookie == cookieHash && s.opts.Clock().Before(guest.deadline) {
-				hasCookie = true
-				break
-			}
-		}
-	}
-	if !hasCookie {
-		cookie = Secret(handle())
-	}
-	key := guestKey{share: msg.ShareID, cookie: digest(string(cookie))}
-	if _, exists := s.guests[key]; !exists && len(s.guests) >= maxGuests {
+	if len(s.guests) >= maxGuests {
 		return RedeemedGuest{}, fault(api.ShareViewerAtCapacity)
 	}
-	guest, ok := s.guests[key]
-	if !ok {
-		guest = guestState{csrf: Secret(handle()), deadline: sh.deadline}
-		s.guests[key] = guest
-	}
+	cookie := Secret(handle())
+	key := guestKey{share: msg.ShareID, cookie: digest(string(cookie))}
+	guest := guestState{csrf: Secret(handle())}
+	s.guests[key] = guest
 	return RedeemedGuest{Cookie: cookie, Result: api.RedeemShareResult{ExpiresAt: sh.deadline, CSRFToken: string(guest.csrf)}}, nil
 }
 

@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/goliatone/go-cam-stream/data/api"
+	"github.com/goliatone/go-cam-stream/internal/app/conversationhost"
 	"github.com/goliatone/go-cam-stream/internal/sharing"
 )
 
@@ -24,12 +26,18 @@ type AppRequest struct {
 	Config            *Config                   `json:"config,omitempty"`
 	PreviewGeneration string                    `json:"preview_generation,omitempty"`
 	Sharing           *api.NativeShareArguments `json:"sharing,omitempty"`
+	RoomID            string                    `json:"room_id,omitempty"`
+	InvitationURL     string                    `json:"invitation_url,omitempty"`
 }
 
+func (AppRequest) String() string   { return "[native app request redacted]" }
+func (AppRequest) GoString() string { return "[native app request redacted]" }
+
 type AppError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable *bool  `json:"retryable,omitempty"`
+	Code      string                `json:"code"`
+	Message   string                `json:"message"`
+	Retryable *bool                 `json:"retryable,omitempty"`
+	Setup     api.ConversationSetup `json:"setup,omitempty"`
 }
 type AppReply struct {
 	Version int       `json:"version"`
@@ -67,6 +75,17 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 	if d.Decode(new(any)) != io.EOF || r.Version != 1 || !safeID.MatchString(r.ID) {
 		return r, errors.New("invalid request")
 	}
+	if strings.HasPrefix(r.Method, "conversation_") {
+		request := api.NativeConversationRequest{Version: r.Version, ID: r.ID, Method: r.Method,
+			RoomID: r.RoomID, InvitationURL: r.InvitationURL}
+		if r.Config != nil || r.PreviewGeneration != "" || r.Sharing != nil || request.Validate() != nil {
+			return r, api.ErrInvalidConversationRequest
+		}
+		return r, nil
+	}
+	if r.RoomID != "" || r.InvitationURL != "" {
+		return r, errors.New("unexpected conversation payload")
+	}
 	if strings.HasPrefix(r.Method, "sharing_") {
 		request := api.NativeShareRequest{Version: r.Version, ID: r.ID, Method: r.Method, Sharing: r.Sharing}
 		if r.Config != nil || r.PreviewGeneration != "" || request.Validate() != nil {
@@ -103,15 +122,18 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 }
 
 type appSession struct {
-	service       *Service
-	encoder       *json.Encoder
-	run           func(context.Context) error
-	running       <-chan error
-	stop          context.CancelFunc
-	failure       *AppError
-	sharingInputs appSharingInputs
-	sharing       *appSharing
-	lastShare     *api.ShareView
+	service            *Service
+	encoder            *json.Encoder
+	run                func(context.Context) error
+	running            <-chan error
+	stop               context.CancelFunc
+	failure            *AppError
+	sharingInputs      appSharingInputs
+	sharing            *appSharing
+	lastShare          *api.ShareView
+	conversationAssets fs.FS
+	conversation       *conversationhost.Runtime
+	conversationGuest  *api.NativeConversationPrejoin
 }
 
 // AppSession binds all owned capture to the native parent's stdin pipe. EOF,
@@ -134,9 +156,11 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	defer in.Close() //nolint:errcheck // Unblock the protocol reader on shutdown.
 	a.sharing = a.startSharing(ctx)
 	defer func() { _ = a.sharing.close() }()
+	defer func() { a.conversation.Close() }()
+	defer func() { _ = a.releaseConversationGuest(context.WithoutCancel(ctx), "") }()
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1}
+	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion}
 	var updates <-chan time.Time
 	if a.sharing != nil {
 		ready.Sharing = api.ShareNativeVersion
@@ -179,6 +203,10 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 				if errors.Is(decodeErr, api.ErrInvalidSharingRequest) && safeID.MatchString(r.ID) {
 					reply.ID = r.ID
 					reply.Error = sharingAppError(decodeErr)
+				}
+				if errors.Is(decodeErr, api.ErrInvalidConversationRequest) && safeID.MatchString(r.ID) {
+					reply.ID = r.ID
+					reply.Error = conversationAppError(decodeErr)
 				}
 				if _, ok := errors.AsType[audioError](decodeErr); ok {
 					reply.ID = r.ID
@@ -291,6 +319,11 @@ func (a *appSession) startOwned(ctx context.Context) (any, *AppError) {
 func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError) {
 	if r.Method == "start" {
 		return a.startOwned(ctx)
+	}
+	if strings.HasPrefix(r.Method, "conversation_") {
+		// Create binds the listener to the owner pipe. The remote redemption
+		// operation applies its own timeout inside the conversation adapter.
+		return a.dispatchConversation(ctx, r)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()

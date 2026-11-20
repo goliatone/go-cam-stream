@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/data/api"
 )
 
@@ -19,7 +18,8 @@ type localIngress struct{}
 func (localIngress) Start(context.Context) (IngressBinding, error) {
 	return IngressBinding{Origin: "https://share.example.test", Audience: api.SharePublicAudience}, nil
 }
-func (localIngress) Stop(context.Context) error { return nil }
+func (localIngress) Stop(context.Context) error  { return nil }
+func (localIngress) Check(context.Context) error { return nil }
 
 type testMedia struct {
 	opened atomic.Int32
@@ -60,22 +60,14 @@ func newSharingTest(t *testing.T, media Media) (*Service, *atomic.Int64) {
 func TestSharingDispatchAndLifecycle(t *testing.T) {
 	media := &testMedia{}
 	s, clock := newSharingTest(t, media)
-	bus := admin.NewCommandBus(true)
-	reg, err := Register(bus, s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := reg.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	commands := NewCommands(s)
+	t.Cleanup(commands.Close)
 	ctx := WithOperator(context.Background())
 	request := CreateShare{CreateShareRequest: api.CreateShareRequest{CameraID: "camera"}}
-	if _, err := Dispatch[api.CreateShareResult](context.Background(), bus, request); err == nil {
+	if _, err := Dispatch[api.CreateShareResult](context.Background(), commands, request); err == nil {
 		t.Fatal("non-operator created a share")
 	}
-	created, err := Dispatch[api.CreateShareResult](ctx, bus, request)
+	created, err := Dispatch[api.CreateShareResult](ctx, commands, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,13 +83,13 @@ func TestSharingDispatchAndLifecycle(t *testing.T) {
 		t.Fatal("invitation secret was not a fragment")
 	}
 	redeem := RedeemShare{ShareRef: ref, RedeemShareRequest: api.RedeemShareRequest{Invitation: u.Fragment}}
-	first, err := Dispatch[RedeemedGuest](context.Background(), bus, redeem)
+	first, err := Dispatch[RedeemedGuest](context.Background(), commands, redeem)
 	if err != nil {
 		t.Fatal(err)
 	}
 	again, err := s.Redeem(WithGuest(context.Background(), first.Cookie, ""), redeem)
-	if err != nil || again.Result.CSRFToken != first.Result.CSRFToken || again.Cookie != first.Cookie {
-		t.Fatal("browser readmission invalidated the first tab")
+	if err != nil || again.Result.CSRFToken == first.Result.CSRFToken || again.Cookie == first.Cookie {
+		t.Fatal("redemption did not isolate the second tab")
 	}
 	guest := WithGuest(context.Background(), first.Cookie, Secret(first.Result.CSRFToken))
 	if _, err = s.AdmitViewer(WithGuest(context.Background(), first.Cookie, "wrong"), AdmitShareViewer{ShareRef: ref}); err == nil {
@@ -137,6 +129,11 @@ func TestSharingDispatchAndLifecycle(t *testing.T) {
 	if _, err = s.OpenViewer(guest, OpenShareViewer{ShareViewerRef: viewer, OpenShareViewerRequest: api.OpenShareViewerRequest{ShareViewerAttempt: next, Offer: offer}}); err != nil {
 		t.Fatal(err)
 	}
+	s.MediaLive(ViewerAttempt{ShareID: ref.ShareID, ViewerID: viewer.ViewerID, AttemptID: retry.AttemptID})
+	clock.Add(30)
+	if err := s.Sweep(ctx); err != nil || media.closed.Load() != 1 {
+		t.Fatal("replacement media that went live was evicted at the old reconnect deadline")
+	}
 	clock.Store(created.Share.ExpiresAt.Unix())
 	if _, err = s.AdmitViewer(guest, AdmitShareViewer{ShareRef: ref}); err != fault(api.ShareExpiryReached) {
 		t.Fatal("expiry failed to deny admission")
@@ -150,6 +147,56 @@ func TestSharingDispatchAndLifecycle(t *testing.T) {
 	fresh, err := s.Create(ctx, request)
 	if err != nil || fresh.Share.ShareID == ref.ShareID {
 		t.Fatal("new share reused a generation")
+	}
+}
+
+func TestReconnectCannotExtendKeptPlace(t *testing.T) {
+	media := &testMedia{}
+	s, clock := newSharingTest(t, media)
+	ctx := WithOperator(t.Context())
+	created, err := s.Create(ctx, CreateShare{CreateShareRequest: api.CreateShareRequest{CameraID: "camera"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := api.ShareRef{ShareID: created.Share.ShareID}
+	link, err := url.Parse(created.Link.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redeemed, err := s.Redeem(t.Context(), RedeemShare{ShareRef: ref, RedeemShareRequest: api.RedeemShareRequest{Invitation: link.Fragment}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := WithGuest(t.Context(), redeemed.Cookie, Secret(redeemed.Result.CSRFToken))
+	first, err := s.AdmitViewer(guest, AdmitShareViewer{ShareRef: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := ShareViewerRef{ShareRef: ref, ViewerID: first.ViewerID}
+	offer := api.SDPOffer{Type: "offer", SDP: "v=0\r\n"}
+	open := func(attempt string) error {
+		_, err := s.OpenViewer(guest, OpenShareViewer{ShareViewerRef: viewer, OpenShareViewerRequest: api.OpenShareViewerRequest{
+			ShareViewerAttempt: api.ShareViewerAttempt{AttemptID: attempt}, Offer: offer}})
+		return err
+	}
+	if err := open(first.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	s.TransportLost(ViewerAttempt{ShareID: ref.ShareID, ViewerID: first.ViewerID, AttemptID: first.AttemptID})
+	clock.Add(29)
+	retry, err := s.AdmitViewer(guest, AdmitShareViewer{ShareRef: ref, AdmitShareViewerRequest: api.AdmitShareViewerRequest{ViewerID: first.ViewerID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Add(1)
+	if err := open(retry.AttemptID); err != fault(api.ShareStaleAttempt) {
+		t.Fatalf("replacement offer accepted at the reconnect deadline: %v", err)
+	}
+	if err := s.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := s.AdmitViewer(guest, AdmitShareViewer{ShareRef: ref}); err != nil || fresh.ViewerID == first.ViewerID {
+		t.Fatalf("expired reconnect held the only slot: %v", err)
 	}
 }
 

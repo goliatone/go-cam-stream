@@ -31,7 +31,15 @@ func TestExternalIngressViaTLSProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy := httptest.NewTLSServer(httputil.NewSingleHostReverseProxy(target))
+	reverse := httputil.NewSingleHostReverseProxy(target)
+	var routeDown atomic.Bool
+	proxy := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if routeDown.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		reverse.ServeHTTP(w, r)
+	}))
 	defer proxy.Close()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	disabled, err := NewExternalIngress(config.SharingIngress{}, handler, nil)
@@ -81,6 +89,35 @@ func TestExternalIngressViaTLSProxy(t *testing.T) {
 		if response.StatusCode != tc.status {
 			t.Fatalf("status %d want %d", response.StatusCode, tc.status)
 		}
+	}
+	service, _ := newSharingTest(t, &testMedia{})
+	service.opts.Ingress = ingress
+	owner := WithOperator(t.Context())
+	request := CreateShare{CreateShareRequest: api.CreateShareRequest{CameraID: "camera"}}
+	first, err := service.Create(owner, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeDown.Store(true)
+	service.checkIngress(t.Context())
+	if view, err := service.Status(owner, "camera"); err != nil || view.State != api.ShareDegraded {
+		t.Fatalf("unreachable route projected as %s: %v", view.State, err)
+	}
+	routeDown.Store(false)
+	service.checkIngress(t.Context())
+	if view, err := service.Status(owner, "camera"); err != nil || view.State != api.ShareAvailable {
+		t.Fatalf("recovered route projected as %s: %v", view.State, err)
+	}
+	if _, err := service.Revoke(owner, RevokeShare{ShareRef: api.ShareRef{ShareID: first.Share.ShareID}}); err != nil {
+		t.Fatal(err)
+	}
+	routeDown.Store(true)
+	if _, err := service.Create(owner, request); err != fault(api.ShareIngressUnavailable) {
+		t.Fatalf("issued a fresh link through an unreachable proxy: %v", err)
+	}
+	routeDown.Store(false)
+	if fresh, err := service.Create(owner, request); err != nil || fresh.Share.ShareID == first.Share.ShareID {
+		t.Fatalf("route recovery did not produce a fresh invitation: %v", err)
 	}
 	if err := ingress.Stop(t.Context()); err != nil {
 		t.Fatal(err)

@@ -3,9 +3,11 @@ package sharing
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,64 @@ import (
 	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
 )
+
+func TestMediaObserverToleratesMissedPollAndReportsRecovery(t *testing.T) {
+	var polls atomic.Uint64
+	var frozen atomic.Bool
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		poll := polls.Add(1)
+		if poll == 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		packets := poll
+		if frozen.Load() {
+			packets = 0
+		}
+		_ = json.NewEncoder(w).Encode(map[string]uint64{"outboundRTPPackets": packets})
+	}))
+	defer control.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	events := make(chan string, 4)
+	m := MediaRuntime{ctx: ctx, client: control.Client(), opts: MediaRuntimeOptions{
+		OnLive: func(ViewerAttempt) { events <- "live" },
+		OnLost: func(ViewerAttempt) { events <- "lost" },
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.observe(&runtimePeer{worker: &mediaProcess{done: make(chan struct{})}}, control.URL)
+	}()
+	defer func() { cancel(); <-done }()
+	expect := func(want string) {
+		t.Helper()
+		select {
+		case got := <-events:
+			if got != want {
+				t.Fatalf("media health %q, want %q", got, want)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatalf("media health did not report %s", want)
+		}
+	}
+	expect("live")
+	for deadline := time.Now().Add(time.Second); polls.Load() < 3; {
+		if time.Now().After(deadline) {
+			t.Fatal("observer did not continue polling after the 503")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case got := <-events:
+		t.Fatalf("single missed poll changed media status to %s", got)
+	default:
+	}
+	frozen.Store(true)
+	expect("lost")
+	frozen.Store(false)
+	expect("live")
+}
 
 func fixtureMedia(t *testing.T, tools string) (*MediaRuntime, string) {
 	t.Helper()

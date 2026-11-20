@@ -1,0 +1,94 @@
+{
+  "waiting": {
+    "room_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "version": 1,
+    "state": "waiting",
+    "generation": 1,
+    "expires_at": "2026-11-19T16:00:00Z",
+    "participants": [
+      {
+        "role": "host",
+        "joined": false,
+        "publication": {
+          "microphone": false,
+          "camera": false
+        }
+      }
+    ]
+  },
+  "connected": {
+    "room_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "version": 1,
+    "state": "connected",
+    "generation": 1,
+    "expires_at": "2026-11-19T16:00:00Z",
+    "participants": [
+      {
+        "role": "host",
+        "joined": true,
+        "publication": {
+          "microphone": true,
+          "camera": true
+        }
+      },
+      {
+        "role": "guest",
+        "joined": true,
+        "publication": {
+          "microphone": true,
+          "camera": false
+        }
+      }
+    ]
+  },
+  "reconnecting": {
+    "room_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "version": 1,
+    "state": "reconnecting",
+    "generation": 2,
+    "expires_at": "2026-11-19T16:00:00Z",
+    "participants": [
+      {
+        "role": "host",
+        "joined": true,
+        "publication": {
+          "microphone": true,
+          "camera": true
+        }
+      }
+    ]
+  },
+  "ended": {
+    "room_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "version": 1,
+    "state": "ended",
+    "generation": 2,
+    "expires_at": "2026-11-19T16:00:00Z",
+    "participants": []
+  },
+  "full": {
+    "error": {
+      "code": "room_full",
+      "retryable": true
+    }
+  },
+  "denied": {
+    "error": {
+      "code": "permission_denied",
+      "retryable": false
+    }
+  },
+  "incompatible": {
+    "error": {
+      "code": "incompatible_client",
+      "retryable": false
+    }
+  },
+  "setup_missing": {
+    "error": {
+      "code": "media_unreachable",
+      "retryable": false,
+      "setup": "not_configured"
+    }
+  }
+}

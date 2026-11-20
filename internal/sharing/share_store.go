@@ -19,8 +19,7 @@ type shareState struct {
 }
 
 type guestState struct {
-	csrf     Secret
-	deadline time.Time
+	csrf Secret
 }
 
 type terminalShare struct {

@@ -125,7 +125,9 @@ func (m *MediaRuntime) observe(peer *runtimePeer, control string) {
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 	var lastPackets uint64
-	var lastMedia time.Time
+	lastProgress := time.Now()
+	firstPacket := false
+	lost := false
 	for {
 		select {
 		case <-peer.worker.done:
@@ -140,17 +142,23 @@ func (m *MediaRuntime) observe(peer *runtimePeer, control string) {
 		ctx, cancel := context.WithTimeout(m.ctx, 200*time.Millisecond)
 		packets, ok := m.packets(ctx, peer, control)
 		cancel()
-		if !ok || (!lastMedia.IsZero() && time.Since(lastMedia) > 2*time.Second) {
+		if ok && packets > lastPackets {
+			if (!firstPacket || lost) && m.opts.OnLive != nil {
+				m.opts.OnLive(peer.scope)
+			}
+			firstPacket, lost = true, false
+			lastPackets, lastProgress = packets, time.Now()
+			continue
+		}
+		grace := negotiationTimeout
+		if firstPacket {
+			grace = 2 * time.Second
+		}
+		if !lost && time.Since(lastProgress) >= grace {
+			lost = true
 			if m.opts.OnLost != nil {
 				m.opts.OnLost(peer.scope)
 			}
-			return
-		}
-		if packets > lastPackets {
-			if lastMedia.IsZero() && m.opts.OnLive != nil {
-				m.opts.OnLive(peer.scope)
-			}
-			lastPackets, lastMedia = packets, time.Now()
 		}
 	}
 }

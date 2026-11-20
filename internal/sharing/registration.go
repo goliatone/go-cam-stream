@@ -2,13 +2,13 @@ package sharing
 
 import (
 	"context"
+	"sync"
 
-	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/data/api"
 	"github.com/goliatone/go-command"
+	"github.com/goliatone/go-command/dispatcher"
+	"github.com/goliatone/go-command/runner"
 )
-
-type commandInput struct{}
 
 type sharingMessage interface {
 	command.Message
@@ -20,82 +20,71 @@ type commandHandler[M sharingMessage, R any] struct {
 }
 
 func (h commandHandler[M, R]) Execute(ctx context.Context, msg M) error {
+	result := command.ResultFromContext[R](ctx)
+	if result == nil {
+		return fault(api.ShareInvalidRequest)
+	}
 	value, err := h.run(ctx, msg)
-	if result := command.ResultFromContext[R](ctx); result != nil {
-		if err != nil {
-			result.StoreError(err)
-		} else {
-			result.Store(value)
-		}
+	if err != nil {
+		result.StoreError(err)
+	} else {
+		result.Store(value)
 	}
 	return err
 }
 
-func registerCommand[M sharingMessage, R any](set *admin.CommandRegistrationSet, msg M, run func(context.Context, M) (R, error)) error {
-	if err := admin.RegisterSetCommand(set, commandHandler[M, R]{run: run}); err != nil {
-		return err
-	}
-	return admin.RegisterSetContextMessageResultFactory[M, R](set, msg.Type(), func(ctx context.Context, payload map[string]any, ids []string) (M, error) {
-		input, ok := ctx.Value(commandInput{}).(M)
-		if !ok || len(payload) != 0 || len(ids) != 0 {
-			var zero M
-			return zero, fault(api.ShareInvalidRequest)
-		}
-		return input, input.Validate()
-	})
+// Commands owns an isolated go-command runtime for one native sharing service.
+type Commands struct {
+	runtime *dispatcher.Runtime
+	subs    []dispatcher.Subscription
+	close   sync.Once
 }
 
-// Dispatch keeps secrets and request authority out of the named bus payload.
-func Dispatch[R any](ctx context.Context, bus *admin.CommandBus, msg sharingMessage) (R, error) {
+func registerCommand[M sharingMessage, R any](commands *Commands, run func(context.Context, M) (R, error)) {
+	sub := dispatcher.SubscribeCommandTo(commands.runtime, commandHandler[M, R]{run: run}, runner.WithMaxRetries(0))
+	commands.subs = append(commands.subs, sub)
+}
+
+// Dispatch uses the typed local message directly. No transport registers
+// these commands globally or converts their private fields to a generic map.
+func Dispatch[R any](ctx context.Context, commands *Commands, msg sharingMessage) (R, error) {
 	var empty R
-	if bus == nil {
+	if commands == nil {
 		return empty, fault(api.ShareInvalidRequest)
 	}
-	outcome, err := bus.DispatchByNameWithOutcome(context.WithValue(ctx, commandInput{}, msg), msg.Type(), nil, nil, command.DispatchOptions{Mode: command.ExecutionModeInline})
+	result := command.NewResult[R]()
+	err := dispatcher.DispatchTo(command.ContextWithResult(ctx, result), commands.runtime, msg)
+	if failure := result.Error(); failure != nil {
+		return empty, failure
+	}
 	if err != nil {
 		return empty, err
 	}
-	if err := admin.CommandResultFailure(outcome.Result); err != nil {
-		return empty, err
-	}
-	result, ok := outcome.Result.(R)
-	if !ok {
+	value, stored := result.Load()
+	if !stored {
 		return empty, fault(api.ShareInvalidRequest)
 	}
-	return result, nil
+	return value, nil
 }
 
-// Register publishes sharing commands owned by the host's local bus.
-func Register(bus *admin.CommandBus, service Workflows) (admin.CommandRegistrationHandle, error) {
-	if bus == nil || service == nil {
-		return nil, fault(api.ShareInvalidRequest)
-	}
-	set, err := bus.NewRegistrationSet("camstream.sharing")
-	if err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, CreateShare{}, service.Create); err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, CopyShareLink{}, service.CopyLink); err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, RevokeShare{}, service.Revoke); err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, RedeemShare{}, service.Redeem); err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, AdmitShareViewer{}, service.AdmitViewer); err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, OpenShareViewer{}, service.OpenViewer); err != nil {
-		return nil, err
-	}
-	if err := registerCommand(set, CloseShareViewer{}, func(ctx context.Context, msg CloseShareViewer) (struct{}, error) {
+func NewCommands(service Workflows) *Commands {
+	commands := &Commands{runtime: dispatcher.NewRuntime()}
+	registerCommand(commands, service.Create)
+	registerCommand(commands, service.CopyLink)
+	registerCommand(commands, service.Revoke)
+	registerCommand(commands, service.Redeem)
+	registerCommand(commands, service.AdmitViewer)
+	registerCommand(commands, service.OpenViewer)
+	registerCommand(commands, func(ctx context.Context, msg CloseShareViewer) (struct{}, error) {
 		return struct{}{}, service.CloseViewer(ctx, msg)
-	}); err != nil {
-		return nil, err
-	}
-	return set.Commit()
+	})
+	return commands
+}
+
+func (c *Commands) Close() {
+	c.close.Do(func() {
+		for _, sub := range c.subs {
+			sub.Unsubscribe()
+		}
+	})
 }

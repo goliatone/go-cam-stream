@@ -1,4 +1,4 @@
-package httptransport
+package shareguest
 
 import (
 	"encoding/json"
@@ -8,9 +8,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
-	"time"
 
-	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/data/api"
 	"github.com/goliatone/go-cam-stream/internal/sharing"
 	"golang.org/x/time/rate"
@@ -18,17 +16,17 @@ import (
 
 var guestAssetName = regexp.MustCompile(`^[A-Za-z0-9_-]+\.(?:js|css|svg|woff2|png|webp)$`)
 
-// GuestSharing mounts only the standalone guest artifact and scoped API.
+// New mounts only the standalone guest artifact and scoped API.
 // ExternalIngress supplies the TLS origin and host boundary.
-func GuestSharing(assets fs.FS, bus *admin.CommandBus) (http.Handler, error) {
-	if assets == nil || bus == nil {
+func New(assets fs.FS, commands *sharing.Commands) (http.Handler, error) {
+	if assets == nil || commands == nil {
 		return nil, api.ErrInvalidSharingRequest
 	}
 	entry, err := fs.ReadFile(assets, api.ShareAssetEntry)
 	if err != nil || len(entry) == 0 || len(entry) > 256*1024 {
 		return nil, api.ErrInvalidSharingRequest
 	}
-	handler := guestSharing{bus: bus, limiter: rate.NewLimiter(6, 24)}
+	handler := guestSharing{commands: commands, limiter: rate.NewLimiter(6, 24)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+api.SharePagePath, func(w http.ResponseWriter, r *http.Request) {
 		if !api.ValidShareID(r.PathValue("share_id")) {
@@ -73,8 +71,8 @@ func GuestSharing(assets fs.FS, bus *admin.CommandBus) (http.Handler, error) {
 }
 
 type guestSharing struct {
-	bus     *admin.CommandBus
-	limiter *rate.Limiter
+	commands *sharing.Commands
+	limiter  *rate.Limiter
 }
 
 func shareRef(r *http.Request) api.ShareRef { return api.ShareRef{ShareID: r.PathValue("share_id")} }
@@ -82,11 +80,14 @@ func shareViewerRef(r *http.Request) sharing.ShareViewerRef {
 	return sharing.ShareViewerRef{ShareRef: shareRef(r), ViewerID: r.PathValue("viewer_id")}
 }
 func guestAuthority(r *http.Request) *http.Request {
-	var value string
-	if cookie, err := r.Cookie(api.ShareGuestCookieName); err == nil {
-		value = cookie.Value
+	csrf := r.Header.Get(api.ShareCSRFHeader)
+	var value sharing.Secret
+	if api.ValidShareID(csrf) {
+		if cookie, err := r.Cookie(api.ShareGuestCookiePrefix + csrf); err == nil {
+			value = sharing.Secret(cookie.Value)
+		}
 	}
-	return r.WithContext(sharing.WithGuest(r.Context(), sharing.Secret(value), sharing.Secret(r.Header.Get(api.ShareCSRFHeader))))
+	return r.WithContext(sharing.WithGuest(r.Context(), value, sharing.Secret(csrf)))
 }
 
 func readSharingJSON(w http.ResponseWriter, r *http.Request, out any, limit int64) bool {
@@ -110,15 +111,15 @@ func (h guestSharing) redeem(w http.ResponseWriter, r *http.Request) {
 		writeShareError(w, api.ErrInvalidSharingRequest)
 		return
 	}
-	result, err := sharing.Dispatch[sharing.RedeemedGuest](guestAuthority(r).Context(), h.bus, sharing.RedeemShare{ShareRef: shareRef(r), RedeemShareRequest: request})
+	result, err := sharing.Dispatch[sharing.RedeemedGuest](r.Context(), h.commands, sharing.RedeemShare{ShareRef: shareRef(r), RedeemShareRequest: request})
 	if err != nil {
 		writeShareError(w, err)
 		return
 	}
-	// Cookie validity is server-side. A later response for a shorter share
-	// cannot expire the shared browser cookie used by an unrelated share.
-	http.SetCookie(w, &http.Cookie{Name: api.ShareGuestCookieName, Value: string(result.Cookie), Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, Expires: time.Now().Add(8 * time.Hour)})
+	// Each page selects its own cookie using its in-memory CSRF token, so two
+	// first visits cannot overwrite each other's browser authority.
+	http.SetCookie(w, &http.Cookie{Name: api.ShareGuestCookiePrefix + result.Result.CSRFToken, Value: string(result.Cookie), Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, Expires: result.Result.ExpiresAt.Add(api.ShareReconnectWindow)})
 	writeShareJSON(w, http.StatusOK, result.Result)
 }
 
@@ -132,7 +133,7 @@ func (h guestSharing) admit(w http.ResponseWriter, r *http.Request) {
 		writeShareError(w, api.ErrInvalidSharingRequest)
 		return
 	}
-	result, err := sharing.Dispatch[api.AdmitShareViewerResult](guestAuthority(r).Context(), h.bus, sharing.AdmitShareViewer{ShareRef: shareRef(r), AdmitShareViewerRequest: request})
+	result, err := sharing.Dispatch[api.AdmitShareViewerResult](guestAuthority(r).Context(), h.commands, sharing.AdmitShareViewer{ShareRef: shareRef(r), AdmitShareViewerRequest: request})
 	if err != nil {
 		writeShareError(w, err)
 		return
@@ -146,7 +147,7 @@ func (h guestSharing) offer(w http.ResponseWriter, r *http.Request) {
 		writeShareError(w, api.ErrInvalidSharingRequest)
 		return
 	}
-	result, err := sharing.Dispatch[api.OpenShareViewerResult](guestAuthority(r).Context(), h.bus, sharing.OpenShareViewer{ShareViewerRef: shareViewerRef(r), OpenShareViewerRequest: request})
+	result, err := sharing.Dispatch[api.OpenShareViewerResult](guestAuthority(r).Context(), h.commands, sharing.OpenShareViewer{ShareViewerRef: shareViewerRef(r), OpenShareViewerRequest: request})
 	if err != nil {
 		writeShareError(w, err)
 		return
@@ -160,7 +161,7 @@ func (h guestSharing) close(w http.ResponseWriter, r *http.Request) {
 		writeShareError(w, api.ErrInvalidSharingRequest)
 		return
 	}
-	if _, err := sharing.Dispatch[struct{}](guestAuthority(r).Context(), h.bus, sharing.CloseShareViewer{ShareViewerRef: shareViewerRef(r), ShareViewerAttempt: request}); err != nil {
+	if _, err := sharing.Dispatch[struct{}](guestAuthority(r).Context(), h.commands, sharing.CloseShareViewer{ShareViewerRef: shareViewerRef(r), ShareViewerAttempt: request}); err != nil {
 		writeShareError(w, err)
 		return
 	}
