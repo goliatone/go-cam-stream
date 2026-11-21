@@ -25,9 +25,10 @@ type Decoded struct {
 	Endpoint string
 }
 type CatalogCamera struct {
-	Camera  cs.Camera
-	Streams []cs.Stream
-	Sources map[cs.StreamID]cs.SourceKey
+	Camera       cs.Camera
+	Streams      []cs.Stream
+	Sources      map[cs.StreamID]cs.SourceKey
+	ManagedOwner string `json:"-"` // set only by the host's managed overlay
 }
 type Catalog struct {
 	Cameras []CatalogCamera

@@ -23,6 +23,11 @@ function fixture(){
   capabilities:vi.fn(async()=>currentCaps),draft:vi.fn(async()=>structuredClone(draft)),
   operation:vi.fn(async (key:string):Promise<OperationResult>=>operations.get(key)??{operation_key:key,kind:"create",state:"not_found",runtime_epoch:"epoch"}),
   create:vi.fn(async request=>done("create",request,structuredClone(draft))),
+  credentialDraft:vi.fn(async request=>{
+    draft={...draft,candidate_id:request.camera_id,credential_update:true,state:"ready",warnings:[]};
+    delete draft.test;
+    return done("create",request,structuredClone(draft));
+  }),
   import:vi.fn(async request=>done("import",request,structuredClone(draft))),
   patch:vi.fn(async(_id,request)=>{draft={...draft,revision:draft.revision+1,state:"ready"};delete draft.test;return done("patch",request,structuredClone(draft))}),
   cancel:vi.fn(async(_id,request)=>{draft={...draft,state:"canceled"};return done("cancel",request,structuredClone(draft))}),
@@ -60,6 +65,28 @@ it("recovers a lost preview negotiation and cancels it without opening a second 
  const f=fixture(),c=f.build();await c.init();await c.submit(input);f.drop.add("test");await c.test(document.createElement("video"));
  expect(f.api.test).toHaveBeenCalledOnce();expect(c.view.phase).toBe("testing");
  f.drop.add("cancel_test");await c.cancelTest();expect(f.api.cancelTest).toHaveBeenCalledOnce();expect(c.view.draft?.state).toBe("ready");expect(c.view.unresolved).toBe(false);
+});
+it("opens the authorized duplicate camera and recovers a lost credential draft without replaying the password", async () => {
+ const f=fixture(),c=f.build();await c.init();await c.submit(input);
+ vi.mocked(f.api.test).mockImplementationOnce(async (_id, request) => {
+  f.operations.set(request.operation_key,{operation_key:request.operation_key,kind:"test",state:"not_committed",runtime_epoch:"epoch",
+    error:{code:"duplicate_camera",message:"Address in use",retryable:false,camera_id:"existing"}});
+  throw new ManagementFailure();
+ });
+ await c.test(document.createElement("video"));
+ expect(c.view.duplicateCamera).toBe("existing");
+ await c.openCredentials({id:c.view.duplicateCamera!});
+ expect(f.api.cancel).toHaveBeenCalledOnce();
+ expect(c.view.draft).toBeUndefined();
+ f.drop.add("create");
+ await c.submitCredentials({username:"",password:"replacement-secret"});
+ expect(f.api.credentialDraft).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+  camera_id:"existing",credentials:{username:"",password:"replacement-secret"},
+ }));
+ expect(c.view.draft?.credential_update).toBe(true);
+ expect(c.view.draft?.candidate_id).toBe("existing");
+ expect(c.view.unresolved).toBe(false);
+ expect(sessionStorage.getItem(RECOVERY_STORAGE_KEY)).not.toContain("replacement-secret");
 });
 it("recovers a durable Save after reload even with a different epoch and no management permission",async()=>{
  const f=fixture(),c=f.build();await c.init();await c.submit(input);await c.test(document.createElement("video"));await c.save();

@@ -66,6 +66,7 @@ function catalog(value: unknown): CameraList {
         !object(camera) ||
         !id(camera.id) ||
         cameraIDs.has(camera.id) ||
+        (camera.can_update_credentials !== undefined && typeof camera.can_update_credentials !== "boolean") ||
         typeof camera.name !== "string" ||
         !state(camera.availability) ||
         !Array.isArray(camera.streams)
@@ -74,6 +75,7 @@ function catalog(value: unknown): CameraList {
       cameraIDs.add(camera.id);
       const streamIDs = new Set<string>();
       return {
+        ...(camera.can_update_credentials === true ? { can_update_credentials: true } : {}),
         id: camera.id,
         name: camera.name,
         availability: camera.availability,

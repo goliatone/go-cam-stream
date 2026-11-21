@@ -2,6 +2,8 @@ package config
 
 import (
 	"net/netip"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -13,11 +15,39 @@ type Conversations struct {
 	RelayOnly      bool           `koanf:"relay_only" json:"relay_only,omitempty"`
 	Loopback       bool           `koanf:"loopback" json:"loopback,omitempty"`
 	TrustedOrigins []string       `koanf:"trusted_origins" json:"trusted_origins,omitempty"`
+	Connector      *CallConnector `koanf:"connector" json:"connector,omitempty"`
+}
+
+// CallConnector describes one already provisioned public tunnel binding.
+// The connector credential lives in a separate private file.
+type CallConnector struct {
+	TunnelID     string `json:"tunnel_id"`
+	PublicOrigin string `json:"public_origin"`
+	Upstream     string `json:"upstream"`
+	Metrics      string `json:"metrics"`
+	Cloudflared  string `json:"cloudflared"`
+}
+
+var tunnelUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func (c CallConnector) Validate(ingress SharingIngress) error {
+	origin, err := ingress.PublicOrigin()
+	metrics, metricsErr := netip.ParseAddrPort(c.Metrics)
+	if err != nil || origin != c.PublicOrigin || c.Upstream != ingress.GuestListen ||
+		metricsErr != nil || metrics.Addr().String() != "127.0.0.1" || metrics.Port() == 0 ||
+		c.Metrics == c.Upstream || !tunnelUUID.MatchString(c.TunnelID) ||
+		!filepath.IsAbs(c.Cloudflared) || filepath.Clean(c.Cloudflared) != c.Cloudflared {
+		return invalid()
+	}
+	return nil
 }
 
 func (c Conversations) Validate() error {
 	network := (Sharing{Ingress: c.Ingress, Relay: c.Relay}).WithDefaults()
 	if c.Loopback && network.Ingress.Mode != SharingIngressDisabled {
+		return invalid()
+	}
+	if c.Connector != nil && (c.Loopback || c.Connector.Validate(c.Ingress) != nil) {
 		return invalid()
 	}
 	if c.RelayOnly && network.Relay.Mode == SharingRelayDisabled {

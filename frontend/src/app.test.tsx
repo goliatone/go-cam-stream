@@ -470,6 +470,15 @@ describe("addressable views and tab state", () => {
     expect(icon()).toContain("favicon-danger");
   });
 
+  it("shows the app icon as the header brand mark", () => {
+    render(<App catalog={catalog} viewer={input()} />);
+    const brand = screen.getByRole("link", { name: "Camstream viewer" });
+    const mark = brand.querySelector("img.brand-mark")!;
+    expect(mark.getAttribute("src")).toContain("app-icon");
+    expect(mark.getAttribute("alt")).toBe("");
+    expect(brand.querySelector("svg")).toBeNull();
+  });
+
   it("offers Play when live video is paused", async () => {
     const user = userEvent.setup();
     const viewer = input();

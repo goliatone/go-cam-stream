@@ -25,6 +25,7 @@ const (
 	CodeIdentityUnverified         ManagementErrorCode = "identity_unverified"
 	CodeDuplicateCamera            ManagementErrorCode = "duplicate_camera"
 	CodeCredentialsRequired        ManagementErrorCode = "credentials_required"
+	CodeCredentialsChanged         ManagementErrorCode = "credentials_changed"
 	CodeImportInvalid              ManagementErrorCode = "import_invalid"
 	CodeEvidenceUnavailable        ManagementErrorCode = "playback_evidence_unavailable"
 	CodeEvidenceInsufficient       ManagementErrorCode = "playback_evidence_insufficient"
@@ -34,6 +35,7 @@ type ManagementErrorBody struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
+	CameraID  string `json:"camera_id,omitempty"`
 }
 type ManagementErrorResponse struct {
 	Error ManagementErrorBody `json:"error"`
@@ -42,13 +44,20 @@ type ManagementErrorResponse struct {
 // ManagementError renders only an allowlisted code/message. A command boundary
 // may retain a cause for errors.Is/As; it is never included in public responses.
 type ManagementError struct {
-	Code  ManagementErrorCode
-	cause error
+	Code     ManagementErrorCode
+	cause    error
+	cameraID string
 }
 
 func (e *ManagementError) Error() string               { return managementErrorBody(e.Code).Message }
 func ManagementFailure(code ManagementErrorCode) error { return &ManagementError{Code: code} }
-func (e *ManagementError) Unwrap() error               { return e.cause }
+
+// DuplicateManagedCamera is used after authorization to open this camera's settings.
+func DuplicateManagedCamera(id string) error {
+	return &ManagementError{Code: CodeDuplicateCamera, cameraID: id}
+}
+
+func (e *ManagementError) Unwrap() error { return e.cause }
 
 // ManagementCommandFailure preserves the public domain classification across
 // structured dispatcher wrappers without exposing their messages or metadata.
@@ -56,61 +65,68 @@ func ManagementCommandFailure(err error) error {
 	if err == nil {
 		return nil
 	}
-	return &ManagementError{Code: ManagementErrorCode(ManagementPublicError(err).Error.Code), cause: err}
+	body := ManagementPublicError(err).Error
+	return &ManagementError{Code: ManagementErrorCode(body.Code), cause: err, cameraID: body.CameraID}
 }
 func managementErrorBody(code ManagementErrorCode) ManagementErrorBody {
 	switch code {
 	case CodeDraftLost:
-		return ManagementErrorBody{string(code), "This draft was lost when the server restarted. Re-enter the camera.", false}
+		return ManagementErrorBody{Code: string(code), Message: "This draft was lost when the server restarted. Re-enter the camera.", Retryable: false}
 	case CodeDraftExpired:
-		return ManagementErrorBody{string(code), "This draft has expired. Create a new draft.", false}
+		return ManagementErrorBody{Code: string(code), Message: "This draft has expired. Create a new draft.", Retryable: false}
 	case CodeTestExpired:
-		return ManagementErrorBody{string(code), "Test the current draft again before saving.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Test the current draft again before saving.", Retryable: false}
 	case CodeRevisionConflict:
-		return ManagementErrorBody{string(code), "Refresh the current draft before continuing.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Refresh the current draft before continuing.", Retryable: false}
 	case CodeCatalogConflict:
-		return ManagementErrorBody{string(code), "Refresh the catalog before explicitly rebasing this save.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Refresh the catalog before explicitly rebasing this save.", Retryable: false}
 	case CodeOperationConflict:
-		return ManagementErrorBody{string(code), "This operation key already identifies a different request.", false}
+		return ManagementErrorBody{Code: string(code), Message: "This operation key already identifies a different request.", Retryable: false}
 	case CodeOperationInProgress:
-		return ManagementErrorBody{string(code), "Wait for the current operation to finish.", true}
+		return ManagementErrorBody{Code: string(code), Message: "Wait for the current operation to finish.", Retryable: true}
 	case CodeSaveUnknown:
-		return ManagementErrorBody{string(code), "The save outcome is unknown. Look up the original operation.", true}
+		return ManagementErrorBody{Code: string(code), Message: "The save outcome is unknown. Look up the original operation.", Retryable: true}
 	case CodeStorageUnavailable:
-		return ManagementErrorBody{string(code), "Private camera storage is unavailable.", true}
+		return ManagementErrorBody{Code: string(code), Message: "Private camera storage is unavailable.", Retryable: true}
 	case CodeRecoveryStorageUnavailable:
-		return ManagementErrorBody{string(code), "Enable browser site storage before managing cameras.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Enable browser site storage before managing cameras.", Retryable: false}
 	case CodeReceiptExpired:
-		return ManagementErrorBody{string(code), "Resolve the original camera creation before starting another save.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Resolve the original camera creation before starting another save.", Retryable: false}
 	case CodeRecoveryLost:
-		return ManagementErrorBody{string(code), "Refresh source status before explicitly reconnecting again.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Refresh source status before explicitly reconnecting again.", Retryable: false}
 	case CodeDestinationDenied:
-		return ManagementErrorBody{string(code), "The initial camera address is not permitted.", false}
+		return ManagementErrorBody{Code: string(code), Message: "The initial camera address is not permitted.", Retryable: false}
 	case CodeAddressUnavailable:
-		return ManagementErrorBody{string(code), "The initial camera address could not be verified.", true}
+		return ManagementErrorBody{Code: string(code), Message: "The initial camera address could not be verified.", Retryable: true}
 	case CodeIdentityUnverified:
-		return ManagementErrorBody{string(code), "An existing camera identity could not be verified.", true}
+		return ManagementErrorBody{Code: string(code), Message: "An existing camera identity could not be verified.", Retryable: true}
 	case CodeDuplicateCamera:
-		return ManagementErrorBody{string(code), "This address overlaps an existing camera or reserved test.", false}
+		return ManagementErrorBody{Code: string(code), Message: "This address overlaps an existing camera or reserved test.", Retryable: false}
 	case CodeCredentialsRequired:
-		return ManagementErrorBody{string(code), "Supply both camera username and password.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Supply both camera username and password.", Retryable: false}
+	case CodeCredentialsChanged:
+		return ManagementErrorBody{Code: string(code), Message: "The saved credentials changed. Start a new update and test again."}
 	case CodeImportInvalid:
-		return ManagementErrorBody{string(code), "Use one supported Mac camera YAML file and optional literal credentials file.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Use one supported Mac camera YAML file and optional literal credentials file.", Retryable: false}
 	case CodeEvidenceUnavailable:
-		return ManagementErrorBody{string(code), "This browser cannot report decoded preview frames.", false}
+		return ManagementErrorBody{Code: string(code), Message: "This browser cannot report decoded preview frames.", Retryable: false}
 	case CodeEvidenceInsufficient:
-		return ManagementErrorBody{string(code), "Preview needs advancing decoded frames before saving.", false}
+		return ManagementErrorBody{Code: string(code), Message: "Preview needs advancing decoded frames before saving.", Retryable: false}
 	default:
 		e := PublicError(cs.NewError(cs.ErrorCode(code), nil)).Error
-		return ManagementErrorBody{string(e.Code), e.Message, e.Retryable}
+		return ManagementErrorBody{Code: string(e.Code), Message: e.Message, Retryable: e.Retryable}
 	}
 }
 func ManagementPublicError(err error) ManagementErrorResponse {
 	if managed, ok := errors.AsType[*ManagementError](err); ok {
-		return ManagementErrorResponse{managementErrorBody(managed.Code)}
+		body := managementErrorBody(managed.Code)
+		if managed.Code == CodeDuplicateCamera {
+			body.CameraID = managed.cameraID
+		}
+		return ManagementErrorResponse{body}
 	}
 	e := PublicError(err).Error
-	return ManagementErrorResponse{ManagementErrorBody{string(e.Code), e.Message, e.Retryable}}
+	return ManagementErrorResponse{ManagementErrorBody{Code: string(e.Code), Message: e.Message, Retryable: e.Retryable}}
 }
 func ManagementErrorStatus(code string) int {
 	switch ManagementErrorCode(code) {
@@ -144,7 +160,7 @@ func ManagementErrorStatus(code string) int {
 		return 503
 	case CodeIdentityUnverified:
 		return 503
-	case CodeDuplicateCamera:
+	case CodeDuplicateCamera, CodeCredentialsChanged:
 		return 409
 	case CodeCredentialsRequired:
 		return 400

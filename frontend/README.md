@@ -273,6 +273,14 @@ drafts lost at server restart require re-entry; durable saves recover by receipt
 on other viewers of that source. It remains available with management disabled
 when reconnect grants remain. **Try again** only retries this page's session.
 
+To replace a dashboard-added camera’s password, select it and open **Camera
+settings**. An authorized duplicate-address error offers the same action.
+Leave the username blank to reuse the saved one, or supply it for a camera
+that used anonymous access. Stop any playback of that camera, then choose
+**Review credentials → Test connection → Save credentials → Watch Camera**.
+The change is applied to the existing camera after a successful test. Cameras
+configured by the server use the [service’s private environment](../config/README.md#mixed-setup).
+
 `npm run build` enforces gzip budgets from the manifest: 20,000 bytes for the
 initial JavaScript dependency closure, 12,000 for separately loaded management,
 and 6,000 for all CSS. Total JavaScript and SVG sizes are reported separately.

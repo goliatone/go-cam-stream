@@ -9,6 +9,7 @@ const (
 	DraftsPath               = "/api/camera-drafts"
 	OperationsPath           = "/api/camera-operations"
 	CreateDraftCommand       = "camera.draft.create.v1"
+	CredentialDraftCommand   = "camera.credentials.draft.v1"
 	ImportDraftCommand       = "camera.draft.import.v1"
 	PatchDraftCommand        = "camera.draft.patch.v1"
 	CancelDraftCommand       = "camera.draft.cancel.v1"
@@ -78,6 +79,16 @@ type CreateDraftRequest struct {
 	Mutation
 	DraftInput
 }
+
+type CredentialDraftRequest struct {
+	Mutation
+	CameraID    string      `json:"camera_id"`
+	Credentials Credentials `json:"credentials"` // empty username retains the saved username
+}
+
+func (CredentialDraftRequest) String() string   { return "[credential draft redacted]" }
+func (CredentialDraftRequest) GoString() string { return "[credential draft redacted]" }
+
 type ImportDraftRequest struct {
 	Mutation
 	YAML string `json:"yaml"`          // multipart field, not a server path
@@ -133,6 +144,7 @@ type DraftReview struct {
 	Warnings           []DraftWarning     `json:"warnings"`
 	State              DraftState         `json:"state"`
 	Test               *TestResult        `json:"test,omitempty"`
+	CredentialUpdate   bool               `json:"credential_update,omitempty"`
 }
 type TestStage string
 
@@ -192,8 +204,9 @@ type SaveCameraRequest struct {
 	CatalogRevision  CatalogRevision `json:"catalog_revision"`
 }
 type SaveCameraResponse struct {
-	CameraID        string          `json:"camera_id"`
-	CatalogRevision CatalogRevision `json:"catalog_revision"` // current revision, including receipt replay
+	CameraID           string          `json:"camera_id"`
+	CatalogRevision    CatalogRevision `json:"catalog_revision"` // current revision, including receipt replay
+	CredentialsUpdated bool            `json:"credentials_updated,omitempty"`
 }
 type OperationKind string
 

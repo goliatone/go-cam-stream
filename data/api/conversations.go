@@ -19,6 +19,8 @@ const (
 	ConversationNativeCreate     = "conversation_create"
 	ConversationNativeLocal      = "conversation_create_local"
 	ConversationNativeCheckRoute = "conversation_check_route"
+	ConversationNativeConnector  = "conversation_connector_status"
+	ConversationNativeReconnect  = "conversation_connector_reconnect"
 	ConversationNativeOpen       = "conversation_open_link"
 	ConversationNativeStatus     = "conversation_status"
 	ConversationNativeEnd        = "conversation_end"
@@ -202,6 +204,10 @@ func (r NativeConversationRequest) Validate() error {
 		if r.RoomID == "" && r.InvitationURL == "" {
 			return nil
 		}
+	case ConversationNativeConnector, ConversationNativeReconnect:
+		if r.RoomID == "" && r.InvitationURL == "" {
+			return nil
+		}
 	case ConversationNativeOpen:
 		if r.RoomID == "" && r.InvitationURL != "" && len(r.InvitationURL) <= 8192 {
 			return nil
@@ -224,29 +230,43 @@ func (NativeConversationRequest) GoString() string { return "[native room reques
 type ConversationSetup string
 
 const (
-	ConversationSetupMissing     ConversationSetup = "not_configured"
-	ConversationSetupInvalid     ConversationSetup = "invalid_configuration"
-	ConversationSetupUnavailable ConversationSetup = "runtime_unavailable"
-	ConversationSetupFailed      ConversationSetup = "start_failed"
-	ConversationSetupPortInUse   ConversationSetup = "listener_in_use"
-	ConversationSetupUnreachable ConversationSetup = "public_route_unreachable"
-	ConversationSetupAssets      ConversationSetup = "call_assets_unavailable"
-	ConversationSetupRelayConfig ConversationSetup = "invalid_relay_configuration"
-	ConversationSetupRelay       ConversationSetup = "relay_unavailable"
+	ConversationSetupMissing         ConversationSetup = "not_configured"
+	ConversationSetupInvalid         ConversationSetup = "invalid_configuration"
+	ConversationSetupUnavailable     ConversationSetup = "runtime_unavailable"
+	ConversationSetupFailed          ConversationSetup = "start_failed"
+	ConversationSetupPortInUse       ConversationSetup = "listener_in_use"
+	ConversationSetupUnreachable     ConversationSetup = "public_route_unreachable"
+	ConversationSetupAssets          ConversationSetup = "call_assets_unavailable"
+	ConversationSetupRelayConfig     ConversationSetup = "invalid_relay_configuration"
+	ConversationSetupRelay           ConversationSetup = "relay_unavailable"
+	ConversationSetupConnector       ConversationSetup = "connector_unavailable"
+	ConversationSetupConnectorConfig ConversationSetup = "invalid_connector_configuration"
 )
 
 // Retryable reports whether trying again without changing settings can help.
 func (s ConversationSetup) Retryable() bool {
 	return s == ConversationSetupUnavailable || s == ConversationSetupFailed ||
-		s == ConversationSetupPortInUse || s == ConversationSetupUnreachable || s == ConversationSetupRelay
+		s == ConversationSetupPortInUse || s == ConversationSetupUnreachable || s == ConversationSetupRelay || s == ConversationSetupConnector
 }
 
 type ConversationSetupStage string
 
 const (
-	ConversationSetupListenerStage ConversationSetupStage = "listener"
-	ConversationSetupRouteStage    ConversationSetupStage = "public_route"
-	ConversationSetupRelayStage    ConversationSetupStage = "relay"
+	ConversationSetupListenerStage  ConversationSetupStage = "listener"
+	ConversationSetupRouteStage     ConversationSetupStage = "public_route"
+	ConversationSetupRelayStage     ConversationSetupStage = "relay"
+	ConversationSetupConnectorStage ConversationSetupStage = "connector"
+)
+
+type CallConnectorState string
+
+const (
+	CallConnectorExternal    CallConnectorState = "external"
+	CallConnectorStopped     CallConnectorState = "stopped"
+	CallConnectorConnecting  CallConnectorState = "connecting"
+	CallConnectorConnected   CallConnectorState = "connected"
+	CallConnectorUnavailable CallConnectorState = "unavailable"
+	CallConnectorSetup       CallConnectorState = "setup_required"
 )
 
 // NativeConversationFault is the owner-pipe error for conversation requests.

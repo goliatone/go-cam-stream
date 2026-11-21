@@ -11,6 +11,7 @@ import type {
 import { LazyManagement, LazyShortcuts } from "./components/lazy-management";
 import type { ManagementDialogProps } from "./components/camera-management";
 import { CameraLinks } from "./components/camera-selector";
+import appIcon from "./components/app-icon.svg?no-inline";
 import {
   CameraIcon,
   CloseIcon,
@@ -47,6 +48,7 @@ export interface AppProps {
   initialSelection?: Partial<StreamRef>;
   onReload?: () => void;
   onAddCamera?: (() => void) | undefined;
+  onCameraSettings?: ((cameraID: string) => void) | undefined;
   watchSelection?: StreamRef | undefined;
   recoveryControl?: ComponentChildren;
   management?: ManagementDialogProps | undefined;
@@ -70,7 +72,7 @@ export function App({
   initialSelection,
   onSelect,
   onReload,
-  onAddCamera, watchSelection, recoveryControl, management, catalogStale,
+  onAddCamera, onCameraSettings, watchSelection, recoveryControl, management, catalogStale,
 }: AppProps) {
   const [requested, setRequested] = useState(initialSelection);
   const [railOpen, setRailOpen] = useState(() => !narrow());
@@ -193,9 +195,7 @@ export function App({
           </button>
         )}
         <a class="brand" href="#viewer" aria-label="Camstream viewer">
-          <span class="brand-mark">
-            <CameraIcon />
-          </span>
+          <img class="brand-mark" src={appIcon} alt="" width={32} height={32} />
           <span class="brand-name">camstream</span>
         </a>
         <span class="topbar-divider" aria-hidden="true" />
@@ -274,6 +274,8 @@ export function App({
         <section class="stream-bar" aria-label="Stream details">
           <div class="stream-bar-inner">
             {recoveryControl}
+            {camera.can_update_credentials && onCameraSettings &&
+              <button type="button" onClick={() => onCameraSettings(camera.id)}>Camera settings</button>}
             <StreamDetails
               id="stream-select"
               camera={camera}
@@ -357,6 +359,10 @@ export function App({
                 observingSince={observingSince}
                 onChange={chooseStream}
               />
+              {camera.can_update_credentials && onCameraSettings && <button type="button" onClick={() => {
+                hideCameras();
+                onCameraSettings(camera.id);
+              }}>Camera settings</button>}
             </div>
           )}
           {sheetOpen && (

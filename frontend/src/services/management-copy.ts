@@ -1,7 +1,7 @@
 import type { ManagementErrorCode, TestResult } from "./contracts";
 import { errorCopy } from "./copy";
 export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
-  authentication_failed: "The camera rejected its credentials. Edit details and check the username and password, or import the Mac app’s connection files.",
+  authentication_failed: "The camera rejected its credentials. Check the username and password.",
   source_unavailable: "The server could not receive camera video. Check that capture is running, the RTSP address is reachable from the server, and the camera credentials are provided and correct.",
   camera_unreachable: "The server could not reach the camera. Check that capture is running and the RTSP address and port are reachable from the server.",
   stream_unavailable: "The camera stream is unavailable. Check the RTSP path and that the camera is publishing video.",
@@ -15,8 +15,9 @@ export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
   test_expired: "Test this camera again before saving.",
   draft_revision_conflict: "The draft changed. Check its latest details before continuing.",
   catalog_revision_conflict: "The camera list changed. Refresh it and explicitly try Save again after checking this draft.",
-  duplicate_camera: "This address overlaps a configured camera or another active test. Use the existing camera or finish the other test.",
+  duplicate_camera: "This address overlaps a configured camera or another active test.",
   credentials_required: "Enter both the camera username and password.",
+  credentials_changed: "The saved credentials changed. Close this draft and start a new update.",
   import_invalid: "Choose one current Mac camera YAML export and, optionally, its matching credentials file.",
   destination_denied: "This camera address is not allowed by the server.",
   address_unavailable: "The camera address could not be resolved. Check it and try again.",

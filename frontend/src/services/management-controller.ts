@@ -1,6 +1,6 @@
 import type { ManagementView } from "../components/camera-management";
-import type { Capabilities, CatalogRevision, DraftInput, DraftReview, Mutation, OperationKind, OperationResult, SaveCameraResponse } from "./contracts";
-import { ManagementFailure, managementCode, type ManagementAPI } from "./management-api";
+import type { Capabilities, CatalogRevision, Credentials, DraftInput, DraftReview, Mutation, OperationKind, OperationResult, SaveCameraResponse } from "./contracts";
+import { duplicateCameraID, ManagementFailure, managementCode, type ManagementAPI } from "./management-api";
 import { BrowserPreview, type Preview } from "./management-preview";
 import { operationKey, RecoveryStorage, type RecoveryRecord } from "./management-storage";
 
@@ -29,8 +29,15 @@ export class ManagementController {
   }
   #error(error:unknown) {
     const code=managementCode(error);
-    if(code==="access_denied") {try{this.storage.clear()}catch{};this.#record=undefined;if(this.capabilities)this.capabilities={...this.capabilities,can_manage_cameras:false};}
-    this.#show({error:code,busy:false,...(code==="recovery_storage_unavailable"?{storageReady:false}:{}),...(code==="access_denied"?{unresolved:false}:{})});
+    if(code==="access_denied") {
+      try{this.storage.clear()}catch{}
+      this.#record=undefined;
+      if(this.capabilities && !this.view.credentialTarget && !this.view.draft?.credential_update) {
+        this.capabilities={...this.capabilities,can_manage_cameras:false};
+      }
+    }
+    this.#show({error:code,duplicateCamera: error instanceof ManagementFailure ? duplicateCameraID(code,error.cameraID) : undefined,
+      busy:false,...(code==="recovery_storage_unavailable"?{storageReady:false}:{}),...(code==="access_denied"?{unresolved:false}:{})});
   }
   #begin(kind:OperationKind,extra:Partial<RecoveryRecord>={}):Mutation {
     if(!this.capabilities?.can_manage_cameras)throw new ManagementFailure("access_denied");
@@ -40,12 +47,12 @@ export class ManagementController {
     const record:RecoveryRecord={scope:this.capabilities.recovery_scope,epoch:this.capabilities.runtime_epoch,key:operationKey(),kind,expires:Date.now()+20*60*1000,
       ...(d?{draft:d.id,candidate:d.candidate_id,revision:d.revision}:{}),...extra};
     this.storage.write(record);this.#previous=this.#record;this.#rejected=false;this.#record=record;this.#mutating=true;
-    this.#show({busy:true,unresolved:true,error:undefined,canAbandon:false,canRetrySave:false});
+    this.#show({busy:true,unresolved:true,error:undefined,duplicateCamera:undefined,canAbandon:false,canRetrySave:false});
     return {operation_key:record.key,runtime_epoch:record.epoch};
   }
   #rememberDraft(draft:DraftReview) {
     if(this.#record) {this.#record={...this.#record,draft:draft.id,candidate:draft.candidate_id,revision:draft.revision,expires:Date.parse(draft.expires_at)+5*60*1000};this.storage.write(this.#record)}
-    this.#show({draft,test:draft.test,phase:draft.state==="canceled"?"canceled":"review",busy:false,unresolved:false,error:undefined});
+    this.#show({draft,test:draft.test,phase:draft.state==="canceled"?"canceled":"review",busy:false,unresolved:false,error:undefined,duplicateCamera:undefined});
   }
   async #failed(error:unknown) {
     this.#mutating=false;this.#rejected=["csrf_invalid","invalid_argument","import_invalid"].includes(managementCode(error));this.#error(error);
@@ -59,6 +66,31 @@ export class ManagementController {
       const result=d?await this.api.patch(d.id,{...m,...input,expected_revision:d.revision}):await this.api.create({...m,...input});
       this.#rememberDraft(result);
     } catch(error){await this.#failed(error)} finally{this.#mutating=false}
+  }
+  async openCredentials(target: NonNullable<ManagementView["credentialTarget"]>) {
+    if (this.view.busy || this.view.unresolved || this.#mutating) return;
+    if (this.view.draft && !this.view.saved && this.view.phase !== "canceled") {
+      if (!await this.cancel()) return;
+    }
+    this.reset();
+    this.#show({ phase: "editing", credentialTarget: target, error: undefined, duplicateCamera: undefined });
+  }
+  async submitCredentials(credentials: Credentials) {
+    if (this.view.busy || this.view.unresolved || this.#mutating) return;
+    const draft = this.view.draft?.credential_update ? this.view.draft : undefined;
+    const cameraID = draft?.candidate_id ?? this.view.credentialTarget?.id;
+    if (!cameraID) return;
+    try {
+      const mutation = this.#begin(draft ? "patch" : "create");
+      const result = draft
+        ? await this.api.patch(draft.id, { ...mutation, expected_revision: draft.revision, credentials })
+        : await this.api.credentialDraft({ ...mutation, camera_id: cameraID, credentials });
+      this.#rememberDraft(result);
+    } catch (error) {
+      await this.#failed(error);
+    } finally {
+      this.#mutating = false;
+    }
   }
   async importFiles(yaml:File,env?:File) {
     if(this.view.busy||this.view.unresolved||this.#mutating)return;
@@ -113,8 +145,9 @@ export class ManagementController {
         return;
       }
       if(op.state==="not_committed") {
-        this.#show({unresolved:false,busy:false,error:op.error?.code,phase:"review"});
-        if(r.draft)try{this.#rememberDraft(await this.api.draft(r.draft));this.#show({error:op.error?.code})}catch(error){if(["draft_lost","draft_expired"].includes(managementCode(error)))await this.#lostDraft();this.#error(error)}
+        const failure={error:op.error?.code,duplicateCamera:duplicateCameraID(op.error?.code,op.error?.camera_id)};
+        this.#show({unresolved:false,busy:false,...failure,phase:"review"});
+        if(r.draft)try{this.#rememberDraft(await this.api.draft(r.draft));this.#show(failure)}catch(error){if(["draft_lost","draft_expired"].includes(managementCode(error)))await this.#lostDraft();this.#error(error)}
         return;
       }
       if(op.state==="not_found"&&this.#rejected) {
@@ -179,12 +212,13 @@ export class ManagementController {
     catch(error){await this.#failed(error)}finally{this.#mutating=false}
   }
   async cancel() {
-    if(this.view.unresolved||this.#mutating||(this.view.busy&&this.view.phase==="saving"))return;
+    if(this.view.unresolved||this.#mutating||(this.view.busy&&this.view.phase==="saving"))return false;
     ++this.#generation;this.#preview?.close();
     const d=this.view.draft;
-    if(!d){try{this.storage.clear();this.#record=undefined;this.#show({phase:"canceled"})}catch(error){this.#error(error)}return;}
+    if(!d){try{this.storage.clear();this.#record=undefined;this.#show({phase:"canceled"})}catch(error){this.#error(error)}return this.view.phase==="canceled";}
     try{const m=this.#begin("cancel");this.#rememberDraft(await this.api.cancel(d.id,m));this.storage.clear();this.#record=undefined}
     catch(error){await this.#failed(error)}finally{this.#mutating=false}
+    return this.view.phase==="canceled";
   }
   async close() {
     if(this.view.saved){try{this.storage.clear();this.#record=undefined}catch(error){this.#error(error)}return;}
@@ -197,7 +231,7 @@ export class ManagementController {
   }
   reset() {
     if(!this.view.unresolved&&!this.#mutating&&(this.view.saved||this.view.phase==="canceled")) {
-      try{this.storage.clear();this.#record=undefined;this.#show({phase:"editing",draft:undefined,test:undefined,saved:undefined,error:undefined,canAbandon:false})}catch(error){this.#error(error)}
+      try{this.storage.clear();this.#record=undefined;this.#show({phase:"editing",draft:undefined,test:undefined,saved:undefined,credentialTarget:undefined,error:undefined,duplicateCamera:undefined,canAbandon:false})}catch(error){this.#error(error)}
     }
   }
   async watch() {if(this.view.saved)await this.refresh(this.view.saved.catalog_revision);}

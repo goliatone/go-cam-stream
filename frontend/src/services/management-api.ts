@@ -1,16 +1,18 @@
-import type { Capabilities, CompleteTestRequest, CreateDraftRequest, CreateTestRequest, DraftReview, ManagementErrorCode, Mutation, OperationResult, PatchDraftRequest, ReconnectResponse, SaveCameraRequest, SaveCameraResponse, StreamRef, TestResult } from "./contracts";
+import type { Capabilities, CompleteTestRequest, CreateDraftRequest, CreateTestRequest, CredentialDraftRequest, DraftReview, ManagementErrorCode, Mutation, OperationResult, PatchDraftRequest, ReconnectResponse, SaveCameraRequest, SaveCameraResponse, StreamRef, TestResult } from "./contracts";
 import { CSRF_HEADER, CSRF_PATH } from "./contracts";
 import { errorCopy } from "./copy";
 import { managementCopy } from "./management-copy";
 
 export class ManagementFailure extends Error {
-  constructor(readonly code: ManagementErrorCode = "server_unavailable") { super(code); }
+  constructor(readonly code: ManagementErrorCode = "server_unavailable", readonly cameraID?: string) { super(code); }
 }
 export const managementCode = (reason: unknown): ManagementErrorCode => reason instanceof ManagementFailure ? reason.code : "server_unavailable";
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const own = (table: object, key: string) => Object.prototype.hasOwnProperty.call(table, key);
 const string = (value: unknown): value is string => typeof value === "string";
 const number = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+export const duplicateCameraID = (code: unknown, id: unknown) =>
+  code === "duplicate_camera" && string(id) && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id) ? id : undefined;
 function invalid(): never { throw new ManagementFailure(); }
 function capabilities(value: unknown): Capabilities {
   if (!object(value) || typeof value.can_manage_cameras !== "boolean" || !string(value.recovery_scope) || !string(value.runtime_epoch)) return invalid();
@@ -34,6 +36,7 @@ export interface ManagementAPI {
   draft(id: string): Promise<DraftReview>;
   operation(key: string, epoch: string, candidate?: string, recovery?: boolean): Promise<OperationResult>;
   create(request: CreateDraftRequest): Promise<DraftReview>;
+  credentialDraft(request: CredentialDraftRequest): Promise<DraftReview>;
   import(request: Mutation, yaml: File, env?: File): Promise<DraftReview>;
   patch(id: string, request: PatchDraftRequest): Promise<DraftReview>;
   cancel(id: string, request: Mutation): Promise<DraftReview>;
@@ -65,9 +68,10 @@ export class ManagementClient implements ManagementAPI {
       const result = await this.fetcher(path, {method,headers,credentials:"same-origin",redirect:"error",cache:"no-store",signal:abort.signal,...(body === undefined ? {} : {body:multipart ? body : JSON.stringify(body)})});
       const value: unknown = await result.json();
       if (!result.ok) {
-        const code = object(value) && object(value.error) && string(value.error.code) ? value.error.code : "server_unavailable";
+        const error = object(value) && object(value.error) ? value.error : undefined;
+        const code = string(error?.code) ? error.code : "server_unavailable";
         if (code === "csrf_invalid") this.#token = undefined;
-        throw new ManagementFailure(own(errorCopy,code) || own(managementCopy,code) || code === "operation_conflict" ? code as ManagementErrorCode : "server_unavailable");
+        throw new ManagementFailure(own(errorCopy,code) || own(managementCopy,code) || code === "operation_conflict" ? code as ManagementErrorCode : "server_unavailable", duplicateCameraID(code, error?.camera_id));
       }
       if (result.status !== 200) return invalid();
       return value;
@@ -84,6 +88,9 @@ export class ManagementClient implements ManagementAPI {
     return operation(await this.#request(`/api/camera-operations/${encodeURIComponent(key)}?${params}`));
   }
   async create(request:CreateDraftRequest) { return draft(await this.#request("/api/camera-drafts","POST",request)); }
+  async credentialDraft(request: CredentialDraftRequest) {
+    return draft(await this.#request("/api/camera-drafts/credentials", "POST", request));
+  }
   async import(request:Mutation,yaml:File,env?:File) {
     if (yaml.size > 32768 || (env && env.size > 8192)) throw new ManagementFailure("import_invalid");
     const body=new FormData();body.set("operation_key",request.operation_key);body.set("runtime_epoch",request.runtime_epoch);body.set("yaml",yaml);if(env)body.set("env",env);

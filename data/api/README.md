@@ -93,6 +93,7 @@ The import fixture matches the Mac exporter; its all-zero password is synthetic.
 | --- | --- | --- | --- |
 | GET `/api/capabilities` | none | 200 `Capabilities` | admitted principal |
 | POST `/api/camera-drafts` | `CreateDraftRequest` | 201 `DraftReview` | manager |
+| POST `/api/camera-drafts/credentials` | `CredentialDraftRequest` | 200 `DraftReview` | manager who owns the saved camera |
 | POST `/api/camera-drafts/import` | multipart fields `yaml`, optional `env`, `operation_key`, `runtime_epoch` | 201 `DraftReview` | manager |
 | GET `/api/camera-drafts/:id` | none | 200 `DraftReview` | owning manager |
 | PATCH `/api/camera-drafts/:id` | `PatchDraftRequest` | 200 `DraftReview` | owning manager |
@@ -113,13 +114,22 @@ Request formatting is redacted; JSON requests must never enter command payload
 logging, tracing or event serialization. Only an owned draft review may return
 the submitted endpoint. Ordinary catalog, operation and error payloads omit it.
 
+For a credential update, use the existing camera ID and supply a replacement
+password. An empty username reuses the stored username when one exists. The
+draft uses the saved source with a temporary credential binding and exposes no
+address. To edit this draft, PATCH its credentials and expected revision. Test
+and save through the same draft routes. A successful save returns
+`credentials_updated` with the existing camera ID. An authorized
+`duplicate_camera` error includes `camera_id` when settings can be opened.
+
 `operation_key` is 32 lowercase hex characters from 128 random bits; a test's
 `attempt_key` is that same key. Bind keys to owner, kind, target and semantic
 input. Check receipts before revision checks. Changed intent under a key conflicts.
 Operation results contain IDs and safe outcomes, not original inputs. Unknown is
 not failed: look up the existing operation before any replay/rebase. A saved
 result includes the current catalog epoch/generation even after restart. Permanent
-candidate/creation anchors survive the 24-hour receipt window. Save resolution
+candidate/creation anchors survive the 24-hour receipt window. Credential
+updates are recoverable through their save receipts. Save resolution
 requires creator view permission when management is disabled; reset resolution
 requires reconnect permission. Cross-owner lookups return the same access-denied
 shape as nonexistent resources.

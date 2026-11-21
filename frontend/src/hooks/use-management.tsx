@@ -57,14 +57,27 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
   const selected=viewer.viewer?.selection;
   const stream=viewer.catalog.cameras.find(c=>c.id===selected?.camera_id)?.streams.find(s=>s.id===selected?.stream_id);
   const reset=recovery.current;
+  const openSettings=(id:string)=>{
+    const name=latest.current.viewer.catalog.cameras.find(camera=>camera.id===id)?.name;
+    setOpen(true);
+    void manager.openCredentials({id,name});
+  };
   useEffect(()=>{onChange({watchSelection,
     onAddCamera:manager.capabilities?.can_manage_cameras?()=>{manager.reset();setOpen(true)}:undefined,
+    onCameraSettings:manager.capabilities?.can_manage_cameras?openSettings:undefined,
     management:open?{view:manager.view,actions:{
       submit:input=>{void manager.submit(input)},importFiles:(yaml,env)=>{void manager.importFiles(yaml,env)},test:video=>{void manager.test(video)},
+      submitCredentials:credentials=>{void manager.submitCredentials(credentials)},openSettings,
       retrySave:()=>{void manager.retrySave()},abandon:()=>manager.abandon(),cancelTest:()=>{void manager.cancelTest()},save:()=>{void manager.save()},recover:()=>{void manager.recover()},
       cancel:()=>{void manager.cancel().then(()=>{if(!manager.view.unresolved)setOpen(false)})},
       close:()=>{setOpen(false);void manager.close().catch(()=>{})},
-      watch:id=>{void manager.watch().then(()=>{setWatchSelection({camera_id:id,stream_id:"default"});setOpen(false);void manager.close().catch(()=>{})}).catch(()=>{})},
+      watch:id=>{void manager.watch().then(()=>{
+        const current=latest.current.viewer.viewer?.selection;
+        if(manager.view.saved?.credentials_updated&&current?.camera_id===id&&current.stream_id==="default") {
+          void latest.current.recovered().catch(()=>{});
+        } else setWatchSelection({camera_id:id,stream_id:"default"});
+        setOpen(false);void manager.close().catch(()=>{});
+      }).catch(()=>{})},
     }}:undefined,
     recoveryControl:selected&&stream?.can_reconnect&&(stream.recovery_required||reset?.unresolved)?<CameraRecovery busy={reset?.busy??false} unresolved={reset?.unresolved??false} error={reset?.error} disabled={!manager.view.storageReady} onConfirm={()=>{if(reset)void reset.confirm(selected)}} onCheck={()=>{if(reset)void reset.check()}}/>:undefined,
   });},[version,open,watchSelection,stream?.can_reconnect,stream?.recovery_required,selected?.camera_id,selected?.stream_id]);

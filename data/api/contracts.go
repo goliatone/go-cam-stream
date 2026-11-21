@@ -32,10 +32,11 @@ type StreamSummary struct {
 }
 
 type CameraSummary struct {
-	ID           camstream.CameraID `json:"id"`
-	Name         string             `json:"name"`
-	Availability camstream.State    `json:"availability"`
-	Streams      []StreamSummary    `json:"streams"`
+	ID                   camstream.CameraID `json:"id"`
+	Name                 string             `json:"name"`
+	Availability         camstream.State    `json:"availability"`
+	Streams              []StreamSummary    `json:"streams"`
+	CanUpdateCredentials bool               `json:"can_update_credentials,omitempty"`
 }
 
 type CameraList struct {
