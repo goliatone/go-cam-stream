@@ -197,6 +197,12 @@ func (h Routes) registerManagement(r admin.AdminRouter) {
 func (h Routes) managementDraftPost(c router.Context) error {
 	parts := strings.Split(strings.TrimPrefix(c.Param("draft_path"), "/"), "/")
 	switch {
+	case len(parts) == 1 && parts[0] == "credentials":
+		var q api.CredentialDraftRequest
+		if e := decodeManagement(c, &q); e != nil {
+			return managementResult(c, nil, e)
+		}
+		return h.managementDispatch(c, api.CredentialDraftCommand, viewer.CredentialDraft{Request: q})
 	case len(parts) == 1 && parts[0] == "import":
 		q, e := decodeImport(c)
 		if e != nil {

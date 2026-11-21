@@ -82,19 +82,35 @@ func (s *CameraManagementService) CreateTest(ctx context.Context, id string, r a
 		if count >= api.MaxTests || owned >= api.MaxOwnerTests {
 			return nil, cs.NewError(cs.CodeCapacityExceeded, nil)
 		}
-		if err = s.observeBaseIdentities(ctx); err != nil {
-			return nil, err
-		}
-		if d.binding.Selected == "" {
-			d.binding, err = resolveBinding(ctx, s.options.Policy, s.options.Lookup, d.config.Host, d.config.Port)
+		var record ManagedRecord
+		if d.review.CredentialUpdate {
+			record, err = s.credentialTarget(ctx, d)
 			if err != nil {
 				return nil, err
 			}
+		} else {
+			if err = s.observeBaseIdentities(ctx); err != nil {
+				return nil, err
+			}
+			if d.binding.Selected == "" {
+				d.binding, err = resolveBinding(ctx, s.options.Policy, s.options.Lookup, d.config.Host, d.config.Port)
+				if err != nil {
+					return nil, err
+				}
+			}
+			record = ManagedRecord{ID: cs.CameraID(d.review.CandidateID), PhysicalID: cs.PhysicalCameraID(d.review.CandidateID), Name: d.review.Name, Binding: d.binding, Path: d.config.Profiles[0].Path, Query: d.config.Profiles[0].Query}
 		}
-		if err = s.identities.Reserve(id, d.binding); err != nil {
+		if err = s.reserveDraft(ctx, d); err != nil {
 			return nil, err
 		}
-		record := ManagedRecord{ID: cs.CameraID(d.review.CandidateID), PhysicalID: cs.PhysicalCameraID(d.review.CandidateID), Name: d.review.Name, Binding: d.binding, Path: d.config.Profiles[0].Path, Query: d.config.Profiles[0].Query}
+		if d.review.CredentialUpdate {
+			release, err := s.prepareCredentialUpdate(ctx, record)
+			if err != nil {
+				s.identities.Release(id)
+				return nil, err
+			}
+			defer release()
+		}
 		if d.credential != nil {
 			record.CredentialID = d.credential.ID
 		}
@@ -108,7 +124,9 @@ func (s *CameraManagementService) CreateTest(ctx context.Context, id string, r a
 		d.passedAt = time.Time{}
 		d.testOutcome = ""
 		d.review.State = api.DraftTesting
-		d.review.DialAddress = d.binding.Selected
+		if !d.review.CredentialUpdate {
+			d.review.DialAddress = d.binding.Selected
+		}
 		d.review.Test = &api.TestResult{ID: randomManagementID(), AttemptKey: r.OperationKey, DraftRevision: d.review.Revision, Stage: api.TestNegotiating, ExpiresAt: now.Add(api.TestDeadline), Cleanup: api.CleanupPending}
 		testCtx, cancel := context.WithDeadline(ctx, d.review.Test.ExpiresAt)
 		d.testCancel = cancel

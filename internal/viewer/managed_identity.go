@@ -36,26 +36,44 @@ func (i *IdentityIndex) Observe(owner string, binding AddressBinding) error {
 	return nil
 }
 func (i *IdentityIndex) Reserve(draft string, binding AddressBinding) error {
+	_, err := i.reserve(draft, "", binding)
+	return err
+}
+
+// reserve returns a committed owner only for a collision with a saved identity.
+// The caller must check access before returning it to an operator.
+func (i *IdentityIndex) reserve(draft, camera string, binding AddressBinding) (string, error) {
 	keys, err := binding.IdentityKeys()
 	if err != nil || draft == "" {
-		return invalid()
+		return "", invalid()
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	var savedOwner string
+	var testConflict bool
 	for _, key := range keys {
-		if i.committed[key] != "" || (i.reserved[key] != "" && i.reserved[key] != draft) {
-			return duplicateCamera()
+		if owner := i.committed[key]; owner != "" && owner != camera {
+			if savedOwner != "" && savedOwner != owner {
+				return "", duplicateCamera()
+			}
+			savedOwner = owner
 		}
+		if i.reserved[key] != "" && i.reserved[key] != draft {
+			testConflict = true
+		}
+	}
+	if savedOwner != "" || testConflict {
+		return savedOwner, duplicateCamera()
 	}
 	// A new binding can replace only an explicitly released reservation.
 	if old := i.owners[draft]; old != nil && !equalKeys(old, keys) {
-		return invalid()
+		return "", invalid()
 	}
 	for _, key := range keys {
 		i.reserved[key] = draft
 	}
 	i.owners[draft] = keys
-	return nil
+	return "", nil
 }
 func equalKeys(a, b []string) bool {
 	if len(a) != len(b) {

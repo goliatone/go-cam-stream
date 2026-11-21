@@ -77,6 +77,20 @@ type ImportDraft struct {
 	Request api.ImportDraftRequest `json:"request"`
 }
 
+type CredentialDraft struct {
+	Request api.CredentialDraftRequest `json:"request"`
+}
+
+func (CredentialDraft) Type() string       { return api.CredentialDraftCommand }
+func (CredentialDraft) String() string     { return "[management command redacted]" }
+func (m CredentialDraft) GoString() string { return m.String() }
+func (m CredentialDraft) Validate() error {
+	if !config.ValidID(m.Request.CameraID) {
+		return invalid()
+	}
+	return m.Request.Mutation.Validate()
+}
+
 func (ImportDraft) Type() string       { return api.ImportDraftCommand }
 func (ImportDraft) String() string     { return "[management command redacted]" }
 func (m ImportDraft) GoString() string { return m.String() }
@@ -209,6 +223,11 @@ func RegisterManagement(bus *admin.CommandBus, service CameraManagement, recover
 	}
 	if err = registerManagementCommand(set, func(ctx context.Context, m ImportDraft) (api.DraftReview, error) {
 		return service.ImportDraft(ctx, m.Request)
+	}); err != nil {
+		return nil, err
+	}
+	if err = registerManagementCommand(set, func(ctx context.Context, m CredentialDraft) (api.DraftReview, error) {
+		return service.CredentialDraft(ctx, m.Request)
 	}); err != nil {
 		return nil, err
 	}

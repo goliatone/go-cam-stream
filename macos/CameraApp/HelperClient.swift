@@ -54,6 +54,7 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
     private(set) var sharingVersion = 0
     private(set) var conversationVersion = 0
     private(set) var callRecoveryVersion = 0
+    private(set) var callConnectorVersion = 0
     var idle: Bool { ready && current == nil && queue.isEmpty && !closing }
 
     func launch(executable: URL, directory: URL) {
@@ -182,6 +183,7 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
                     sharingVersion = (reply["result"] as? Reply)?["sharing"] as? Int ?? 0
                     conversationVersion = (reply["result"] as? Reply)?["conversations"] as? Int ?? 0
                     callRecoveryVersion = (reply["result"] as? Reply)?["call_recovery"] as? Int ?? 0
+                    callConnectorVersion = (reply["result"] as? Reply)?["call_connector"] as? Int ?? 0
                     deadline?.invalidate(); ready = true; onReady?()
                 } else if event == "sharing_changed", ready, sharingVersion >= 1, reply["result"] is Reply {
                     onSharingEvent?(reply)

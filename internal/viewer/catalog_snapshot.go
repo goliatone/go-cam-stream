@@ -8,6 +8,7 @@ import (
 	"github.com/goliatone/go-cam-stream/config"
 	"github.com/goliatone/go-cam-stream/data/api"
 	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
+	"github.com/goliatone/go-cam-stream/pkg/camstream/strategies/rtsp"
 )
 
 type catalogSnapshot struct {
@@ -60,6 +61,10 @@ func (s *CameraService) AdmittedPrincipals() map[string]bool {
 // beforePublish installs only additive secret bindings before new camera IDs can
 // be admitted. Existing source/config/grant definitions cannot change here.
 func (s *CameraService) PublishCatalog(catalog config.Catalog, revision api.CatalogRevision, managers []string, beforePublish func() error) error {
+	return s.publishCatalog(catalog, revision, managers, "", beforePublish)
+}
+
+func (s *CameraService) publishCatalog(catalog config.Catalog, revision api.CatalogRevision, managers []string, update cs.CameraID, beforePublish func() error) error {
 	next, err := newCatalogSnapshot(catalog, revision, managers)
 	if err != nil {
 		return err
@@ -79,7 +84,19 @@ func (s *CameraService) PublishCatalog(catalog config.Catalog, revision api.Cata
 	}
 	for id, camera := range old.cameras {
 		candidate, ok := next.cameras[id]
-		if !ok || !reflect.DeepEqual(candidate, camera) {
+		if !ok {
+			return invalid()
+		}
+		if id == update {
+			currentConfig, currentOK := camera.Camera.Config.(rtsp.Config)
+			nextConfig, nextOK := candidate.Camera.Config.(rtsp.Config)
+			if camera.ManagedOwner == "" || !currentOK || !nextOK {
+				return invalid()
+			}
+			currentConfig.UsernameRef, currentConfig.PasswordRef = nextConfig.UsernameRef, nextConfig.PasswordRef
+			camera.Camera.Config, camera.Sources = currentConfig, candidate.Sources
+		}
+		if !reflect.DeepEqual(candidate, camera) {
 			return invalid()
 		}
 	}

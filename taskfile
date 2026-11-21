@@ -158,6 +158,41 @@ function mac:build() (
     python3 "${SCRIPT_DIR}/macos/build-app.py" --version "${version}" --output "${output}"
 )
 
+## test:conversation
+## Build a fresh Mac app and run the uncached conversation integration proof.
+function test:conversation() (
+    case "${1:-}" in
+        -h|--help) echo "Usage: $0 test:conversation"; return 0 ;;
+    esac
+    if (( $# != 0 )); then
+        echo "Usage: $0 test:conversation" >&2
+        return 2
+    fi
+    if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+        echo "test:conversation requires an Apple Silicon Mac." >&2
+        return 1
+    fi
+    local chrome app build_dir
+    chrome="${CAMSTREAM_PROOF_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+    if [[ "${chrome}" != /* || ! -f "${chrome}" || ! -x "${chrome}" ]]; then
+        echo "Set CAMSTREAM_PROOF_CHROME to the absolute path of an executable Chrome binary." >&2
+        return 1
+    fi
+    cd "${SCRIPT_DIR}" || return "$?"
+    build_dir="$(_mac:fresh-output "${SCRIPT_DIR}/dist/conversation-test")" || return "$?"
+    trap 'rmdir "$build_dir" 2>/dev/null || true' EXIT
+    app="${build_dir}/Camstream Camera.app"
+    mac:build "${app}" || return "$?"
+    CAMSTREAM_PROOF_APP="${app}" CAMSTREAM_PROOF_CHROME="${chrome}" \
+        go test -count=1 -race -v ./scripts/conversation-proof -run '^TestIntegratedConversation$'
+)
+
+## verify:conversation-build APP_PATH ORIGIN
+## Compare an expected Mac app bundle with the running app and the served conversation page.
+function verify:conversation-build() (
+    exec python3 "${SCRIPT_DIR}/macos/conversation_build.py" "$@"
+)
+
 ## mac:package [OUTPUT_DIR]
 ## Build a fresh development DMG and print the full app and DMG paths.
 function mac:package() (

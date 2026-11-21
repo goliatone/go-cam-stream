@@ -103,7 +103,7 @@ func (s *CameraService) summary(ctx context.Context, id cs.CameraID) (api.Camera
 	if !ok {
 		return api.CameraSummary{}, false
 	}
-	summary := api.CameraSummary{ID: id, Name: camera.Camera.Name, Streams: []api.StreamSummary{}}
+	summary := api.CameraSummary{ID: id, Name: camera.Camera.Name, Streams: []api.StreamSummary{}, CanUpdateCredentials: s.canUpdateCredentials(ctx, id)}
 	for _, stream := range camera.Streams {
 		if s.allowed(ctx, id, stream.ID, view) {
 			entry := streamSummary(stream)
@@ -121,6 +121,13 @@ func (s *CameraService) summary(ctx context.Context, id cs.CameraID) (api.Camera
 	}
 	summary.Availability = s.availability(ctx, camera.Camera, summary.Streams)
 	return summary, true
+}
+
+func (s *CameraService) canUpdateCredentials(ctx context.Context, id cs.CameraID) bool {
+	snapshot := s.snapshot(ctx)
+	login := principal(ctx)
+	return snapshot.managers[login] && snapshot.cameras[id].ManagedOwner == login &&
+		snapshot.access[login][scope{id, "default"}].view
 }
 
 // Precedence of a camera's availability over its profiles' states.
@@ -246,7 +253,7 @@ func (s *catalogSnapshot) addCamera(item config.CatalogCamera) error {
 	if _, exists := s.cameras[item.Camera.ID]; exists {
 		return invalid()
 	}
-	copyItem := config.CatalogCamera{Camera: item.Camera, Streams: append([]cs.Stream(nil), item.Streams...), Sources: map[cs.StreamID]cs.SourceKey{}}
+	copyItem := config.CatalogCamera{Camera: item.Camera, Streams: append([]cs.Stream(nil), item.Streams...), Sources: map[cs.StreamID]cs.SourceKey{}, ManagedOwner: item.ManagedOwner}
 	for _, stream := range item.Streams {
 		key := item.Sources[stream.ID]
 		if key == "" || !config.ValidID(string(stream.ID)) || copyItem.Sources[stream.ID] != "" {

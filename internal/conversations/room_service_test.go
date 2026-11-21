@@ -10,6 +10,22 @@ import (
 	"github.com/goliatone/go-cam-stream/data/api"
 )
 
+func TestIdleSweepExpiresRoomWithoutParticipantTraffic(t *testing.T) {
+	now := time.Now()
+	service, err := NewService(Options{PublicOrigin: "https://call.example.test", Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room, err := service.Create(WithOwner(t.Context()), CreateRoom{})
+	if err != nil || !service.HasLiveRooms() {
+		t.Fatalf("initial room was not live: %v", err)
+	}
+	now = room.Admission.Room.ExpiresAt
+	if service.HasLiveRooms() || service.TerminalState(room.Admission.Room.RoomRef) != api.RoomExpired {
+		t.Fatal("an unpolled room did not become terminal after its expiry")
+	}
+}
+
 func TestTwoSlotsAndGenerationLifecycle(t *testing.T) {
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 	s, err := NewService(Options{PublicOrigin: "https://call.example.test", Clock: func() time.Time { return now }})

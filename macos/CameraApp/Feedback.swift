@@ -9,6 +9,7 @@ struct Feedback: Equatable {
         case allowCamera, openCameraSettings, refreshCameras, startCamera, quit
         case openSetupGuide, showSettingsFolder, retryConversation, startNewConversation
         case checkConversationRoute, testLocalConversation, retryRelay, openInstallGuide
+        case reconnectCallConnector
 
         var title: String {
             switch self {
@@ -25,6 +26,7 @@ struct Feedback: Equatable {
             case .testLocalConversation: return "Test on This Mac"
             case .retryRelay: return "Test Relay and Retry"
             case .openInstallGuide: return "Open Install Guide"
+            case .reconnectCallConnector: return "Reconnect"
             }
         }
     }
@@ -91,6 +93,12 @@ extension CameraModel {
         case .relayUnavailable?:
             return Feedback(tone: .problem, title: "The call relay is unavailable", message: notice.text,
                             actions: [.retryRelay, .showSettingsFolder])
+        case .connectorUnavailable?:
+            return Feedback(tone: .problem, title: "The call connector is unavailable", message: notice.text,
+                            actions: [.reconnectCallConnector, .testLocalConversation])
+        case .connectorConfigurationInvalid?:
+            return Feedback(tone: .problem, title: "Call connector settings need attention", message: notice.text,
+                            actions: [.showSettingsFolder, .openSetupGuide])
         case nil:
             if notice.opening {
                 return Feedback(tone: .problem, title: host ? "Calls couldn't start" : "Couldn't join the conversation",
@@ -139,6 +147,7 @@ extension CameraModel {
         case .checkConversationRoute: checkConversationRoute()
         case .testLocalConversation: testConversationLocally()
         case .openInstallGuide: openCallInstallGuide()
+        case .reconnectCallConnector: reconnectCallConnector()
         }
     }
 }

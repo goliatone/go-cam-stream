@@ -7,6 +7,24 @@ struct ConversationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if model.callConnectorStatus != .external || model.reconnectingCallConnector {
+                HStack {
+                    if model.reconnectingCallConnector {
+                        ProgressView("Reconnecting the call connector…").controlSize(.small)
+                    } else {
+                        Label(model.callConnectorStatus.title,
+                              systemImage: model.callConnectorStatus == .connected ? "checkmark.circle" : "network")
+                    }
+                    Spacer()
+                    if model.callConnectorStatus == .setupRequired {
+                        Button("Show Settings Folder", action: model.revealSettingsFolder)
+                    } else {
+                        Button("Reconnect", action: model.reconnectCallConnector)
+                            .disabled(model.reconnectingCallConnector || !model.ready || model.openingConversation)
+                            .accessibilityHint("Restarts Camstream’s dedicated call connector.")
+                    }
+                }.accessibilityIdentifier("call-connector-status")
+            }
             if let feedback = model.conversationRouteFeedback {
                 FeedbackCard(feedback: feedback, perform: model.perform, identifier: "conversation-route-error")
                 if model.checkingConversationRoute { ProgressView("Checking the guest link…").controlSize(.small) }

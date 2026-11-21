@@ -336,6 +336,7 @@ type NativeShareReady struct {
 	Audio         int `json:"audio,omitempty"`
 	Sharing       int `json:"sharing,omitempty"`
 	Conversations int `json:"conversations,omitempty"`
+	CallRecovery  int `json:"call_recovery,omitempty"`
 }
 
 type NativeShareEvent[T any] struct {

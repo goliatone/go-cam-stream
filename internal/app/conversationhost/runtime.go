@@ -44,13 +44,14 @@ type Runtime struct {
 	origin    string
 	route     *routeVerification
 	relay     conversations.RelayIssuer
+	connector *Connector
 	close     sync.Once
 	done      chan struct{}
 	hosting   sync.Mutex
 	idleSince time.Time
 }
 
-func Start(ctx context.Context, settings config.Conversations, relay conversations.RelayIssuer, files fs.FS) (*Runtime, error) {
+func Start(ctx context.Context, settings config.Conversations, relay conversations.RelayIssuer, files fs.FS, connector *Connector) (*Runtime, error) {
 	if settings.Validate() != nil {
 		return nil, errors.Join(api.ErrInvalidConversationRequest, ErrSettings)
 	}
@@ -100,7 +101,7 @@ func Start(ctx context.Context, settings config.Conversations, relay conversatio
 		ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 6 * time.Second, WriteTimeout: 15 * time.Second,
 		IdleTimeout: 20 * time.Second, MaxHeaderBytes: 32 * 1024, ErrorLog: log.New(io.Discard, "", 0),
 	}
-	runtime := &Runtime{http: server, state: service, bus: bus, origin: origin, route: route, relay: relay, done: make(chan struct{})}
+	runtime := &Runtime{http: server, state: service, bus: bus, origin: origin, route: route, relay: relay, connector: connector, done: make(chan struct{})}
 	go func() {
 		_ = server.Serve(listener)
 		runtime.Close()
@@ -114,6 +115,14 @@ func (r *Runtime) Create(ctx context.Context, progress func(api.ConversationSetu
 	defer r.hosting.Unlock()
 	if r.Closed() {
 		return api.NativeConversationPrejoin{}, ErrListenerClosed
+	}
+	if r.connector != nil {
+		if progress != nil {
+			progress(api.ConversationSetupConnectorStage)
+		}
+		if err := r.connector.Ensure(ctx); err != nil {
+			return api.NativeConversationPrejoin{}, err
+		}
 	}
 	if r.route != nil {
 		if progress != nil {
@@ -142,10 +151,31 @@ func (r *Runtime) Create(ctx context.Context, progress func(api.ConversationSetu
 }
 
 func (r *Runtime) CheckRoute(ctx context.Context) error {
-	if r.route != nil && !r.route.reachable(ctx) {
+	if r.route == nil {
+		return nil
+	}
+	if r.connector == nil {
+		if r.route.reachable(ctx) {
+			return nil
+		}
 		return ErrRouteUnreachable
 	}
-	return nil
+	// The edge can register the new connector before it starts routing requests
+	// to it. Wait for the app's proof within the owner's bounded start request.
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	tick := time.NewTicker(300 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if r.route.reachable(ctx) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ErrRouteUnreachable
+		case <-tick.C:
+		}
+	}
 }
 
 func (r *Runtime) watchIdle(ctx context.Context) {

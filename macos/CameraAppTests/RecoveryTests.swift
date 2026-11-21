@@ -232,6 +232,23 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         check(opened.last == CameraModel.installGuide, "installation help opens the app replacement instructions")
     }
 
+    do { // Status is passive. Reconnect sends one dedicated owner command.
+        let (model, helper) = launched { $0.callConnectorVersion = 1 }
+        model.section = 3
+        helper.conversationReply = ["result": "stopped"]
+        model.tick()
+        check(model.callConnectorStatus == .stopped && helper.methods.contains("conversation_connector_status"),
+              "the Conversations section shows the connector's observed state")
+        helper.heldConversationMethods.insert(.reconnectConnector)
+        model.perform(.reconnectCallConnector)
+        model.perform(.reconnectCallConnector)
+        check(model.reconnectingCallConnector && helper.methods.filter { $0 == "conversation_connector_reconnect" }.count == 1,
+              "Reconnect sends exactly one scoped connector action while pending")
+        helper.pendingConversation.removeValue(forKey: .reconnectConnector)?(["result": "connected"])
+        check(!model.reconnectingCallConnector && model.callConnectorStatus == .connected,
+              "a completed connector reconnect updates the visible state")
+    }
+
     do { // Calls that stop after opening, and explicit closes.
         let (model, helper) = launched()
         helper.conversationReply = prejoin("host")

@@ -22,6 +22,8 @@ type CameraService struct {
 	publication  sync.Mutex
 	mu           sync.Mutex
 	owners       map[cs.SessionID]string // bounded by the core's MaxSessionRecords
+	admissions   map[cs.CameraID]int
+	updating     map[cs.CameraID]bool
 }
 
 // NewCameraService snapshots a catalog from config.Prepare. Provider-owned typed
@@ -31,7 +33,7 @@ func NewCameraService(core *cs.Service, catalog config.Catalog, timeout time.Dur
 	if core == nil || timeout <= 0 {
 		return nil, invalid()
 	}
-	s := &CameraService{core: core, timeout: timeout, owners: map[cs.SessionID]string{}}
+	s := &CameraService{core: core, timeout: timeout, owners: map[cs.SessionID]string{}, admissions: map[cs.CameraID]int{}, updating: map[cs.CameraID]bool{}}
 	snapshot, err := newCatalogSnapshot(catalog, api.CatalogRevision{}, nil)
 	if err != nil {
 		return nil, err
@@ -41,11 +43,27 @@ func NewCameraService(core *cs.Service, catalog config.Catalog, timeout time.Dur
 }
 
 func (s *CameraService) CreateSession(ctx context.Context, camera cs.CameraID, stream cs.StreamID, request api.CreateSessionRequest) (api.Session, error) {
+	s.mu.Lock()
 	ctx = s.captureCatalog(ctx)
 	item, err := s.require(ctx, camera, stream, view)
 	if err != nil {
+		s.mu.Unlock()
 		return api.Session{}, err
 	}
+	if s.updating[camera] {
+		s.mu.Unlock()
+		return api.Session{}, cs.NewError(cs.CodeCameraBusy, nil)
+	}
+	s.admissions[camera]++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.admissions[camera]--
+		if s.admissions[camera] == 0 {
+			delete(s.admissions, camera)
+		}
+		s.mu.Unlock()
+	}()
 	if err = request.Validate(); err != nil {
 		return api.Session{}, err
 	}
@@ -64,6 +82,20 @@ func (s *CameraService) CreateSession(ctx context.Context, camera cs.CameraID, s
 	}
 	out.Playback = api.Playback{Protocol: "webrtc", Answer: api.SDPAnswer{Type: "answer", SDP: state.Answer.SDP}}
 	return out, nil
+}
+
+func (s *CameraService) beginCredentialUpdate(camera cs.CameraID) (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.updating[camera] || s.admissions[camera] != 0 {
+		return nil, cs.NewError(cs.CodeCameraBusy, nil)
+	}
+	s.updating[camera] = true
+	return func() {
+		s.mu.Lock()
+		delete(s.updating, camera)
+		s.mu.Unlock()
+	}, nil
 }
 func (s *CameraService) CloseSession(ctx context.Context, id cs.SessionID) error {
 	ctx = s.captureCatalog(ctx)

@@ -4,6 +4,8 @@ enum ConversationMethod: String, Codable {
     case create = "conversation_create"
     case createLocal = "conversation_create_local"
     case checkRoute = "conversation_check_route"
+    case connectorStatus = "conversation_connector_status"
+    case reconnectConnector = "conversation_connector_reconnect"
     case openLink = "conversation_open_link"
     case status = "conversation_status"
     case end = "conversation_end"
@@ -88,24 +90,28 @@ struct ConversationPrejoin: Decodable, CustomStringConvertible, CustomDebugStrin
 protocol ConversationHelper: AnyObject {
     var conversationVersion: Int { get }
     var callRecoveryVersion: Int { get }
+    var callConnectorVersion: Int { get }
     func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?,
                              completion: @escaping ([String: Any]) -> Void)
 }
 
 extension ConversationHelper {
     var callRecoveryVersion: Int { 0 }
+    var callConnectorVersion: Int { 0 }
 }
 
 enum ConversationSetupStage: String {
     case listener
     case publicRoute = "public_route"
     case relay
+    case connector
 
     var message: String {
         switch self {
         case .listener: return "Checking the local call server…"
         case .publicRoute: return "Checking the guest link…"
         case .relay: return "Testing the call relay…"
+        case .connector: return "Starting the call connector…"
         }
     }
 }
@@ -122,6 +128,24 @@ enum ConversationSetup: String {
     case callAssetsUnavailable = "call_assets_unavailable"
     case relayConfigurationInvalid = "invalid_relay_configuration"
     case relayUnavailable = "relay_unavailable"
+    case connectorUnavailable = "connector_unavailable"
+    case connectorConfigurationInvalid = "invalid_connector_configuration"
+}
+
+enum CallConnectorStatus: String {
+    case external, stopped, connecting, connected, unavailable
+    case setupRequired = "setup_required"
+
+    var title: String {
+        switch self {
+        case .external: return "External connection"
+        case .stopped: return "Call connector stopped"
+        case .connecting: return "Call connector connecting…"
+        case .connected: return "Call connector connected"
+        case .unavailable: return "Call connector unavailable"
+        case .setupRequired: return "Call connector needs setup"
+        }
+    }
 }
 
 struct ConversationFault: Decodable {

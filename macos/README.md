@@ -3,7 +3,8 @@
 ## Menu-bar app
 
 From the repository root, build the development app on Apple Silicon/macOS 26+
-with Go, Xcode tools, Python, Node/npm and the prepared runtime pack:
+with Go, Xcode 26 or later (its `actool` compiles the app icon), Python, Node/npm
+and the prepared runtime pack:
 
 ```sh
 ./taskfile mac:build
@@ -220,6 +221,25 @@ Mac app listener `127.0.0.1:18894`. The T06 harnesses use
 `https://camstream-t06.getctx.com` at `127.0.0.1:18893`. Each hostname must
 forward to its own loopback port with its own connector.
 
+The Conversations tab shows the dedicated Mac connector status when enrolled.
+**Start Conversation** starts that connector if necessary, then verifies the
+guest URL. **Reconnect** restarts the enrolled job and rechecks an open room's
+guest route. The job runs under the logged-in macOS user and stays available
+when the app quits. End still frees the call listener after its grace period.
+
+For another Mac, provision a dedicated Switchboard Cloudflare route first. Verify
+its tunnel ID, public origin and loopback upstream together. Add a `connector`
+object to private `conversation-settings.json` with `tunnel_id`, `public_origin`,
+`upstream`, `metrics` and `cloudflared`. The origin and upstream must match the
+existing `ingress` fields. Choose an unused IPv4 loopback metrics address such
+as `127.0.0.1:18994`. Supply the absolute path to a trusted cloudflared with
+`--token-file` support. The development test uses cloudflared `2026.11.0`.
+Store the connector token for that exact tunnel in `conversation-connector.token`
+in the private application support directory with mode `0600`. Use a dedicated
+tunnel so the connector serves only this route. The app writes its own launchd
+definition and starts it over HTTP/2. External proxy setups continue to work
+with `connector` omitted.
+
 Build from the current checkout and run the synthetic loopback proof:
 
 ```sh
@@ -240,9 +260,10 @@ verify the running app and the origin the browser will use:
 
 Set `app` to the printed `.app` path. Use only the origin, including the port for
 `http://127.0.0.1` loopback calls. The command checks the running app's ID and
-compares the served page and its JavaScript and CSS with the bundle. The app
-also shows its ID under **About Camstream Camera**. In an open browser tab, read
-the loaded page's ID in the developer console with
+compares the served page and its JavaScript and CSS with the bundle. It can
+ignore one recognized Cloudflare analytics beacon when the page's enforced
+script policy blocks it. The app shows its ID under **About Camstream Camera**.
+In an open browser tab, read the loaded page's ID in the developer console with
 `document.querySelector('meta[name="camstream-build-id"]')?.content`.
 
 ### Camera sharing
@@ -344,7 +365,14 @@ and prints the full app and DMG paths. The release directory also contains
 `release.json` and `SHA256SUMS`. To verify it again, pass the printed release
 directory to `python3 macos/package-release.py --verify`. Pass an output directory
 to `./taskfile mac:package` to place the versioned release there.
-The DMG contains the app, an Applications shortcut and installation instructions.
+The DMG contains the app, an Applications shortcut and installation instructions;
+its mounted volume shows the Optic icon compiled into the app. The app and its web
+pages have different icons: the app uses the Optic lens, and the camera dashboard and
+the shared-camera guest page use the Continuity camcorder with a white lens. The
+versioned release workflow checks both generated icon sets before building the camera
+DMG and server archive. To update
+either artwork, install `librsvg` and run `python3 macos/app_icon.py` from the
+repository root. The app and dashboard builds use the generated assets from the checkout.
 The app includes every runtime tool, license/source archive, runtime provenance
 and application/runtime version metadata. Settings are never packaged.
 

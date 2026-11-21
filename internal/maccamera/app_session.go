@@ -164,7 +164,7 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	defer func() { _ = a.releaseConversationGuest(context.WithoutCancel(ctx), "") }()
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion, CallRecovery: 1}
+	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion, CallRecovery: 1, CallConnector: 1}
 	var updates <-chan time.Time
 	if a.sharing != nil {
 		ready.Sharing = api.ShareNativeVersion

@@ -87,6 +87,38 @@ class DevPortTests(unittest.TestCase):
 
 
 class MacBuildTests(unittest.TestCase):
+    def test_conversation_proof_builds_and_tests_the_same_fresh_app(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            chrome = root / "Google Chrome"
+            chrome.touch(mode=0o700)
+            command = (
+                'source "$1"; SCRIPT_DIR="$2"; '
+                'uname() { if [[ "$1" == -m ]]; then echo arm64; else echo Darwin; fi; }; '
+                'mac:build() { [[ "$BUILD_STATUS" == 0 ]] || return "$BUILD_STATUS"; mkdir "$1"; }; '
+                'go() { [[ -d "$CAMSTREAM_PROOF_APP" && "$CAMSTREAM_PROOF_CHROME" == "$EXPECTED_CHROME" '
+                '&& "$*" == *"-count=1"* ]]; }; test:conversation'
+            )
+            env = {**os.environ, "CAMSTREAM_PROOF_APP": "/old.app",
+                   "EXPECTED_CHROME": str(chrome), "CAMSTREAM_PROOF_CHROME": str(chrome), "BUILD_STATUS": "0"}
+            args = ["bash", "-c", command, "test", str(ROOT / "taskfile"), temp]
+            for _ in range(2):
+                result = subprocess.run(args, text=True, capture_output=True, env=env, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            builds = root / "dist/conversation-test"
+            self.assertEqual(len(list(builds.glob("build.*/Camstream Camera.app"))), 2)
+
+            result = subprocess.run(args, text=True, capture_output=True,
+                                    env={**env, "BUILD_STATUS": "7"}, check=False)
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual(len(list(builds.glob("build.*"))), 2)
+
+            result = subprocess.run(args, text=True, capture_output=True,
+                                    env={**env, "CAMSTREAM_PROOF_CHROME": str(root / "missing")}, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Set CAMSTREAM_PROOF_CHROME", result.stderr)
+            self.assertEqual(len(list(builds.glob("build.*"))), 2)
+
     def test_default_builds_use_fresh_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

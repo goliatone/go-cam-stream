@@ -16,7 +16,7 @@ import (
 func TestListenerDrainsAfterLastRoom(t *testing.T) {
 	runtime, err := Start(t.Context(), config.Conversations{Loopback: true}, nil, fstest.MapFS{
 		"index.html": {Data: []byte("<html><head></head><body></body></html>")},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

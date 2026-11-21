@@ -17,7 +17,8 @@ func TestRelay(ctx context.Context, issuer RelayIssuer) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	grant := RelayGrant{Attempt: ViewerAttempt{ShareID: handle(), ViewerID: handle(), AttemptID: handle()}, NotAfter: time.Now().Add(time.Minute)}
+	// Leave room for the provider's expiry margin and minimum credential TTL.
+	grant := RelayGrant{Attempt: ViewerAttempt{ShareID: handle(), ViewerID: handle(), AttemptID: handle()}, NotAfter: time.Now().Add(2 * time.Minute)}
 	issued, err := issuer.Issue(ctx, grant)
 	if err != nil {
 		return err

@@ -63,6 +63,45 @@ class ReleaseTests(unittest.TestCase):
             release.notarize(Path(temp) / 'app.zip', 'profile', Path(temp) / 'result.json')
             self.assertNotIn('--keychain', run.call_args.args)
 
+    def test_dmg_sets_the_volume_icon_flag_before_compressing(self):
+        calls, logs_at_detach = [], []
+        def fake(*args):
+            calls.append(args)
+            if args[:2] == ('hdiutil', 'attach'):  # a watched mount gets an fseventsd log
+                (args[args.index('-mountpoint') + 1] / '.fseventsd').mkdir()
+            if args[:2] == ('hdiutil', 'detach'):
+                logs_at_detach.append((args[2] / '.fseventsd').exists())
+        with tempfile.TemporaryDirectory() as temp, patch.object(release, 'run', side_effect=fake):
+            scratch = Path(temp)
+            release.make_dmg(scratch / 'image', 'Camstream Camera 1.2.3', scratch / 'out.dmg', scratch)
+            writable, mount = scratch / 'volume.dmg', calls[1][4]
+            self.assertFalse(mount.is_relative_to(scratch), 'mounted inside the output tree')
+            self.assertEqual(calls, [
+                ('hdiutil', 'create', '-volname', 'Camstream Camera 1.2.3', '-srcfolder', scratch / 'image', '-format', 'UDRW', writable),
+                ('hdiutil', 'attach', writable, '-mountpoint', mount, '-nobrowse', '-noautoopen', '-noverify'),
+                ('xattr', '-wx', 'com.apple.FinderInfo', release.CUSTOM_ICON_FINDER_INFO, mount),
+                ('hdiutil', 'detach', mount),
+                ('hdiutil', 'convert', writable, '-format', 'UDZO', '-o', scratch / 'out.dmg'),
+            ])
+        self.assertEqual(logs_at_detach, [False])
+        self.assertFalse(mount.exists())
+        finder_info = bytes.fromhex(release.CUSTOM_ICON_FINDER_INFO)
+        self.assertEqual(len(finder_info), 32)
+        self.assertEqual(int.from_bytes(finder_info[8:10], 'big'), 0x0400)  # kHasCustomIcon only
+
+    def test_dmg_failure_still_detaches_and_promotes_nothing(self):
+        calls = []
+        def failing(*args):
+            calls.append(args)
+            if args[0] == 'xattr' or (args[:2] == ('hdiutil', 'detach') and '-force' not in args):
+                raise subprocess.CalledProcessError(1, args)
+        with tempfile.TemporaryDirectory() as temp, patch.object(release, 'run', side_effect=failing), \
+                patch.object(release.time, 'sleep'), self.assertRaises(subprocess.CalledProcessError):
+            release.make_dmg(Path(temp) / 'image', 'Camstream Camera 1.2.3', Path(temp) / 'out.dmg', Path(temp))
+        self.assertEqual([call[:2] for call in calls[-2:]], [('hdiutil', 'detach')] * 2)
+        self.assertEqual(calls[-1][-1], '-force')
+        self.assertFalse(any(call[:2] == ('hdiutil', 'convert') for call in calls))
+
     def fixture(self, root):
         app = root / 'Camstream Camera.app'
         (app / 'Contents/Resources').mkdir(parents=True)

@@ -1,0 +1,53 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "srgb:0.18431,0.35294,0.30196,1.00000",
+      "srgb:0.04314,0.09804,0.08235,1.00000"
+    ]
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": false,
+          "image-name": "light.svg",
+          "name": "light"
+        }
+      ],
+      "name": "Light",
+      "shadow": {
+        "kind": "none",
+        "opacity": 0.5
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": false,
+          "image-name": "lens.png",
+          "name": "lens"
+        }
+      ],
+      "name": "Lens",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.6
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

@@ -7,20 +7,22 @@ import (
 )
 
 const (
-	ConversationVersion      = 1
-	ConversationPage         = "/r/{room_id}"
-	ConversationAPIPrefix    = "/conversation-api/v1/rooms/"
-	ConversationRoomPath     = ConversationAPIPrefix + "{room_id}"
-	ConversationJoinScheme   = "camstream"
-	ConversationLifetime     = time.Hour
-	ConversationReconnect    = 30 * time.Second
-	ConversationHeartbeat    = 12 * time.Second
-	ConversationSDPMax       = 32 * 1024
-	ConversationNativeCreate = "conversation_create"
-	ConversationNativeOpen   = "conversation_open_link"
-	ConversationNativeStatus = "conversation_status"
-	ConversationNativeEnd    = "conversation_end"
-	ConversationNativeLeave  = "conversation_leave"
+	ConversationVersion          = 1
+	ConversationPage             = "/r/{room_id}"
+	ConversationAPIPrefix        = "/conversation-api/v1/rooms/"
+	ConversationRoomPath         = ConversationAPIPrefix + "{room_id}"
+	ConversationJoinScheme       = "camstream"
+	ConversationLifetime         = time.Hour
+	ConversationReconnect        = 30 * time.Second
+	ConversationHeartbeat        = 12 * time.Second
+	ConversationSDPMax           = 32 * 1024
+	ConversationNativeCreate     = "conversation_create"
+	ConversationNativeLocal      = "conversation_create_local"
+	ConversationNativeCheckRoute = "conversation_check_route"
+	ConversationNativeOpen       = "conversation_open_link"
+	ConversationNativeStatus     = "conversation_status"
+	ConversationNativeEnd        = "conversation_end"
+	ConversationNativeLeave      = "conversation_leave"
 )
 
 var ErrInvalidConversationRequest = errors.New("invalid conversation request")
@@ -187,14 +189,16 @@ type NativeConversationRequest struct {
 	Method        string `json:"method"`
 	RoomID        string `json:"room_id,omitempty"`
 	InvitationURL string `json:"invitation_url,omitempty"`
+	SetupProgress bool   `json:"setup_progress,omitempty"`
 }
 
 func (r NativeConversationRequest) Validate() error {
-	if r.Version != 1 || len(r.ID) == 0 || len(r.ID) > 64 {
+	if r.Version != 1 || len(r.ID) == 0 || len(r.ID) > 64 ||
+		(r.SetupProgress && r.Method != ConversationNativeCreate && r.Method != ConversationNativeLocal) {
 		return ErrInvalidConversationRequest
 	}
 	switch r.Method {
-	case ConversationNativeCreate:
+	case ConversationNativeCreate, ConversationNativeLocal:
 		if r.RoomID == "" && r.InvitationURL == "" {
 			return nil
 		}
@@ -202,7 +206,7 @@ func (r NativeConversationRequest) Validate() error {
 		if r.RoomID == "" && r.InvitationURL != "" && len(r.InvitationURL) <= 8192 {
 			return nil
 		}
-	case ConversationNativeStatus, ConversationNativeEnd, ConversationNativeLeave:
+	case ConversationNativeStatus, ConversationNativeEnd, ConversationNativeLeave, ConversationNativeCheckRoute:
 		if r.InvitationURL == "" {
 			return (RoomRef{RoomID: r.RoomID}).Validate()
 		}
@@ -224,12 +228,26 @@ const (
 	ConversationSetupInvalid     ConversationSetup = "invalid_configuration"
 	ConversationSetupUnavailable ConversationSetup = "runtime_unavailable"
 	ConversationSetupFailed      ConversationSetup = "start_failed"
+	ConversationSetupPortInUse   ConversationSetup = "listener_in_use"
+	ConversationSetupUnreachable ConversationSetup = "public_route_unreachable"
+	ConversationSetupAssets      ConversationSetup = "call_assets_unavailable"
+	ConversationSetupRelayConfig ConversationSetup = "invalid_relay_configuration"
+	ConversationSetupRelay       ConversationSetup = "relay_unavailable"
 )
 
 // Retryable reports whether trying again without changing settings can help.
 func (s ConversationSetup) Retryable() bool {
-	return s == ConversationSetupUnavailable || s == ConversationSetupFailed
+	return s == ConversationSetupUnavailable || s == ConversationSetupFailed ||
+		s == ConversationSetupPortInUse || s == ConversationSetupUnreachable || s == ConversationSetupRelay
 }
+
+type ConversationSetupStage string
+
+const (
+	ConversationSetupListenerStage ConversationSetupStage = "listener"
+	ConversationSetupRouteStage    ConversationSetupStage = "public_route"
+	ConversationSetupRelayStage    ConversationSetupStage = "relay"
+)
 
 // NativeConversationFault is the owner-pipe error for conversation requests.
 // Older helpers omit Setup; clients then use neutral recovery text.
@@ -237,6 +255,7 @@ type NativeConversationFault struct {
 	Code      RoomErrorCode     `json:"code"`
 	Retryable bool              `json:"retryable"`
 	Setup     ConversationSetup `json:"setup,omitempty"`
+	Port      uint16            `json:"port,omitempty"`
 }
 
 type NativeConversationPrejoin struct {

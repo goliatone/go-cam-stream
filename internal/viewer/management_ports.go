@@ -10,6 +10,7 @@ import (
 // Implementations serialize transitions, own secrets and verify cleanup before
 // reporting a pass. A canceled context does not prove resource absence.
 type CameraManagement interface {
+	CredentialDraft(context.Context, api.CredentialDraftRequest) (api.DraftReview, error)
 	Capabilities(context.Context) (api.Capabilities, error)
 	CreateDraft(context.Context, api.CreateDraftRequest) (api.DraftReview, error)
 	ImportDraft(context.Context, api.ImportDraftRequest) (api.DraftReview, error)

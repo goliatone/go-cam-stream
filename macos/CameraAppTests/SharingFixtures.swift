@@ -29,6 +29,7 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
     var audioVersion = 0
     var conversationVersion = 1
     var callRecoveryVersion = 1
+    var callConnectorVersion = 0
     var incomingInvitations: [String] = []
     var conversationReply: [String: Any] = [:]
     var heldConversationMethods: Set<ConversationMethod> = []

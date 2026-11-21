@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/goliatone/go-cam-stream/config"
@@ -21,6 +22,8 @@ type pendingCameraSave struct {
 	merged            config.Catalog
 	revision          api.CatalogRevision
 	promoted          bool
+	credentialCamera  cs.CameraID
+	releaseAdmission  func()
 }
 
 func copyManagedCatalog(m ManagedCatalog) ManagedCatalog {
@@ -94,9 +97,16 @@ func saveFingerprint(r api.SaveCameraRequest) string {
 	return hex.EncodeToString(sum[:])
 }
 func (s *CameraManagementService) savedCamera(ctx context.Context, key string) (*ManagedRecord, error) {
+	var receiptCamera cs.CameraID
+	for _, receipt := range s.durable.Receipts {
+		if receipt.Owner == principal(ctx) && receipt.OperationKey == key {
+			receiptCamera = receipt.CandidateID
+			break
+		}
+	}
 	for i := range s.durable.Cameras {
 		r := &s.durable.Cameras[i]
-		if r.Creator == principal(ctx) && r.CreationKey == key {
+		if r.Creator == principal(ctx) && (r.CreationKey == key || r.ID == receiptCamera) {
 			if _, err := s.options.Viewer.require(ctx, r.ID, "default", view); err != nil {
 				return nil, err
 			}
@@ -105,8 +115,8 @@ func (s *CameraManagementService) savedCamera(ctx context.Context, key string) (
 	}
 	return nil, nil
 }
-func (s *CameraManagementService) saveResponse(r *ManagedRecord) api.SaveCameraResponse {
-	return api.SaveCameraResponse{CameraID: string(r.ID), CatalogRevision: s.options.Viewer.CatalogRevision()}
+func (s *CameraManagementService) saveResponse(r *ManagedRecord, operationKey string) api.SaveCameraResponse {
+	return api.SaveCameraResponse{CameraID: string(r.ID), CatalogRevision: s.options.Viewer.CatalogRevision(), CredentialsUpdated: operationKey != r.CreationKey}
 }
 func (s *CameraManagementService) replaySave(ctx context.Context, r api.SaveCameraRequest) (api.SaveCameraResponse, bool, error) {
 	record, err := s.savedCamera(ctx, r.OperationKey)
@@ -122,7 +132,7 @@ func (s *CameraManagementService) replaySave(ctx context.Context, r api.SaveCame
 				return api.SaveCameraResponse{}, true, api.ManagementFailure(api.CodeOperationConflict)
 			}
 			if time.Now().Before(receipt.ExpiresAt) {
-				return s.saveResponse(record), true, nil
+				return s.saveResponse(record, r.OperationKey), true, nil
 			}
 		}
 	}
@@ -137,6 +147,8 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		return api.SaveCameraResponse{}, err
 	}
 	err := s.recoverSave(ctx)
+	draft := s.drafts[r.DraftID]
+	rotation := draft != nil && draft.owner == principal(ctx) && draft.review.CredentialUpdate
 	if err == nil {
 		response, found, replayErr := s.replaySave(ctx, r)
 		if found {
@@ -157,7 +169,7 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 	s.opMu.Unlock()
 	var bindings []AddressBinding
 	observed := time.Now()
-	if !known {
+	if !known && !rotation {
 		bindings, err = s.resolveBaseBindings(ctx)
 		if err != nil {
 			return api.SaveCameraResponse{}, err
@@ -171,7 +183,7 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		if s.options.Repository == nil {
 			return nil, storageFailure()
 		}
-		if time.Since(observed) > 5*time.Second {
+		if !rotation && time.Since(observed) > 5*time.Second {
 			return nil, api.ManagementFailure(api.CodeIdentityUnverified)
 		}
 		if r.CatalogRevision != s.options.Viewer.CatalogRevision() {
@@ -190,7 +202,14 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		if d.review.Authentication == api.AuthenticationCredentials && d.credential == nil {
 			return nil, api.ManagementFailure(api.CodeCredentialsRequired)
 		}
-		if e = s.identities.Reserve(d.review.ID, d.binding); e != nil {
+		var previous ManagedRecord
+		if d.review.CredentialUpdate {
+			previous, e = s.credentialTarget(ctx, d)
+			if e != nil {
+				return nil, e
+			}
+		}
+		if e = s.reserveDraft(ctx, d); e != nil {
 			return nil, e
 		}
 		next := copyManagedCatalog(s.durable)
@@ -210,12 +229,34 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		if len(next.Receipts) >= api.MaxSaveReceipts {
 			return nil, cs.NewError(cs.CodeCapacityExceeded, nil)
 		}
-		record := ManagedRecord{ID: cs.CameraID(d.review.CandidateID), PhysicalID: cs.PhysicalCameraID(d.review.CandidateID), Name: d.review.Name, Creator: d.owner, Binding: d.binding, Path: d.config.Profiles[0].Path, Query: d.config.Profiles[0].Query, CreationKey: r.OperationKey, CreatedAt: time.Now()}
-		if d.credential != nil {
+		var record ManagedRecord
+		if d.review.CredentialUpdate {
+			record = previous
 			record.CredentialID = d.credential.ID
+			for i := range next.Cameras {
+				if next.Cameras[i].ID == record.ID {
+					next.Cameras[i] = record
+					break
+				}
+			}
+			for i, old := range next.Credentials {
+				if old.ID == previous.CredentialID {
+					clear(old.Username)
+					clear(old.Password)
+					next.Credentials = slices.Delete(next.Credentials, i, i+1)
+					break
+				}
+			}
+		} else {
+			record = ManagedRecord{ID: cs.CameraID(d.review.CandidateID), PhysicalID: cs.PhysicalCameraID(d.review.CandidateID), Name: d.review.Name, Creator: d.owner, Binding: d.binding, Path: d.config.Profiles[0].Path, Query: d.config.Profiles[0].Query, CreationKey: r.OperationKey, CreatedAt: time.Now()}
+			if d.credential != nil {
+				record.CredentialID = d.credential.ID
+			}
+			next.Cameras = append(next.Cameras, record)
+		}
+		if d.credential != nil {
 			next.Credentials = append(next.Credentials, copyCredential(*d.credential))
 		}
-		next.Cameras = append(next.Cameras, record)
 		next.Receipts = append(next.Receipts, ManagedReceipt{OperationKey: r.OperationKey, Owner: d.owner, CandidateID: record.ID, Fingerprint: saveFingerprint(r), ExpiresAt: time.Now().Add(api.SaveReceiptLifetime)})
 		merged, e := MergeManagedCatalog(ctx, s.options.Base, next, bindings, s.options.MaxSources)
 		if e != nil {
@@ -231,6 +272,14 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 			return nil, storageFailure()
 		}
 		pending := &pendingCameraSave{owner: d.owner, key: r.OperationKey, draft: d.review.ID, state: ManagedState{Revision: s.stateRevision + 1, CommitID: randomManagementID(), Payload: body}, catalog: next, merged: merged, revision: revision}
+		if d.review.CredentialUpdate {
+			pending.credentialCamera = record.ID
+			pending.releaseAdmission, e = s.prepareCredentialUpdate(ctx, previous)
+			if e != nil {
+				clear(body)
+				return nil, e
+			}
+		}
 		s.pendingSave = pending
 		retained = true
 		d.review.State = api.DraftSaving
@@ -250,7 +299,7 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		if e = s.publishSave(); e != nil {
 			return nil, unknownSave()
 		}
-		return api.SaveCameraResponse{CameraID: string(record.ID), CatalogRevision: revision}, nil
+		return s.saveResponse(&record, r.OperationKey), nil
 	})
 	if err != nil {
 		return api.SaveCameraResponse{}, err
@@ -267,11 +316,11 @@ func (s *CameraManagementService) publishSave() error {
 	if d == nil {
 		return unknownSave()
 	}
-	if err := s.options.Viewer.PublishCatalog(p.merged, p.revision, s.options.Policy.Managers(), func() error {
+	if err := s.options.Viewer.publishCatalog(p.merged, p.revision, s.options.Policy.Managers(), p.credentialCamera, func() error {
 		if err := s.options.Secrets.Publish(p.catalog.Credentials); err != nil {
 			return err
 		}
-		if !p.promoted {
+		if p.credentialCamera == "" && !p.promoted {
 			if err := s.identities.Promote(d.review.ID, d.review.CandidateID, d.binding); err != nil {
 				return err
 			}
@@ -288,6 +337,10 @@ func (s *CameraManagementService) publishSave() error {
 	s.pendingSave = nil
 	d.review.State = api.DraftSaved
 	s.discardCredential(d)
+	if p.releaseAdmission != nil {
+		s.identities.Release(d.review.ID)
+		p.releaseAdmission()
+	}
 	return nil
 }
 func (s *CameraManagementService) abandonSave() {
@@ -314,6 +367,9 @@ func (s *CameraManagementService) abandonSave() {
 	p.catalog.Destroy()
 	clear(p.state.Payload)
 	s.pendingSave = nil
+	if p.releaseAdmission != nil {
+		p.releaseAdmission()
+	}
 }
 func (s *CameraManagementService) recoverSave(ctx context.Context) error {
 	p := s.pendingSave
@@ -335,7 +391,7 @@ func (s *CameraManagementService) recoverSave(ctx context.Context) error {
 		if e != nil || record == nil {
 			return unknownSave()
 		}
-		response = s.saveResponse(record)
+		response = s.saveResponse(record, p.key)
 	} else if outcome == CommitNotCommitted && state.Revision == s.stateRevision {
 		s.abandonSave()
 		resultErr = storageFailure()

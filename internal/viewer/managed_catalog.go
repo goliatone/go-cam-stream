@@ -125,12 +125,12 @@ func (m ManagedCatalog) Validate() error {
 	receipts := map[string]bool{}
 	for _, r := range m.Receipts {
 		key := r.Owner + "\x00" + r.OperationKey
-		if receipts[key] || !ids[r.CandidateID] || !anchors[key] || r.Fingerprint == "" || r.ExpiresAt.IsZero() {
+		if receipts[key] || !ids[r.CandidateID] || (api.Mutation{OperationKey: r.OperationKey, RuntimeEpoch: "stored"}).Validate() != nil || r.Fingerprint == "" || r.ExpiresAt.IsZero() {
 			return storageFailure()
 		}
 		matched := false
 		for _, c := range m.Cameras {
-			if c.ID == r.CandidateID && c.Creator == r.Owner && c.CreationKey == r.OperationKey {
+			if c.ID == r.CandidateID && c.Creator == r.Owner && (!anchors[key] || c.CreationKey == r.OperationKey) {
 				matched = true
 			}
 		}
@@ -168,7 +168,7 @@ func compileManaged(ctx context.Context, r ManagedRecord) (config.CatalogCamera,
 	if err != nil {
 		return config.CatalogCamera{}, err
 	}
-	return config.CatalogCamera{Camera: camera, Streams: streams, Sources: map[cs.StreamID]cs.SourceKey{"default": spec.Key}}, nil
+	return config.CatalogCamera{Camera: camera, Streams: streams, Sources: map[cs.StreamID]cs.SourceKey{"default": spec.Key}, ManagedOwner: r.Creator}, nil
 }
 
 // MergeManagedCatalog performs no DNS or media I/O. baseBindings contains fresh

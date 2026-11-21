@@ -50,6 +50,8 @@ final class CameraModel: ObservableObject {
     @Published private(set) var conversationProgress: ConversationSetupStage?
     @Published private(set) var conversationRouteReachable = true
     @Published private(set) var checkingConversationRoute = false
+    @Published private(set) var callConnectorStatus: CallConnectorStatus = .external
+    @Published private(set) var reconnectingCallConnector = false
     @Published private(set) var closingConversation = false
     @Published private(set) var hostInBrowser = false
     /// Sanitized cause of the last failed start or open, when the helper reports one.
@@ -63,6 +65,8 @@ final class CameraModel: ObservableObject {
     private var nextHostStatus = Date.distantPast
     private var hostStatusPending = false
     private var nextRouteCheck = Date.distantPast
+    private var nextConnectorCheck = Date.distantPast
+    private var connectorStatusPending = false
     private var browserCaptureLease: UUID?
     private var conversationCloseWaiters: [(Bool) -> Void] = []
     private var pendingConversationURL: String?
@@ -270,6 +274,10 @@ final class CameraModel: ObservableObject {
             return "Check the conversation relay settings and credentials, then try again."
         case .relayUnavailable:
             return "Check the relay provider and your network, then test again."
+        case .connectorUnavailable:
+            return "Reconnect the call connector, then try starting the conversation again."
+        case .connectorConfigurationInvalid:
+            return "Check the dedicated tunnel settings and token in the settings folder."
         case nil:
             break
         }
@@ -495,6 +503,47 @@ final class CameraModel: ObservableObject {
             self.conversationRouteReachable = reachable
             self.conversationSurface?.updateInvitationRoute(reachable)
             self.changed()
+        }
+    }
+
+    private func refreshCallConnector() {
+        guard ready, section == 3, client.idle, !connectorStatusPending, !reconnectingCallConnector,
+              Date() >= nextConnectorCheck, let helper = client as? ConversationHelper,
+              helper.callConnectorVersion == 1 else { return }
+        connectorStatusPending = true
+        nextConnectorCheck = Date().addingTimeInterval(6)
+        helper.requestConversation(.connectorStatus, roomID: nil, invitation: nil) { [weak self] reply in
+            guard let self else { return }
+            self.connectorStatusPending = false
+            guard !self.reconnectingCallConnector, let state = reply["result"] as? String,
+                  let status = CallConnectorStatus(rawValue: state), status != self.callConnectorStatus else { return }
+            self.callConnectorStatus = status
+        }
+    }
+
+    func reconnectCallConnector() {
+        guard ready, !reconnectingCallConnector, let helper = client as? ConversationHelper,
+              helper.callConnectorVersion == 1 else { return }
+        reconnectingCallConnector = true
+        if conversationPrejoin?.admission.role == .host, conversationPrejoin?.pageURL.scheme == "https" {
+            conversationRouteReachable = false
+            conversationSurface?.updateInvitationRoute(false)
+        }
+        helper.requestConversation(.reconnectConnector, roomID: nil, invitation: nil) { [weak self] reply in
+            guard let self else { return }
+            self.reconnectingCallConnector = false
+            self.nextConnectorCheck = Date().addingTimeInterval(6)
+            if let state = reply["result"] as? String, let status = CallConnectorStatus(rawValue: state) {
+                self.callConnectorStatus = status
+                if status == .connected, self.conversationSetup == .connectorUnavailable {
+                    self.conversationFault = nil
+                    self.conversationNotice = ConversationNotice(text: "Call connector connected. Start the conversation again.")
+                }
+                self.checkConversationRoute()
+            } else {
+                let fault: ConversationFault? = self.decode(reply["error"])
+                self.callConnectorStatus = fault?.setup == .connectorConfigurationInvalid ? .setupRequired : .unavailable
+            }
         }
     }
 
@@ -895,6 +944,7 @@ final class CameraModel: ObservableObject {
         if client.idle, Date() >= nextRouteCheck, phase == .waiting || phase == .prejoin {
             checkConversationRoute()
         }
+        refreshCallConnector()
         let oldPermission = permission
         refreshPermission()
         if oldPermission != permission, permission == "authorized" { refreshDevices() }

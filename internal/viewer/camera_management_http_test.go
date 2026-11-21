@@ -124,4 +124,31 @@ func TestManagementRegisteredHTTPWorkflow(t *testing.T) {
 	if out = request("PATCH", api.DraftsPath+"/"+d.ID, `{"credentials":null}`); out.Code != 400 {
 		t.Fatal("null credential retention accepted", out.Code)
 	}
+	duplicate := draftRequest(7)
+	body, _ = json.Marshal(duplicate)
+	out = request("POST", api.DraftsPath, string(body))
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &d) != nil {
+		t.Fatal("duplicate review", out.Code)
+	}
+	create.Mutation = mutation(8)
+	body, _ = json.Marshal(create)
+	out = request("POST", api.DraftsPath+"/"+d.ID+"/tests", string(body))
+	var conflict api.ManagementErrorResponse
+	if out.Code != 409 || json.Unmarshal(out.Body.Bytes(), &conflict) != nil ||
+		conflict.Error.Code != string(api.CodeDuplicateCamera) || conflict.Error.CameraID != saved.CameraID {
+		t.Fatal("authorized duplicate target lost through command dispatch", out.Code, out.Body.String())
+	}
+
+	replace := api.CredentialDraftRequest{Mutation: mutation(9), CameraID: saved.CameraID, Credentials: api.Credentials{Password: "REPLACEMENT-PRIVATE-PASSWORD"}}
+	body, _ = json.Marshal(replace)
+	token = ""
+	if out = request("POST", api.DraftsPath+"/credentials", string(body)); out.Code != 403 {
+		t.Fatal("missing CSRF accepted for credential update", out.Code)
+	}
+	token = bootstrap.Token
+	out = request("POST", api.DraftsPath+"/credentials", string(body))
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &d) != nil || !d.CredentialUpdate || d.CandidateID != saved.CameraID ||
+		strings.Contains(out.Body.String(), replace.Credentials.Password) || strings.Contains(out.Body.String(), duplicate.Endpoint) {
+		t.Fatal("credential draft did not return a safe review", out.Code)
+	}
 }

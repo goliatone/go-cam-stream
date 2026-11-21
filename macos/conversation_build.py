@@ -16,6 +16,11 @@ BUILD_ID = re.compile(r"[0-9a-f]{32}")
 BUILD_META = re.compile(rb'<meta name="camstream-build-id" content="([0-9a-f]{32})">')
 ASSET_PREFIX = "/conversation-assets/"
 ASSET_REF = re.compile(rb'["\']/conversation-assets/(app-[A-Za-z0-9_-]+\.(?:js|css))["\']')
+CLOUDFLARE_BEACON = re.compile(
+    rb'<script type="module" src="https://static\.cloudflareinsights\.com/beacon\.min\.js/v[0-9a-f]{1,64}"'
+    rb' integrity="sha512-[A-Za-z0-9+/]{86}==" data-cf-beacon=\'\{[^\'<>\r\n]{1,2048}\}\''
+    rb' crossorigin="anonymous"></script>\n(?=</body>)'
+)
 RUNNING_APPS = """
 ObjC.import('AppKit')
 const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('com.goliatone.camstream.camera')
@@ -83,7 +88,17 @@ def fetch(connection, path, size):
     with connection.getresponse() as response:
         if response.status != 200:
             raise ValueError(f"{path} returned HTTP {response.status}. Check that the expected app is hosting on this origin.")
-        return response.read(size + 1)
+        return response.read(size + 1), response.getheader("Content-Security-Policy", "")
+
+
+def blocks_cloudflare_beacon(policy, origin):
+    # Accept only a single policy with no script element override. Report-Only
+    # is never passed here, and 'self' excludes the beacon's separate origin.
+    if "," in policy or urlsplit(origin).hostname == "static.cloudflareinsights.com":
+        return False
+    directives = (directive.split() for directive in policy.split(";"))
+    script_rules = [rule for rule in directives if rule and rule[0].lower() in ("script-src", "script-src-elem")]
+    return script_rules == [["script-src", "'self'"]]
 
 
 def verify_browser(app, expected, origin):
@@ -98,16 +113,22 @@ def verify_browser(app, expected, origin):
     connection = browser_connection(origin)
     try:
         # A valid-shaped synthetic room path serves the real page without sending an invitation or joining.
-        served = fetch(connection, "/r/" + token_urlsafe(32), max(len(html), 65536))
+        served, policy = fetch(connection, "/r/" + token_urlsafe(32), max(len(html), 65536))
         served_id = page_build_id(served)
         if served_id != expected:
             raise ValueError(f"Browser page has build ID {served_id or 'missing'}, expected {expected}.")
+        beacon_removed = False
+        if served != html and blocks_cloudflare_beacon(policy, origin):
+            served, count = CLOUDFLARE_BEACON.subn(b"", served, count=1)
+            beacon_removed = count == 1
         if served != html:
             raise ValueError("Served conversation HTML differs from the expected bundle.")
         for name in names:
             local = (assets / name).read_bytes()
-            if not local or fetch(connection, ASSET_PREFIX + name, len(local)) != local:
+            asset, _ = fetch(connection, ASSET_PREFIX + name, len(local))
+            if not local or asset != local:
                 raise ValueError(f"Served conversation asset differs from the expected bundle: {name}")
+        return beacon_removed
     finally:
         connection.close()
 
@@ -121,11 +142,13 @@ def main():
         app = args.app.resolve()
         expected = read_build_id(app)
         running = verify_running_app(expected)
-        verify_browser(app, expected, args.origin)
+        beacon_removed = verify_browser(app, expected, args.origin)
     except (OSError, ValueError, HTTPException, plistlib.InvalidFileException, subprocess.SubprocessError) as error:
         parser.exit(1, f"Conversation build verification failed: {error}\n")
     print(f"Build ID: {expected}")
     print(f"Running Mac app: {running}")
+    if beacon_removed:
+        print("Ignored one Cloudflare analytics beacon blocked by the page's script policy.")
     print("Browser conversation HTML, JavaScript and CSS match the bundle.")
 
 

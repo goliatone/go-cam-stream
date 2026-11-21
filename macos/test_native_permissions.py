@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import plistlib
 import runpy
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,7 +13,31 @@ from conversation_build import BUILD_ID_KEY, page_build_id
 builder = runpy.run_path(str(Path(__file__).with_name('build-proof.py')))
 
 
+def actool_outputs(args, files=('Assets.car', 'AppIcon.icns'),
+                   keys=(('CFBundleIconFile', 'AppIcon'), ('CFBundleIconName', 'AppIcon'))):
+    """Write what actool writes for the app icon: compiled files and the partial Info.plist."""
+    resources = Path(args[args.index('--compile') + 1])
+    for name in files:
+        (resources / name).write_bytes(b'fixture')
+    Path(args[args.index('--output-partial-info-plist') + 1]).write_bytes(plistlib.dumps(dict(keys)))
+
+
 class NativePermissionTests(unittest.TestCase):
+    def test_icon_compilation_fails_closed(self):
+        compile_app_icon = builder['compile_app_icon']
+        def failed(*args, **kwargs):
+            raise subprocess.CalledProcessError(72, args, output='', stderr='xcrun: error: unable to find utility "actool"')
+        cases = {'missing actool': failed,
+                 'no icns fallback': lambda *args, **kwargs: actool_outputs(args, files=('Assets.car',)),
+                 'no icon keys': lambda *args, **kwargs: actool_outputs(args, keys=())}
+        for name, run in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp, \
+                    patch.dict(compile_app_icon.__globals__, run=run):
+                with self.assertRaises(ValueError) as raised:
+                    compile_app_icon(Path(temp), '26.0')
+                if name == 'missing actool':
+                    self.assertIn('unable to find utility "actool"', str(raised.exception))
+
     def test_assembly_selects_production_permissions_without_changing_proof(self):
         for production in (False, True):
             with self.subTest(production=production), tempfile.TemporaryDirectory() as temp:
@@ -29,8 +54,12 @@ class NativePermissionTests(unittest.TestCase):
                         'packs': {'darwin-arm64': {'sha256': 'fixture'}}, 'sources': {'opus': {}}}
                 app = root / 'Fixture.app'
                 signed = []
+                icon_builds = []
                 assemble = builder['assemble']
                 def run_fixture(*args, **kwargs):
+                    if args[:2] == ('xcrun', 'actool'):
+                        icon_builds.append(args)
+                        actool_outputs(args)
                     if args[:3] == ('npm', 'run', 'build:share'):
                         guest = Path(kwargs['env']['CAMSTREAM_SHARE_OUT_DIR'])
                         guest.mkdir()
@@ -57,8 +86,20 @@ class NativePermissionTests(unittest.TestCase):
                     self.assertRegex(build_id, r'^[0-9a-f]{32}$')
                     self.assertEqual(info[BUILD_ID_KEY], build_id)
                     self.assertEqual(page_build_id(conversation.read_bytes()), build_id)
+                    self.assertEqual(len(icon_builds), 1)
+                    args = icon_builds[0]
+                    self.assertTrue(args[2].endswith('macos/CameraApp/AppIcon.icon'))
+                    for flag, value in (('--compile', str(app / 'Contents/Resources')), ('--platform', 'macosx'),
+                                        ('--minimum-deployment-target', '26.0'), ('--app-icon', 'AppIcon')):
+                        self.assertEqual(args[args.index(flag) + 1], value)
+                    self.assertEqual((info['CFBundleIconFile'], info['CFBundleIconName']), ('AppIcon', 'AppIcon'))
+                    for name in ('Assets.car', 'AppIcon.icns'):
+                        self.assertTrue((app / 'Contents/Resources' / name).is_file())
                 else:
                     self.assertNotIn(BUILD_ID_KEY, info)
+                    self.assertEqual(icon_builds, [])
+                    self.assertNotIn('CFBundleIconFile', info)
+                    self.assertNotIn('CFBundleIconName', info)
                 self.assertTrue(signed)
                 for _, entitlement in signed:
                     values = plistlib.loads(Path(entitlement).read_bytes())

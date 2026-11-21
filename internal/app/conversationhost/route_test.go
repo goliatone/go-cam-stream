@@ -6,12 +6,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/goliatone/go-cam-stream/data/api"
 	"github.com/goliatone/go-cam-stream/internal/conversations"
 )
+
+func TestManagedRouteWaitsForEdgeAfterConnectorRegisters(t *testing.T) {
+	server := httptest.NewUnstartedServer(nil)
+	route := newRouteVerification("https://" + server.Listener.Addr().String())
+	var requests atomic.Int32
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		route.wrap(http.NotFoundHandler()).ServeHTTP(w, r)
+	})
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	route.client.Transport = server.Client().Transport
+	runtime := Runtime{route: route, connector: &Connector{}}
+	if err := runtime.CheckRoute(t.Context()); err != nil || requests.Load() != 2 {
+		t.Fatalf("route did not recover after edge registration: %v", err)
+	}
+}
 
 type failedRelay struct{}
 

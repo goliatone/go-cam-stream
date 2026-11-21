@@ -35,6 +35,7 @@ type cameraDraft struct {
 	review          api.DraftReview
 	config          rtsp.Config
 	credential      *ManagedCredential
+	priorCredential string
 	binding         AddressBinding
 	camera          cs.Camera
 	session         cs.SessionID
@@ -257,6 +258,32 @@ func (s *CameraManagementService) createDraft(ctx context.Context, input api.Dra
 	if err != nil {
 		return api.DraftReview{}, err
 	}
+	d, err := s.newDraft(ctx, input.Name)
+	if err != nil {
+		return api.DraftReview{}, err
+	}
+	d.review.CandidateID = randomManagementID()
+	if d.review.CandidateID == "" {
+		return api.DraftReview{}, invalid()
+	}
+	d.config = cfg
+	d.review.Endpoint = input.Endpoint
+	d.review.Authentication = input.Authentication
+	d.review.Warnings = []api.DraftWarning{api.WarningInitialAddressOnly, api.WarningPrivateAccess}
+	if cfg.Host == "localhost" || cfg.Host == "127.0.0.1" || cfg.Host == "::1" {
+		d.review.Warnings = append(d.review.Warnings, api.WarningServerLocalhost)
+	}
+	if imported {
+		d.review.Warnings = append(d.review.Warnings, api.WarningIgnoredGrants)
+	}
+	if err = s.replaceCredentials(d, input); err != nil {
+		return api.DraftReview{}, err
+	}
+	s.drafts[d.review.ID] = d
+	return cloneReview(d.review), nil
+}
+
+func (s *CameraManagementService) newDraft(ctx context.Context, name string) (*cameraDraft, error) {
 	owner := principal(ctx)
 	count, total := 0, 0
 	for _, d := range s.drafts {
@@ -269,27 +296,17 @@ func (s *CameraManagementService) createDraft(ctx context.Context, input api.Dra
 	}
 	// Terminal drafts also consume bounded memory until their recovery expiry.
 	if count >= api.MaxOwnerDrafts || total >= api.MaxDrafts || len(s.drafts) >= api.MaxDrafts*2 {
-		return api.DraftReview{}, cs.NewError(cs.CodeCapacityExceeded, nil)
+		return nil, cs.NewError(cs.CodeCapacityExceeded, nil)
 	}
-	id, candidate := randomManagementID(), randomManagementID()
-	if id == "" || candidate == "" {
-		return api.DraftReview{}, invalid()
+	id := randomManagementID()
+	if id == "" {
+		return nil, invalid()
 	}
-	d := &cameraDraft{owner: owner, config: cfg, review: api.DraftReview{ID: id, CandidateID: candidate, Revision: 1, RuntimeEpoch: s.epoch, ExpiresAt: time.Now().Add(api.DraftLifetime), Name: input.Name, Endpoint: input.Endpoint, Authentication: input.Authentication, Warnings: []api.DraftWarning{api.WarningInitialAddressOnly, api.WarningPrivateAccess}, State: api.DraftReady}}
-	if cfg.Host == "localhost" || cfg.Host == "127.0.0.1" || cfg.Host == "::1" {
-		d.review.Warnings = append(d.review.Warnings, api.WarningServerLocalhost)
-	}
-	if imported {
-		d.review.Warnings = append(d.review.Warnings, api.WarningIgnoredGrants)
-	}
-	if err = s.replaceCredentials(d, input); err != nil {
-		return api.DraftReview{}, err
-	}
-	s.drafts[id] = d
-	return cloneReview(d.review), nil
+	return &cameraDraft{owner: owner, review: api.DraftReview{ID: id, Revision: 1, RuntimeEpoch: s.epoch,
+		ExpiresAt: time.Now().Add(api.DraftLifetime), Name: name, Warnings: []api.DraftWarning{}, State: api.DraftReady}}, nil
 }
 func (s *CameraManagementService) replaceCredentials(d *cameraDraft, input api.DraftInput) error {
-	if input.Authentication == api.AuthenticationAnonymous || input.Credentials != nil {
+	if input.Authentication == api.AuthenticationAnonymous {
 		s.discardCredential(d)
 	}
 	if input.Credentials != nil {
@@ -299,6 +316,7 @@ func (s *CameraManagementService) replaceCredentials(d *cameraDraft, input api.D
 			clear(c.Password)
 			return err
 		}
+		s.discardCredential(d)
 		d.credential = &c
 	}
 	d.review.CredentialsPresent = d.credential != nil
@@ -357,6 +375,21 @@ func (s *CameraManagementService) PatchDraft(ctx context.Context, id string, r a
 		}
 		if d.review.State != api.DraftReady && d.review.State != api.DraftIncomplete && d.review.State != api.DraftTested {
 			return nil, api.ManagementFailure(api.CodeOperationInProgress)
+		}
+		if d.review.CredentialUpdate {
+			if r.Name != "" || r.Endpoint != "" || r.Authentication != "" || r.Credentials == nil {
+				return nil, invalid()
+			}
+			if _, err := s.credentialTarget(ctx, d); err != nil {
+				return nil, err
+			}
+			if err := s.replaceDraftPassword(d, *r.Credentials); err != nil {
+				return nil, err
+			}
+			s.identities.Release(id)
+			d.passedAt, d.testOutcome, d.review.Test = time.Time{}, "", nil
+			d.review.Revision++
+			return cloneReview(d.review), nil
 		}
 		input, cfg, err := normalizeDraft(r.DraftInput)
 		if err != nil {
@@ -432,7 +465,7 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 			s.release()
 			return api.OperationResult{}, denied()
 		}
-		response := s.saveResponse(record)
+		response := s.saveResponse(record, key)
 		s.release()
 		return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationSucceeded, RuntimeEpoch: s.epoch, CandidateID: string(record.ID), Saved: &response}, nil
 	}

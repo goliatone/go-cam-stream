@@ -45,6 +45,8 @@ func conversationAppError(err error) *AppError {
 
 func (a *appSession) dispatchConversation(ctx context.Context, request AppRequest) (any, *AppError) {
 	switch request.Method {
+	case api.ConversationNativeConnector, api.ConversationNativeReconnect:
+		return a.dispatchCallConnector(ctx, request.Method == api.ConversationNativeReconnect)
 	case api.ConversationNativeOpen:
 		value, err := a.openConversationLink(ctx, request.InvitationURL)
 		if err == nil {
@@ -99,6 +101,33 @@ func (a *appSession) dispatchConversation(ctx context.Context, request AppReques
 	return nil, conversationAppError(conversations.Fault(api.RoomInvitationInvalid))
 }
 
+func (a *appSession) dispatchCallConnector(ctx context.Context, reconnect bool) (any, *AppError) {
+	settings, setup, err := a.conversationSettings()
+	if err != nil {
+		if !reconnect && setup == api.ConversationSetupConnectorConfig {
+			return api.CallConnectorSetup, nil
+		}
+		if !reconnect {
+			return api.CallConnectorExternal, nil
+		}
+		return nil, conversationAppError(setupFault(setup, api.RoomMediaUnreachable, err))
+	}
+	connector, err := conversationhost.NewConnector(a.service.Dir, settings)
+	if err != nil {
+		if !reconnect {
+			return api.CallConnectorSetup, nil
+		}
+		return nil, conversationAppError(classifyConversationStart(err))
+	}
+	if reconnect {
+		if err := connector.Reconnect(ctx); err != nil {
+			return nil, conversationAppError(classifyConversationStart(err))
+		}
+		return api.CallConnectorConnected, nil
+	}
+	return connector.Status(ctx), nil
+}
+
 func (a *appSession) createConversation(ctx context.Context, local bool, progress func(api.ConversationSetupStage)) (api.NativeConversationPrejoin, error) {
 	slot := &a.conversation
 	if local {
@@ -133,6 +162,10 @@ func classifyConversationStart(err error) error {
 		return setupFault(api.ConversationSetupUnreachable, api.RoomMediaUnreachable, err)
 	case errors.Is(err, conversationhost.ErrRelayUnavailable):
 		return setupFault(api.ConversationSetupRelay, api.RoomMediaUnreachable, err)
+	case errors.Is(err, conversationhost.ErrConnectorSetup):
+		return setupFault(api.ConversationSetupConnectorConfig, api.RoomMediaUnreachable, err)
+	case errors.Is(err, conversationhost.ErrConnectorUnavailable):
+		return setupFault(api.ConversationSetupConnector, api.RoomMediaUnreachable, err)
 	default:
 		return err
 	}
@@ -161,6 +194,9 @@ func (a *appSession) conversationSettings() (config.Conversations, api.Conversat
 		return config.Conversations{}, api.ConversationSetupInvalid, err
 	}
 	if err := settings.Validate(); err != nil {
+		if settings.Connector != nil && (settings.Loopback || settings.Connector.Validate(settings.Ingress) != nil) {
+			return config.Conversations{}, api.ConversationSetupConnectorConfig, err
+		}
 		relay := (config.Sharing{Relay: settings.Relay}).WithDefaults()
 		if relay.Validate() != nil || (settings.RelayOnly && relay.Relay.Mode == config.SharingRelayDisabled) {
 			return config.Conversations{}, api.ConversationSetupRelayConfig, err
@@ -212,7 +248,11 @@ func (a *appSession) startConversationHost(ctx context.Context, local bool) (*co
 	if assets == nil {
 		assets = bundledGuestAssets("Conversations")
 	}
-	runtime, err := conversationhost.Start(ctx, settings, relay, assets)
+	connector, err := conversationhost.NewConnector(a.service.Dir, settings)
+	if err != nil {
+		return nil, classifyConversationStart(err)
+	}
+	runtime, err := conversationhost.Start(ctx, settings, relay, assets, connector)
 	_, portInUse := errors.AsType[conversationhost.ListenerInUse](err)
 	switch {
 	case err == nil:
