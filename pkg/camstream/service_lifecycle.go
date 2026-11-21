@@ -37,7 +37,13 @@ func (s *Service) SessionStatus(ctx context.Context, id SessionID) (SessionState
 	if err != nil {
 		return SessionState{}, err
 	}
+	if v.source.retired.Load() {
+		return s.sessionSnapshot(v), nil
+	}
 	if err = serviceEnter(ctx, v.source); err != nil {
+		if v.source.retired.Load() {
+			return s.sessionSnapshot(v), nil
+		}
 		return SessionState{}, err
 	}
 	defer serviceLeave(v.source)
@@ -125,6 +131,9 @@ func (s *Service) CloseSession(ctx context.Context, id SessionID) error {
 	if err != nil {
 		return err
 	}
+	if v.source.retired.Load() {
+		return nil
+	}
 	s.mu.Lock()
 	v.closing = true
 	if v.cancel != nil {
@@ -134,6 +143,9 @@ func (s *Service) CloseSession(ctx context.Context, id SessionID) error {
 	ctx, cancel := context.WithTimeout(ctx, s.options.CleanupTimeout)
 	defer cancel()
 	if err = serviceEnter(ctx, v.source); err != nil {
+		if v.source.retired.Load() {
+			return nil
+		}
 		return NewError(CodeCleanupIncomplete, err)
 	}
 	defer serviceLeave(v.source)

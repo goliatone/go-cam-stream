@@ -6,12 +6,23 @@ import "context"
 // are closed and the backend confirms absence. Unknown cleanup retains the source
 // and admission block. Ordinary sources and aliases cannot use this operation.
 func (s *Service) RetireTransientSource(ctx context.Context, camera Camera, stream StreamID) error {
+	return s.retireInactiveSource(ctx, camera, stream, true)
+}
+
+// RetireInactiveSource releases an old definition during an authorized host
+// configuration change. The host must fence creation for all aliases of it.
+// Existing viewers are never closed by this operation.
+func (s *Service) RetireInactiveSource(ctx context.Context, camera Camera, stream StreamID) error {
+	return s.retireInactiveSource(ctx, camera, stream, false)
+}
+
+func (s *Service) retireInactiveSource(ctx context.Context, camera Camera, stream StreamID, transient bool) error {
 	spec, err := s.resolve(ctx, camera, stream)
 	if err != nil {
 		return err
 	}
 	retirer, ok := s.backend.(TransientRetirer)
-	if !ok {
+	if transient && !ok {
 		return NewError(CodeUnsupported, nil)
 	}
 	resetter, ok := s.backend.(SourceResetter)
@@ -24,12 +35,16 @@ func (s *Service) RetireTransientSource(ctx context.Context, camera Camera, stre
 		s.mu.Unlock()
 		return nil
 	}
-	if src.transient != camera.ID || !sameSource(src, spec) || src.resetting || s.stopping {
+	if (transient && src.transient != camera.ID) || (!transient && src.transient != "") ||
+		!sameSource(src, spec) || src.resetting || s.stopping {
 		s.mu.Unlock()
 		return NewError(CodeConflict, nil)
 	}
 	if len(src.live) != 0 {
 		s.mu.Unlock()
+		if !transient {
+			return NewError(CodeCameraBusy, nil)
+		}
 		return NewError(CodeCleanupIncomplete, nil)
 	}
 	src.resetting = true
@@ -41,7 +56,7 @@ func (s *Service) RetireTransientSource(ctx context.Context, camera Camera, stre
 		return NewError(CodeCleanupIncomplete, nil)
 	}
 	defer serviceLeave(src)
-	// Explicitly authorized transient reset, never a viewer retry. This also
+	// Explicitly authorized maintenance. This also
 	// handles a fault left by failed EnsureStream without assuming not-found means absent.
 	if err = s.resetBackendSource(ctx, src, resetter); err == nil {
 		err = s.backend.RemoveStream(ctx, src.key)
@@ -64,7 +79,10 @@ func (s *Service) RetireTransientSource(ctx context.Context, camera Camera, stre
 		}
 	}
 	s.mu.Unlock()
-	if err = retirer.RetireTransientSessions(ctx, src.key, ids); err != nil {
+	if transient {
+		err = retirer.RetireTransientSessions(ctx, src.key, ids)
+	}
+	if err != nil {
 		s.mu.Lock()
 		src.unknown, src.resetFailed = true, true
 		s.mu.Unlock()
@@ -73,8 +91,10 @@ func (s *Service) RetireTransientSource(ctx context.Context, camera Camera, stre
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src.retired.Store(true)
-	for _, id := range ids {
-		delete(s.sessions, id)
+	if transient {
+		for _, id := range ids {
+			delete(s.sessions, id)
+		}
 	}
 	if s.devices[src.device] == src.key {
 		delete(s.devices, src.device)
