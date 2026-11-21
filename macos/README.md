@@ -2,11 +2,17 @@
 
 ## Menu-bar app
 
-Build the local Apple Silicon/macOS 26+ development app from the prepared pack:
+Build the local Apple Silicon/macOS 26+ development app from the prepared pack
+using Xcode 26 or later. The build compiles the Optic icon with `actool`:
 
 ```sh
 python3 macos/build-app.py
 ```
+
+To regenerate the Optic artwork and build both the Go dashboard embed and a fresh
+Mac app, install `librsvg` and use `./taskfile icons:build` with Node/npm and the
+same prepared runtime pack. Review any changes to the generated assets before
+committing them.
 
 Open `dist/Camstream Camera.app` in Finder. Allow camera access, select a webcam,
 choose a camera name (stream ID), and save settings. Saving never starts capture.
@@ -129,7 +135,9 @@ python3 macos/package-release.py --verify dist/releases/camstream-camera-0.1.0-d
 
 This produces a clearly labeled development DMG, app, `release.json` and
 `SHA256SUMS` in a new version directory. The DMG contains the app, an Applications
-shortcut and installation instructions. Existing output is never overwritten.
+shortcut and installation instructions. The mounted volume uses the Optic icon
+compiled into the app. The release workflow checks the shared icon assets before
+building either artifact. Existing output is never overwritten.
 The app includes every runtime tool, license/source archive, runtime provenance
 and application/runtime version metadata. Settings are never packaged.
 

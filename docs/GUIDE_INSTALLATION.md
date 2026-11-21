@@ -37,8 +37,11 @@ unit/Compose files, licenses, build metadata, embedded asset manifest, runtime
 library evidence and `SHA256SUMS`. Verify the archive checksum and then run
 `sha256sum -c SHA256SUMS` inside its extracted directory. Application assets are
 compiled into the Go binary; deleting Node/source/build directories does not affect
-serving. A missing asset fails compilation or startup validation. Unknown
-API/admin/probe/asset paths return 404, never a successful HTML fallback.
+serving. The web build bundles the Optic mark for the camera dashboard header and
+the idle, live, busy and problem tab icons as content-hashed SVGs. The dashboard
+links to the idle icon before JavaScript loads. A missing asset fails compilation
+or startup validation. Unknown API/admin/probe/asset paths return 404, never a
+successful HTML fallback.
 
 ## Native installation (authorized test host first)
 

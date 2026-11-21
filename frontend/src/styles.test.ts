@@ -172,7 +172,6 @@ function pairs(theme: Tokens): Pair[] {
     // The only thing a failed camera shows in the collapsed rail.
     ["Failed camera icon", "--icon-dim", token("--fill"), GRAPHIC],
     ["Current camera icon", "--accent", token("--accent-tint"), GRAPHIC],
-    ["Brand mark", "--on-accent", token("--accent"), GRAPHIC],
     ["Primary button", "--on-primary", token("--primary"), TEXT],
     ["Primary button on hover", "--on-primary", token("--primary-hover"), TEXT],
     ["Disabled primary button", "--on-disabled", token("--stage-hover"), TEXT],

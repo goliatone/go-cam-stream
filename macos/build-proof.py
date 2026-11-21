@@ -33,6 +33,30 @@ def sign(path, identity, entitlements=None):
     run(*args, str(path))
 
 
+def compile_app_icon(resources, minimum_macos):
+    """Compile the Icon Composer document into Resources and return its Info.plist keys.
+
+    actool ships with Xcode 26 or later; it writes Assets.car for the system icon styles and an
+    AppIcon.icns fallback that release packaging reuses as the DMG volume icon.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        partial = Path(temp) / "icon.plist"
+        try:
+            run("xcrun", "actool", str(ROOT / "macos/CameraApp/AppIcon.icon"), "--compile", str(resources),
+                "--platform", "macosx", "--minimum-deployment-target", minimum_macos, "--app-icon", "AppIcon",
+                "--output-partial-info-plist", str(partial), "--output-format", "human-readable-text",
+                "--errors", "--warnings", capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            detail = (error.stdout or "") + (error.stderr or "")
+            raise ValueError("app icon compilation failed (needs Xcode 26 or later): " + detail.strip()[-2000:]) from None
+        keys = plistlib.loads(partial.read_bytes()) if partial.is_file() else {}
+    icon = {key: keys.get(key) for key in ("CFBundleIconFile", "CFBundleIconName")}
+    if icon != {"CFBundleIconFile": "AppIcon", "CFBundleIconName": "AppIcon"} or not all(
+            (resources / name).is_file() for name in ("Assets.car", "AppIcon.icns")):
+        raise ValueError("app icon compilation did not produce Assets.car, AppIcon.icns and the icon keys")
+    return icon
+
+
 def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"):
     validate_version(version)
     if identity != "-" and not identity.startswith("Developer ID Application: "):
@@ -67,13 +91,14 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
     if production:
         permission_text["NSCameraUsageDescription"] = "Share the webcam in a private stream only when you choose Start Camera."
         permission_text["NSMicrophoneUsageDescription"] = "Include microphone sound in your private stream only when you enable microphone audio and choose Start Camera."
+    icon = compile_app_icon(contents / "Resources", lock["target"]["minimum_macos"]) if production else {}
     with (contents / "Info.plist").open("wb") as file:
         plistlib.dump({"CFBundleExecutable": executable,
             "CFBundleIdentifier": "com.goliatone.camstream.camera" + ("" if production else ".proof"),
             "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": False,
             "CFBundlePackageType": "APPL", "CFBundleVersion": version, "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": lock["target"]["minimum_macos"], "NSHighResolutionCapable": True,
-            **permission_text
+            **icon, **permission_text,
         }, file)
     entitlements = str(root / ("macos/CameraApp/entitlements.plist" if production else "macos/CameraProof/entitlements.plist"))
     inspect_macho(contents / "MacOS" / executable, lock["target"])

@@ -130,6 +130,33 @@ function dev:build() (
     go build -tags camstream_dev -o bin/camstream-dev ./cmd/camstream-dev
 )
 
+## icons:build
+## Regenerate Optic icons, build the dashboard embed and bundle a fresh macOS app.
+function icons:build() (
+    case "${1:-}" in
+        -h|--help) echo "Usage: $0 icons:build"; return 0 ;;
+    esac
+    if (( $# != 0 )); then
+        echo "Usage: $0 icons:build" >&2
+        return 2
+    fi
+    if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+        echo "icons:build requires an Apple Silicon Mac with Xcode 26 or later." >&2
+        return 1
+    fi
+
+    cd "${SCRIPT_DIR}" || return "$?"
+    local version output
+    version="$(version:get)" || return "$?"
+    python3 macos/app_icon.py || return "$?"
+    ./scripts/build-web.sh || return "$?"
+
+    mkdir -p "dist/macos/camstream-camera-${version}" || return "$?"
+    output="$(mktemp -d "dist/macos/camstream-camera-${version}/build.XXXXXX")" || return "$?"
+    trap 'rmdir "$output" 2>/dev/null || true' EXIT
+    python3 macos/build-app.py --version "${version}" --output "${output}/Camstream Camera.app"
+)
+
 ## dev:webcams
 ## List Mac webcams and their indices for dev:serve --webcam=INDEX, without capture.
 function dev:webcams {

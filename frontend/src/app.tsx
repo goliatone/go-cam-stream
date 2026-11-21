@@ -11,6 +11,7 @@ import type {
 import { LazyManagement, LazyShortcuts } from "./components/lazy-management";
 import type { ManagementDialogProps } from "./components/camera-management";
 import { CameraLinks } from "./components/camera-selector";
+import appIcon from "./components/app-icon.svg?no-inline";
 import {
   CameraIcon,
   CloseIcon,
@@ -193,9 +194,7 @@ export function App({
           </button>
         )}
         <a class="brand" href="#viewer" aria-label="Camstream viewer">
-          <span class="brand-mark">
-            <CameraIcon />
-          </span>
+          <img class="brand-mark" src={appIcon} alt="" width={32} height={32} />
           <span class="brand-name">camstream</span>
         </a>
         <span class="topbar-divider" aria-hidden="true" />

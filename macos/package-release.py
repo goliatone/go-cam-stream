@@ -9,6 +9,7 @@ import runpy
 import shutil
 import subprocess
 import tempfile
+import time
 
 from runtime_pack import DEFAULT_CACHE, DEFAULT_LOCK, ROOT, load_lock, selected_pack, sha, unpack_locked
 
@@ -32,6 +33,41 @@ def options(version, development, identity, profile):
             raise ValueError('development mode cannot use signing/notarization credentials')
     elif not identity or not identity.startswith('Developer ID Application: ') or not profile:
         raise ValueError('distribution requires --sign-identity and --notary-profile; use --development for local checks')
+
+
+# Finder info for a folder with only the kHasCustomIcon flag (0x0400) set.
+CUSTOM_ICON_FINDER_INFO = '0000000000000000' + '0400' + '00' * 22
+
+
+def detach(mount):
+    try:
+        run('hdiutil', 'detach', mount)
+    except subprocess.CalledProcessError:
+        # Spotlight or Finder can briefly hold a freshly mounted image.
+        time.sleep(2)
+        run('hdiutil', 'detach', mount, '-force')
+
+
+def make_dmg(payload, volume_name, dmg, scratch):
+    """Build a compressed DMG whose volume shows the payload's .VolumeIcon.icns.
+
+    hdiutil create -srcfolder drops the volume's custom-icon flag, so the flag is set on a
+    read-write image in scratch that is then converted. The image is mounted in a private
+    temporary folder: file watchers on the output tree make fseventsd log onto the volume,
+    and any such log is removed so the release image holds only the payload.
+    """
+    writable = scratch / 'volume.dmg'
+    run('hdiutil', 'create', '-volname', volume_name, '-srcfolder', payload, '-format', 'UDRW', writable)
+    with tempfile.TemporaryDirectory(prefix='camstream-dmg-') as temp:
+        mount = Path(temp) / 'volume'
+        mount.mkdir()
+        run('hdiutil', 'attach', writable, '-mountpoint', mount, '-nobrowse', '-noautoopen', '-noverify')
+        try:
+            run('xattr', '-wx', 'com.apple.FinderInfo', CUSTOM_ICON_FINDER_INFO, mount)
+            shutil.rmtree(mount / '.fseventsd', ignore_errors=True)
+        finally:
+            detach(mount)
+    run('hdiutil', 'convert', writable, '-format', 'UDZO', '-o', dmg)
 
 
 def notarize(artifact, profile, result_path, keychain=None):
@@ -150,9 +186,9 @@ def package(args):
         if args.development:
             instructions += '\nDEVELOPMENT BUILD: ad-hoc signed, not notarized or approved for external distribution.\n'
         (payload / 'Install.txt').write_text(instructions)
+        shutil.copy2(app / 'Contents/Resources/AppIcon.icns', payload / '.VolumeIcon.icns')
         dmg = result / (name + '.dmg')
-        run('hdiutil', 'create', '-volname', 'Camstream Camera ' + args.version,
-            '-srcfolder', payload, '-format', 'UDZO', dmg)
+        make_dmg(payload, 'Camstream Camera ' + args.version, dmg, stage)
         if not args.development:
             run('codesign', '--force', '--sign', args.sign_identity, '--timestamp', dmg)
             tickets['dmg'] = notarize(dmg, args.notary_profile, result / 'notary-dmg.json', args.notary_keychain)

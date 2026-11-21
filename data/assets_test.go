@@ -40,6 +40,31 @@ func TestEmbeddedWeb(t *testing.T) {
 		t.Fatal("unsafe asset request")
 	}
 }
+
+func TestEmbeddedDashboardIcons(t *testing.T) {
+	h, err := Web(http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := httptest.NewRecorder()
+	h.ServeHTTP(entry, httptest.NewRequestWithContext(t.Context(), "GET", "/", nil))
+	for _, name := range []string{"app-icon", "favicon-idle", "favicon-live", "favicon-busy", "favicon-danger"} {
+		files, err := fs.Glob(web, "web/assets/"+name+"-*.svg")
+		if err != nil || len(files) != 1 {
+			t.Fatalf("want one built %s SVG, got %v (%v)", name, files, err)
+		}
+		url := strings.TrimPrefix(files[0], "web")
+		if name == "favicon-idle" && !strings.Contains(entry.Body.String(), `rel="icon" href="`+url+`"`) {
+			t.Fatalf("dashboard entry does not link to %s before the app loads", url)
+		}
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequestWithContext(t.Context(), "GET", url, nil))
+		if r.Code != http.StatusOK || r.Header().Get("Content-Type") != "image/svg+xml" || !strings.HasPrefix(r.Body.String(), "<svg ") {
+			t.Fatalf("%s did not serve as SVG: status %d, content type %q", url, r.Code, r.Header().Get("Content-Type"))
+		}
+	}
+}
+
 func TestMissingOrCorruptAssetsFailConstruction(t *testing.T) {
 	root, err := fs.Sub(web, "web")
 	if err != nil {

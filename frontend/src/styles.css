@@ -27,7 +27,6 @@
   --accent: #176b51;
   --accent-soft: #ecf5ee;
   --accent-tint: #d8eade;
-  --on-accent: #fff;
   --focus: #278d73;
   --icon: #49625a;
   --icon-dim: #71837f;
@@ -93,7 +92,6 @@
     --accent: #56bd95;
     --accent-soft: #152e27;
     --accent-tint: #1d4135;
-    --on-accent: #05201a;
     --focus: #5ec9a1;
     --icon: #a3b7b1;
     --icon-dim: #7d908c;
@@ -225,18 +223,12 @@ main:focus,
   font-weight: 700;
   letter-spacing: -0.5px;
 }
+/* The app icon carries its own tile, so the mark needs no background. */
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
+  flex: none;
   width: 32px;
   height: 32px;
-  border-radius: 9px;
-  color: var(--on-accent);
-  background: var(--accent);
-}
-.brand-mark svg {
-  width: 20px;
-  height: 20px;
 }
 .topbar-divider {
   flex: none;
