@@ -123,7 +123,11 @@ jobs:
           PY
           export CAMSTREAM_PREVIEW_RUNTIME="$RUNNER_TEMP/camera-runtime-check/tools"
           python3 -m unittest discover -s macos -p 'test_*.py' -q
-          xcrun swiftc -swift-version 5 macos/CameraApp/CameraState.swift macos/CameraApp/HelperClient.swift macos/CameraApp/PreviewReader.swift macos/CameraApp/PreviewController.swift macos/CameraApp/CameraModel.swift macos/CameraAppTests/main.swift -o "$RUNNER_TEMP/camera-tests"
+          xcrun swiftc -swift-version 5 \
+            macos/CameraApp/CameraState.swift macos/CameraApp/CameraPermissions.swift \
+            macos/CameraApp/HelperClient.swift macos/CameraApp/PreviewReader.swift \
+            macos/CameraApp/PreviewController.swift macos/CameraApp/CameraModel.swift \
+            macos/CameraAppTests/*.swift -o "$RUNNER_TEMP/camera-tests"
           "$RUNNER_TEMP/camera-tests" "$PWD/macos/CameraAppTests/fake-helper.py"
       - name: Prepare temporary signing Keychain
         if: ${{ needs.prepare.outputs.distribution == 'true' }}
