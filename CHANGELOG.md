@@ -1,6 +1,15 @@
 # Changelog
 
+# [0.1.6](https://github.com/goliatone/go-cam-stream/compare/v0.1.5...v0.1.6) - (2026-11-21)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- **ci:** Include native camera test fixtures in release builds ([66945f8](https://github.com/goliatone/go-cam-stream/commit/66945f8b74b2f7a4106ff8151c937fe7219ccd0f))  - (goliatone)
+
 # [0.1.5](https://github.com/goliatone/go-cam-stream/compare/v0.1.4...v0.1.5) - (2026-11-21)
+
+
+New patch release: v0.1.5
 
 ## <!-- 0 -->🚀 Features
 
@@ -9,6 +18,10 @@
 ## <!-- 1 -->🐛 Bug Fixes
 
 - Start up ([cb5778a](https://github.com/goliatone/go-cam-stream/commit/cb5778a2ec0815336e7792a8ba5d083ed24f7c02))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.1.5 ([fdaec79](https://github.com/goliatone/go-cam-stream/commit/fdaec791d26243c49446eac7588e4c1dd15345b3))  - (goliatone)
 
 ## <!-- 16 -->➕ Add
 
