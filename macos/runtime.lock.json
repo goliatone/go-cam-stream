@@ -109,7 +109,7 @@
     "darwin-arm64": {
       "file": "camera-runtime-3-darwin-arm64-macos26.0.tar.gz",
       "sha256": "e7a828e2086eba2a6dc9cff47231d823b525ccf1f144d9e012c43cb7f62c6ea5",
-      "url": null
+      "url": "https://github.com/goliatone/go-cam-stream/releases/download/camera-runtime-3/camera-runtime-3-darwin-arm64-macos26.0.tar.gz"
     }
   },
   "patches": [
