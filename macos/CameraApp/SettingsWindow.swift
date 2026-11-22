@@ -6,6 +6,7 @@ extension SettingsPane {
     /// Each pane's window height. Longer content scrolls inside the form.
     var height: CGFloat {
         switch self {
+        case .general: return 140
         case .camera: return 500
         case .network: return 330
         case .server: return 600
@@ -15,8 +16,9 @@ extension SettingsPane {
     }
 }
 
-/// The standard Settings window (⌘,): one-time setup in five toolbar panes.
-/// Leaving a pane or closing the window applies valid camera changes.
+/// The standard Settings window (⌘,): app-wide choices and one-time setup
+/// in six toolbar panes. Leaving a pane or closing the window applies valid
+/// camera changes.
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let model: CameraModel
@@ -27,7 +29,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     init(model: CameraModel, server: ServerMonitor, showWindow: @escaping () -> Void) {
         self.model = model
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsPane.width, height: SettingsPane.camera.height),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsPane.width, height: SettingsPane.general.height),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .preference
@@ -56,7 +58,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { fatalError("SettingsWindowController is created in code") }
 
-    var selectedPane: SettingsPane { SettingsPane(rawValue: tabs.selectedTabViewItemIndex) ?? .camera }
+    var selectedPane: SettingsPane { SettingsPane(rawValue: tabs.selectedTabViewItemIndex) ?? .general }
 
     /// Shows the window at a pane, or at the pane it was left on.
     func show(_ pane: SettingsPane?) {
@@ -127,6 +129,7 @@ struct SettingsPaneView: View {
     var body: some View {
         Group {
             switch pane {
+            case .general: GeneralSettingsPane(model: model)
             case .camera: CameraSettingsPane(model: model)
             case .network: NetworkSettingsPane(model: model)
             case .server: ServerSettingsPane(model: model, server: server)

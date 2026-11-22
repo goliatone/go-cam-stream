@@ -396,6 +396,8 @@ try runConnectionTests(check: { check($0, $1) })
 print("PASS: \(checks) native checks including the connection checklist and RTSP address copy")
 runConsoleTests(conversations: conversationViews, sharing: sharingExamplesForActivity, check: { check($0, $1) })
 print("PASS: \(checks) native checks including the camera console, settings that apply when valid and Start Camera and Create Link")
+runPopoverTests(conversations: conversationViews, sharing: sharingExamplesForActivity, check: { check($0, $1) })
+print("PASS: \(checks) native checks including the menu-bar popover, its shared preview and the launch choice")
 do {
     let fixtureCamera = FixtureSharingCamera()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -402,10 +402,15 @@ struct BannerView: View {
     }
 }
 
-/// State, elapsed time and any share link, in the toolbar. Shape and color
-/// both change with state, so it never relies on color alone.
+/// State, elapsed time and any share link, in the toolbar and the menu-bar
+/// popover. Shape and color both change with state, so it never relies on
+/// color alone.
 struct StatusPillView: View {
     @ObservedObject var model: CameraModel
+    var identifier = "camera-status"
+    /// The tooltip says what closing the window keeps running, so only the
+    /// window's pill has it.
+    var showsTooltip = true
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -417,10 +422,10 @@ struct StatusPillView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 3)
             .background(Capsule().fill(color(pill.tone).opacity(pill.tone == .neutral ? 0.12 : 0.18)))
-            .help(tooltip)
+            .help(showsTooltip ? tooltip : "")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Status: " + label)
-            .accessibilityIdentifier("camera-status")
+            .accessibilityIdentifier(identifier)
         }
     }
 
