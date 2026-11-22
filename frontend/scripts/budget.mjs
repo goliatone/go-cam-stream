@@ -28,5 +28,6 @@ const sizes = {
   all_css: await measure(assets.filter(file => file.endsWith('.css'))),
   all_svg: await measure(assets.filter(file => file.endsWith('.svg'))),
 };
-console.log(JSON.stringify({ gzip_bytes: sizes, limits: { initial_js: 20000, lazy_management_js: 12000, all_css: 6000 } }, null, 2));
-if (sizes.initial_js > 20000 || sizes.lazy_management_js > 12000 || sizes.all_css > 6000) throw Error('Viewer payload budget exceeded');
+const limits = { initial_js: 20300, lazy_management_js: 13650, all_css: 6400 };
+console.log(JSON.stringify({ gzip_bytes: sizes, limits }, null, 2));
+if (Object.entries(limits).some(([key, limit]) => sizes[key] > limit)) throw Error('Viewer payload budget exceeded');

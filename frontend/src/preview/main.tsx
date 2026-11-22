@@ -128,19 +128,28 @@ const passed: TestResult = {
   browser_frames_reported: true,
   cleanup: "confirmed",
 };
+const failed: TestResult = {
+  ...running,
+  stage: "failed",
+  source_media_observed: false,
+  cleanup: "confirmed",
+  error: { code: "source_unavailable", message: "", retryable: true },
+};
 const managing = {
   viewer: undefined,
   manager: undefined,
   "add-camera": { phase: "editing" },
+  "import-camera": { phase: "editing" },
   review: { phase: "review", draft },
   testing: {
     phase: "testing",
     draft: { ...draft, state: "testing" },
     test: running,
   },
+  "check-failed": { phase: "review", draft, test: failed },
   tested: {
     phase: "review",
-    draft: { ...draft, state: "tested", test: passed },
+    draft: { ...draft, state: "tested", test: passed, dial_address: "127.0.0.1:18556" },
     test: passed,
   },
   saved: {
@@ -153,6 +162,12 @@ const managing = {
   "camera-settings": {
     phase: "editing",
     credentialTarget: { id: "room1", name: "Room 1" },
+  },
+  "checking-save": {
+    phase: "recovering",
+    busy: true,
+    unresolved: true,
+    checkingSave: true,
   },
   unresolved: {
     phase: "recovering",
@@ -209,14 +224,15 @@ function Preview() {
     test: () => setEvent("Test callback; no media"),
     cancelTest: () => setEvent("Cancel test callback; preview only"),
     save: () => setEvent("Save callback; nothing is saved"),
-    recover: () => setEvent("Check status callback; no request"),
+    recover: () => setEvent("Check again callback; no request"),
     abandon: back("Abandon"),
     retrySave: () => setEvent("Retry callback; nothing is saved"),
-    cancel: back("Cancel draft"),
+    cancel: back("Cancel"),
     close: back("Close"),
     watch: back("Watch"),
     submitCredentials: () => setEvent("Credentials callback; nothing is sent"),
     openSettings: () => setManage("camera-settings"),
+    reset: () => setManage("add-camera"),
   };
   function show(next: Scenario) {
     setScenario(next);
@@ -386,7 +402,8 @@ function Preview() {
         {...(manage === "viewer"
           ? {}
           : {
-              onAddCamera: () => setManage("add-camera"),
+              onAddCamera: (mode) =>
+                setManage(mode === "import" ? "import-camera" : "add-camera"),
               onCameraSettings: () => setManage("camera-settings"),
             })}
         {...(dialog
@@ -394,6 +411,7 @@ function Preview() {
               management: {
                 view: { storageReady: true, ...dialog },
                 actions: managementActions,
+                mode: manage === "import-camera" ? "import" : "manual",
               },
             }
           : {})}

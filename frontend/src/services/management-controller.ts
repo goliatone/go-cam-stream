@@ -137,7 +137,7 @@ export class ManagementController {
   async recover() {
     if(this.#mutating||this.view.busy)return;
     const r=this.#record;if(!r)return;
-    this.#show({phase:"recovering",busy:true,unresolved:true,canAbandon:false,canRetrySave:false});
+    this.#show({phase:"recovering",busy:true,unresolved:true,canAbandon:false,canRetrySave:false,checkingSave:r.kind==="save"});
     try {
       const until=Date.now()+20000;
       let op:OperationResult;

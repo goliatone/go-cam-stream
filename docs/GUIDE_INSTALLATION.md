@@ -37,8 +37,12 @@ unit/Compose files, licenses, build metadata, embedded asset manifest, runtime
 library evidence and `SHA256SUMS`. Verify the archive checksum and then run
 `sha256sum -c SHA256SUMS` inside its extracted directory. Application assets are
 compiled into the Go binary; deleting Node/source/build directories does not affect
-serving. A missing asset fails compilation or startup validation. Unknown
-API/admin/probe/asset paths return 404, never a successful HTML fallback.
+serving. The web build bundles the Continuity camcorder mark for the camera
+dashboard header and the idle, live, busy and problem tab icons as content-hashed
+SVGs. The dashboard links to the idle icon before JavaScript loads. The Mac app
+keeps its own Optic lens icon. A missing asset fails compilation
+or startup validation. Unknown API/admin/probe/asset paths return 404, never a
+successful HTML fallback.
 
 ## Native installation (authorized test host first)
 
@@ -173,6 +177,23 @@ native service and verify readiness/authorized playback. For Compose, recreate
 with the prior immutable image and compatible configuration only after the old
 container has completely stopped. Restoring native also requires stopping/removing
 Compose before enabling the service. Keep the stable installation ID/runtime root.
+
+Before rolling back to a build that predates dashboard credential updates, stop
+the current host and back up its current managed-state directory privately. Run
+`camstream managed-state prepare-rollback --config FILE` with the newer binary as
+the service user against the same config and state mount, then start the older
+binary after the command succeeds. This keeps the latest camera settings and
+passwords and removes credential-update receipts the older binary cannot read.
+The command is safe to repeat and refuses an installation owned by a running
+controller.
+
+Before stopping the host, refresh any older dashboard tabs with an open
+credential confirmation, use **Check status** if prompted, and close the
+confirmation. Current builds keep credential recovery separate from Add Camera
+recovery, so an older build ignores the current credential record. If a browser
+restores a stale confirmation from a legacy tab after rollback, open the
+dashboard address in a fresh tab and verify playback before attempting another
+credential change.
 
 Missing or malformed installation metadata/unknown files require operator review
 while stopped; there is no automatic adoption or destructive repair. No automatic

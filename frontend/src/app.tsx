@@ -9,7 +9,7 @@ import type {
   StreamSummary,
 } from "./services/contracts";
 import { LazyManagement, LazyShortcuts } from "./components/lazy-management";
-import type { ManagementDialogProps } from "./components/camera-management";
+import type { ManagementDialogProps, ManagementMode } from "./components/camera-management";
 import { CameraLinks } from "./components/camera-selector";
 import appIcon from "./components/app-icon.svg?no-inline";
 import {
@@ -49,7 +49,7 @@ export interface AppProps {
   /** Selection requested by the page address; resolved like any other request. */
   initialSelection?: Partial<StreamRef>;
   onReload?: () => void;
-  onAddCamera?: (() => void) | undefined;
+  onAddCamera?: ((mode?: ManagementMode) => void) | undefined;
   onCameraSettings?: ((cameraID: string) => void) | undefined;
   watchSelection?: StreamRef | undefined;
   recoveryControl?: ComponentChildren;
@@ -264,12 +264,27 @@ export function App({
         ) : !cameras.length ? (
           <div class="catalog-message" role="status">
             <CameraIcon />
-            <h2>No cameras yet</h2>
-            <p>
-              No cameras are set up for you. Ask the person who runs camstream
-              to add cameras or give you access.
-            </p>
-            {onAddCamera && <button type="button" class="primary-button" onClick={onAddCamera}>Add Camera</button>}
+            {onAddCamera ? (
+              <>
+                <h2>Add your first camera</h2>
+                <p>
+                  Connect a network camera by its RTSP address, or import the
+                  files the Camstream Mac app exports.
+                </p>
+                <div class="catalog-actions">
+                  <button type="button" class="secondary-button" onClick={() => onAddCamera("manual")}>Network camera (RTSP)</button>
+                  <button type="button" class="secondary-button" onClick={() => onAddCamera("import")}>Camstream Mac app</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2>No cameras yet</h2>
+                <p>
+                  No cameras are set up for you. Ask the person who runs
+                  camstream to add cameras or give you access.
+                </p>
+              </>
+            )}
             {catalogStale && <StaleNotice refresh={refreshCatalog} />}
           </div>
         ) : camera && stream ? (
@@ -343,7 +358,7 @@ export function App({
               type="button"
               class="add-camera"
               title={railOpen ? undefined : "Add Camera"}
-              onClick={onAddCamera}
+              onClick={() => onAddCamera()}
             >
               <span class="add-camera-icon">
                 <PlusIcon />

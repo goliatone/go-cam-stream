@@ -182,6 +182,13 @@ function pairs(theme: Tokens): Pair[] {
     ["Add Camera", "--accent", token("--surface"), TEXT],
     ["Add Camera on hover", "--accent", token("--fill-soft"), TEXT],
     ["Chosen segment", "--accent", token("--accent-tint"), TEXT],
+    // Adding a camera: the sign-in switch, the step bar and the checklist marks
+    ["Switch track, off", "--text-muted", token("--surface"), GRAPHIC],
+    ["Switch track, on, and current step", "--accent", token("--surface"), GRAPHIC],
+    ["Switch thumb, on", "--surface", token("--accent"), GRAPHIC],
+    ["Passed check", "--accent", token("--accent-tint"), GRAPHIC],
+    ["Failed check", "--danger", token("--danger-soft"), GRAPHIC],
+    ["Details and Where do I find these?", "--accent", token("--surface"), TEXT],
     ["Refresh icon on hover", "--warn", token("--fill-strong"), GRAPHIC],
     // Buttons on the stage
     ["Primary button on the stage", "--on-primary", token("--primary"), TEXT],

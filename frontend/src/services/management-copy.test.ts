@@ -10,12 +10,12 @@ it("shows reviewed guidance for every accepted media error", () => {
 });
 
 it("does not infer authentication failure from an unavailable source", () => {
-  expect(managementMessage("source_unavailable")).toContain("credentials");
+  expect(managementMessage("source_unavailable")).toContain("username and password");
   expect(managementMessage("source_unavailable")).not.toContain("rejected");
   expect(managementMessage("media_connection_failed")).toContain("WebRTC media address and ports");
 });
 
 it("keeps unknown and inherited keys behind the safe fallback", () => {
   for (const code of ["constructor", "__proto__", "raw backend secret"])
-    expect(managementMessage(code as ManagementErrorCode)).toBe("Check the camera and operation status before trying again.");
+    expect(managementMessage(code as ManagementErrorCode)).toBe("Something went wrong. Check the camera and try again.");
 });

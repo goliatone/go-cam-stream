@@ -260,23 +260,31 @@ explicit private interface. [Verified flow and constraints](../docs/browser-clie
 
 Enable the configured principal in [management settings](../config/README.md#managed-camera-state).
 The native development host enables its fixed local principal automatically.
-Choose **Add Camera**, enter an RTSP address and optional credentials, or import
-the Mac companion's exported YAML and optional credentials file. In the Mac app,
-open **Connection Details → Export Connection Files → Show Files in Finder**
-while capture runs. Import both files; localhost also requires credentials. YAML alone
-requires entering credentials in **Edit details**. Exported grants are ignored.
+Choose **Add Camera**, which has three steps: Connect, Check and Save. For
+**Network camera (RTSP)**, enter a name and an RTSP address and, while
+**Requires sign-in** is on (the default), a username and password. For
+**Camstream Mac app**, drop or choose the companion's exported `.yaml` and
+optional `.env` file. In the Mac app, open **Connection Details → Export
+Connection Files → Show Files in Finder** while capture runs. Import both files;
+localhost also requires credentials. With the `.yaml` file alone, enter the
+username and password next. Sharing settings in the files are not imported.
 
-Review the address and access guidance, test until decoded live video is verified
-and preview cleanup completes, then choose **Save Camera**. Save leaves the current
-view playing; **Watch Camera** selects the addition. Other visible authorized pages
-refresh automatically. `localhost` is the server's machine. Imported hosts are
-never silently changed to make a remote server reach the Mac.
+**Continue** starts the check: reaching the camera, receiving video and playing
+in this browser, above a muted preview. An import stops at **Check connection**
+instead, so an imported host can be corrected with **Edit details** first. A
+failed check names the stage and offers **Check again** and **Edit details**.
+Once decoded live video is verified and the preview has closed, choose
+**Save camera**. Save leaves the current view playing; **Watch now** selects the
+addition and **Add another** starts over. Other visible authorized pages refresh
+automatically. `localhost` is the server's machine. Imported hosts are never
+silently changed to make a remote server reach the Mac. Below 768 px the dialog
+fills the screen and keeps its actions at the bottom.
 
 Browser site storage is required before mutations. It retains only scoped IDs,
 revisions and expiry, never endpoint, name, files or credentials. Lost replies and
-reloads check the original operation. **Check status** resolves uncertainty;
-**Retry original Save** preserves its key and original inputs when available.
-Unknown saves cannot be abandoned or silently retried as new cameras. Unsaved
+reloads check the original operation. **Check again** resolves uncertainty;
+**Try saving again** preserves its key and original inputs when available.
+Unknown saves cannot be discarded or silently retried as new cameras. Unsaved
 drafts lost at server restart require re-entry; durable saves recover by receipt.
 
 **Reconnect Camera** appears for an authorized source fault and confirms its effect
@@ -287,13 +295,13 @@ To replace a dashboard-added camera’s password, select it and open **Camera
 settings**. An authorized duplicate-address error offers the same action.
 Leave the username blank to reuse the saved one, or supply it for a camera
 that used anonymous access. Stop any playback of that camera, then choose
-**Review credentials → Test connection → Save credentials → Watch Camera**.
+**Continue**; after the check passes, choose **Save sign-in → Watch now**.
 The change is applied to the existing camera after a successful test. Cameras
 configured by the server use the [service’s private environment](../config/README.md#mixed-setup).
 
-`npm run build` enforces gzip budgets from the manifest: 20,000 bytes for the
-initial JavaScript dependency closure, 12,000 for separately loaded management,
-and 6,000 for all CSS. Total JavaScript and SVG sizes are reported separately.
+`npm run build` enforces gzip budgets from the manifest: 20,300 bytes for the
+initial JavaScript dependency closure, 13,650 for separately loaded management,
+and 6,400 for all CSS. Total JavaScript and SVG sizes are reported separately.
 The management smoke drivers under `scripts/` require an explicitly isolated host,
 an unsaved RTSP source and a locally installed browser driver; they never start
 camera capture or store screenshots. Safari is also checked with its native

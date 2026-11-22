@@ -977,6 +977,12 @@ a.camera-choice:hover {
   color: var(--text-muted);
   font-size: var(--fs-md);
 }
+.catalog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
 .skeleton {
   display: block;
   border-radius: 6px;
@@ -1142,6 +1148,15 @@ kbd {
 .management-dialog .dialog-inner > [role="status"]:empty {
   position: absolute;
 }
+/* The actions stay in view while the dialog scrolls. */
+.management-dialog .dialog-inner > .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -24px -24px;
+  padding: 16px 24px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
 .management-dialog fieldset {
   display: grid;
   gap: 16px;
@@ -1150,13 +1165,13 @@ kbd {
   padding: 0;
   border: 0;
 }
-.management-dialog form label {
+.management-dialog fieldset > label:not(.switch) {
   display: grid;
   gap: 6px;
   font-size: var(--fs-md);
   font-weight: 600;
 }
-.management-dialog form input {
+.management-dialog form input:is(:not([type]), [type="password"]) {
   width: 100%;
   min-width: 0;
   min-height: 44px;
@@ -1170,15 +1185,7 @@ kbd {
   font-size: var(--fs-lg);
   font-weight: 400;
 }
-.management-dialog form input[type="file"] {
-  font-size: var(--fs-sm);
-}
-.management-dialog select {
-  width: 100%;
-  max-width: none;
-  font-weight: 400;
-}
-.management-dialog form :is(input, select):disabled {
+.management-dialog form input:is(:not([type]), [type="password"]):disabled {
   background: var(--fill);
   color: var(--text-disabled);
 }
@@ -1226,6 +1233,14 @@ kbd {
 .management-review dd {
   overflow-wrap: anywhere;
 }
+.management-review ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
 .management-preview video {
   display: block;
   width: 100%;
@@ -1233,6 +1248,166 @@ kbd {
   max-height: 240px;
   border-radius: 8px;
   background: var(--stage);
+}
+/* Connect, Check and Save: a bar over each label, filled up to the current
+   step. */
+.stepper,
+.checklist,
+.file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stepper {
+  display: flex;
+  gap: 8px;
+  counter-reset: step;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.stepper li {
+  flex: 1;
+  padding-top: 6px;
+  border-top: 3px solid var(--line-strong);
+  counter-increment: step;
+}
+.stepper li::before {
+  content: counter(step) ". ";
+}
+.stepper .done::before {
+  content: "✓ ";
+}
+.stepper :is(.done, [aria-current]) {
+  border-color: var(--accent);
+}
+.stepper [aria-current] {
+  color: var(--text);
+  font-weight: 600;
+}
+.checklist {
+  display: grid;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+}
+.checklist li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.checklist li::before {
+  content: "";
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+.checklist li:not([data-mark="waiting"]) {
+  color: var(--text);
+}
+.checklist [data-mark="checking"]::before {
+  border-color: var(--accent);
+  border-right-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+.checklist [data-mark="done"]::before {
+  content: "✓";
+  border-color: var(--accent-tint);
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+.checklist [data-mark="failed"]::before {
+  content: "×";
+  border-color: var(--danger-soft);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* An on/off control drawn by the checkbox itself, which keeps the focus ring. */
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+.switch input {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: 12px;
+  background: var(--text-muted);
+  appearance: none;
+  cursor: inherit;
+}
+.switch input::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.15s;
+}
+.switch input:checked {
+  background: var(--accent);
+}
+.switch input:checked::before {
+  transform: translateX(16px);
+}
+.switch input:disabled {
+  cursor: not-allowed;
+}
+.drop-zone {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px 16px;
+  border: 2px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+.drop-zone.over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.file-list {
+  display: grid;
+  gap: 4px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+/* 44 px tall, as every other control. */
+.disclosure summary {
+  width: fit-content;
+  padding: 12px 0;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+}
+.disclosure p {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 /* Choices drawn as one control. Each radio covers its segment, so the
    selection and the focus ring fill it. */
@@ -1370,6 +1545,26 @@ kbd {
     position: static;
     padding: var(--gutter);
     background: none;
+  }
+  /* Adding a camera takes the whole screen, its actions at the bottom. */
+  .management-dialog {
+    width: 100%;
+    max-width: none;
+    height: var(--vh);
+    max-height: none;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  .management-dialog .dialog-inner {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+    padding: max(12px, env(safe-area-inset-top)) 16px 0;
+  }
+  .management-dialog .dialog-inner > .dialog-actions {
+    margin: auto -16px 0;
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   }
 }
 

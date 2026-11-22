@@ -9,20 +9,21 @@ try{
  const catalog=await page.evaluate(()=>fetch('/api/cameras').then(r=>r.json()));
  if(!catalog.cameras.length)throw Error('Expected persisted camera catalog');
  const click=name=>page.getByRole('button',{name,exact:true}).click();
- const open=async()=>{await click('Add Camera');await page.getByRole('radio',{name:'Import Mac files',exact:true}).check();await page.getByLabel('Connection YAML').setInputFiles(yaml)};
+ const files=()=>page.locator('.drop-zone input[type=file]');
+ const open=async()=>{await click('Add Camera');await page.getByRole('radio',{name:'Camstream Mac app',exact:true}).check();await files().setInputFiles(yaml);await page.getByText(/· connection$/).waitFor()};
  // Intercept the response, not the upload: request replay omits Chromium's files.
  const cdp=await page.context().newCDPSession(page);let responses=0,status;
  await cdp.send('Fetch.enable',{patterns:[{urlPattern:'*/api/camera-drafts/import',requestStage:'Response'}]});
  cdp.on('Fetch.requestPaused',async event=>{responses++;status=event.responseStatusCode;await cdp.send('Fetch.failRequest',{requestId:event.requestId,errorReason:'Aborted'})});
- await open();await page.getByLabel('Credentials file (optional)').setInputFiles(env);await click('Import and review');
- await page.getByRole('button',{name:'Edit details',exact:true}).waitFor();
+ await open();await files().setInputFiles(env);await page.getByText(/· sign-in$/).waitFor();await click('Continue');
+ // An import waits on Check connection, so an imported localhost host can be corrected first.
+ await page.getByRole('button',{name:'Check connection',exact:true}).waitFor();
  if(responses!==1||status!==200)throw Error('Lost import did not recover one successful request');
- if(!await page.getByText('Provided (hidden)',{exact:true}).count())throw Error('Imported credentials missing');
- await click('Cancel draft');await page.getByRole('dialog').waitFor({state:'detached'});await cdp.send('Fetch.disable');
- await open();await click('Import and review');await page.getByRole('button',{name:'Edit details',exact:true}).waitFor();
- if(await page.getByRole('button',{name:'Test connection',exact:true}).isEnabled())throw Error('YAML-only import allowed test without credentials');
- await click('Edit details');if(!await page.getByLabel('Password',{exact:true}).isVisible())throw Error('Missing credential entry');
- await click('Cancel draft');await page.getByRole('dialog').waitFor({state:'detached'});
+ if(!await page.getByText('Username and password (hidden)',{exact:true}).count())throw Error('Imported credentials missing');
+ await click('Cancel');await page.getByRole('dialog').waitFor({state:'detached'});await cdp.send('Fetch.disable');
+ await open();await click('Continue');await page.getByLabel('Password',{exact:true}).waitFor();
+ if(await page.getByRole('button',{name:/^Check (connection|again)$/}).count())throw Error('YAML-only import allowed a check without credentials');
+ await click('Cancel');await page.getByRole('dialog').waitFor({state:'detached'});
  const stored=await page.evaluate(()=>Object.values(sessionStorage).join(''));if(stored.includes('rtsp:')||stored.includes('MAC_CAMERA_'))throw Error('Import contents persisted');
  console.log(JSON.stringify({persisted_catalog_count:catalog.cameras.length,lost_import_posts:responses,exact_import_recovered:true,yaml_only_requires_credentials:true,cancel_cleanup:true}));
 }finally{await browser.close()}

@@ -6,6 +6,7 @@ import { ManagementController } from "../services/management-controller";
 import { RecoveryStorage, RECOVERY_STORAGE_KEY } from "../services/management-storage";
 import { SourceRecovery } from "../services/source-recovery";
 import { CameraRecovery } from "../components/camera-recovery";
+import type { ManagementMode } from "../components/camera-management";
 
 export interface ManagementHostProps {
   viewer: AppProps;
@@ -16,7 +17,7 @@ export interface ManagementHostProps {
 // This complete integration is a separately loaded module. The existing viewer
 // keeps rendering while management capability and recovery status are fetched.
 export default function ManagementHost({viewer,refresh,recovered,onChange}:ManagementHostProps) {
-  const [version,update]=useState(0),[open,setOpen]=useState(false),[watchSelection,setWatchSelection]=useState<StreamRef>();
+  const [version,update]=useState(0),[open,setOpen]=useState(false),[mode,setMode]=useState<ManagementMode>("manual"),[watchSelection,setWatchSelection]=useState<StreamRef>();
   const latest=useRef({viewer,refresh,recovered});latest.current={viewer,refresh,recovered};
   const recovery=useRef<SourceRecovery | undefined>(undefined);
   const [manager]=useState(()=>{
@@ -58,12 +59,12 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
     void manager.openCredentials({id,name});
   };
   useEffect(()=>{onChange({watchSelection,
-    onAddCamera:manager.capabilities?.can_manage_cameras?()=>{manager.reset();setOpen(true)}:undefined,
+    onAddCamera:manager.capabilities?.can_manage_cameras?next=>{manager.reset();setMode(next??"manual");setOpen(true)}:undefined,
     onCameraSettings:manager.capabilities?.can_manage_cameras?openSettings:undefined,
     management:open?{view:manager.view,actions:{
       submit:input=>{void manager.submit(input)},importFiles:(yaml,env)=>{void manager.importFiles(yaml,env)},test:video=>{void manager.test(video)},
       submitCredentials:credentials=>{void manager.submitCredentials(credentials)},openSettings,
-      retrySave:()=>{void manager.retrySave()},abandon:()=>manager.abandon(),cancelTest:()=>{void manager.cancelTest()},save:()=>{void manager.save()},recover:()=>{void manager.recover()},
+      retrySave:()=>{void manager.retrySave()},abandon:()=>manager.abandon(),reset:()=>manager.reset(),cancelTest:()=>{void manager.cancelTest()},save:()=>{void manager.save()},recover:()=>{void manager.recover()},
       cancel:()=>{void manager.cancel().then(()=>{if(!manager.view.unresolved)setOpen(false)})},
       close:()=>{setOpen(false);void manager.close().catch(()=>{})},
       watch:id=>{void manager.watch().then(()=>{
@@ -73,8 +74,8 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
         } else setWatchSelection({camera_id:id,stream_id:"default"});
         setOpen(false);void manager.close().catch(()=>{});
       }).catch(()=>{})},
-    }}:undefined,
+    },mode}:undefined,
     recoveryControl:selected&&stream?.can_reconnect&&(stream.recovery_required||reset?.unresolved)?<CameraRecovery busy={reset?.busy??false} unresolved={reset?.unresolved??false} error={reset?.error} disabled={!manager.view.storageReady} onConfirm={()=>{if(reset)void reset.confirm(selected)}} onCheck={()=>{if(reset)void reset.check()}}/>:undefined,
-  });},[version,open,watchSelection,stream?.can_reconnect,stream?.recovery_required,selected?.camera_id,selected?.stream_id]);
+  });},[version,open,mode,watchSelection,stream?.can_reconnect,stream?.recovery_required,selected?.camera_id,selected?.stream_id]);
   return null;
 }

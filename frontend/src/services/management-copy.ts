@@ -1,48 +1,49 @@
 import type { ManagementErrorCode, TestResult } from "./contracts";
 import { errorCopy } from "./copy";
+// Plain copy about the camera. Its keys are also the management codes the API
+// accepts from the server, so every code keeps an entry.
 export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
-  authentication_failed: "The camera rejected its credentials. Check the username and password.",
-  source_unavailable: "The server could not receive camera video. Check that capture is running, the RTSP address is reachable from the server, and the camera credentials are provided and correct.",
-  camera_unreachable: "The server could not reach the camera. Check that capture is running and the RTSP address and port are reachable from the server.",
-  stream_unavailable: "The camera stream is unavailable. Check the RTSP path and that the camera is publishing video.",
-  media_connection_failed: "The browser could not receive preview video. Check connectivity to the server’s WebRTC media address and ports, then test again.",
-  signaling_failed: "The preview connection could not be negotiated. Check the camera address, credentials and supported video codec, then test again.",
-  deadline_exceeded: "The connection test timed out. Check capture, camera credentials and connectivity, then test again.",
+  authentication_failed: "The camera rejected the username or password. Check them and try again.",
+  source_unavailable: "The server couldn’t receive video from the camera. Check that the camera is running, that the server can reach its address, and that the username and password are right.",
+  camera_unreachable: "The server couldn’t reach the camera. Check that the camera is running and that the server can reach its address and port.",
+  stream_unavailable: "The camera isn’t sending video. Check the path in the address and that the camera is streaming.",
+  media_connection_failed: "This browser couldn’t receive the preview. Check that it can reach the server’s WebRTC media address and ports, then try again.",
+  signaling_failed: "The preview couldn’t start. Check the address, the sign-in and the camera’s video format, then try again.",
+  deadline_exceeded: "The check took too long. Check that the camera is running, its sign-in and the network, then try again.",
   access_denied: "You no longer have permission to manage this camera.",
-  recovery_storage_unavailable: "Enable site storage, then reopen Camera settings or Add Camera.",
-  draft_lost: "The server restarted. Re-enter or import the camera.",
-  draft_expired: "This draft expired. Re-enter or import the camera.",
-  test_expired: "Test this camera again before saving.",
-  draft_revision_conflict: "The draft changed. Check its latest details before continuing.",
-  catalog_revision_conflict: "The camera list changed. Check this draft and try Save again.",
-  duplicate_camera: "This address overlaps a configured camera or another active test.",
-  credentials_required: "Enter both the camera username and password.",
-  credentials_changed: "The saved credentials changed. Close this draft and start a new update.",
-  import_invalid: "Choose one current Mac camera YAML export and, optionally, its matching credentials file.",
-  destination_denied: "This camera address is not allowed by the server.",
-  address_unavailable: "The camera address could not be resolved. Check it and try again.",
-  identity_unverified: "An existing camera address could not be verified. Try again when its name resolves.",
-  cleanup_incomplete: "The preview has not finished closing. Check its status before trying again or saving.",
-  save_outcome_unknown: "Save may have completed. Check the original operation before making another change.",
-  storage_unavailable: "Private camera storage is unavailable. Check the operation before trying again.",
-  playback_evidence_unavailable: "This browser cannot verify decoded frames. Try a supported browser; Save remains disabled.",
-  playback_evidence_insufficient: "The preview has not shown advancing video frames yet.",
+  recovery_storage_unavailable: "Allow site storage for this page, then open Add Camera or Camera settings again.",
+  draft_lost: "The server restarted. Enter or import the camera again.",
+  draft_expired: "This setup expired. Enter or import the camera again.",
+  test_expired: "Check this camera again before saving.",
+  draft_revision_conflict: "These details changed in another tab. Review them before continuing.",
+  catalog_revision_conflict: "The camera list changed. Review the details and save again.",
+  duplicate_camera: "Another camera, or a check in progress, already uses this address.",
+  credentials_required: "Enter both the username and password.",
+  credentials_changed: "The saved sign-in changed. Close this and start again.",
+  import_invalid: "Choose the .yaml file the Camstream Mac app exports and, optionally, its .env file.",
+  destination_denied: "The server doesn’t allow this camera address.",
+  address_unavailable: "The camera address couldn’t be found. Check it and try again.",
+  identity_unverified: "A saved camera’s address couldn’t be confirmed. Try again once its name resolves.",
+  cleanup_incomplete: "The preview is still closing. Wait a moment, then try again.",
+  save_outcome_unknown: "Your camera may already be saved. Check again before making changes.",
+  storage_unavailable: "The server couldn’t write to camera storage. Try again in a moment.",
+  playback_evidence_unavailable: "This browser can’t confirm that the preview plays. Try another browser; saving stays off until then.",
+  playback_evidence_insufficient: "The preview hasn’t shown moving video yet.",
   recovery_lost: "The server restarted or the reconnect record expired. Refresh source status before explicitly reconnecting again.",
-  operation_in_progress: "An operation is still running. Check status before retrying.",
-  receipt_expired: "The save result expired. Check the camera before trying again.",
+  operation_in_progress: "A change is still in progress. Try again in a moment.",
+  receipt_expired: "The earlier save can’t be confirmed anymore. Check the camera list before trying again.",
 };
 export function managementMessage(code: ManagementErrorCode) {
   return (Object.prototype.hasOwnProperty.call(managementCopy,code)?managementCopy[code]:undefined)
     ?? (Object.prototype.hasOwnProperty.call(errorCopy,code)?errorCopy[code as keyof typeof errorCopy].detail:undefined)
-    ?? "Check the camera and operation status before trying again.";
+    ?? "Something went wrong. Check the camera and try again.";
 }
 
 export function managementTestMessage(test: TestResult) {
   if (test.error?.code === "test_expired" && !test.browser_frames_reported) {
     return test.source_media_observed
-      ? "Camera video reached the server, but browser playback was not verified before the test timed out. Check the server’s WebRTC media address and ports. Firefox may reject localhost media candidates. Start the Mac development server with --media-address and this Mac’s private IPv4, then test again."
-      : "The test timed out before camera video was verified. Check capture, the camera address and credentials, then test again.";
+      ? "The camera’s video reached the server, but this browser didn’t play it before the check timed out. Check the server’s WebRTC media address and ports. Firefox may reject localhost media candidates: start the Mac development server with --media-address and this Mac’s private IPv4, then check again."
+      : "The check timed out before the camera sent video. Check that the camera is running, its address and its sign-in, then check again.";
   }
   return test.error ? managementMessage(test.error.code) : "";
 }
-
