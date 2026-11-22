@@ -17,6 +17,7 @@ import type {
   StreamRef,
 } from "./services/contracts";
 import { errorCopy } from "./services/copy";
+import type { PreviewSource } from "./components/tile-preview";
 import samples from "../../data/api/examples.json";
 
 afterEach(() => {
@@ -1549,8 +1550,9 @@ describe("camera actions", () => {
     await user.click(screen.getByRole("menuitem", { name: "Settings" }));
     expect(settings).toHaveBeenCalledWith("room1");
     expect(screen.queryByRole("menu")).toBeNull();
+    // A manager opens any camera's Settings; a server camera's are read-only.
     await user.click(more("Room 2"));
-    expect(items()).toEqual(["Reconnect", "Copy link"]);
+    expect(items()).toEqual(["Settings", "Reconnect", "Copy link"]);
     await user.click(screen.getByRole("menuitem", { name: "Reconnect" }));
     expect(reconnect).toHaveBeenCalledWith({
       camera_id: "room2",
@@ -1608,6 +1610,43 @@ describe("camera actions", () => {
     }
   });
 
+  it("still names the camera that left when the list reloads in between", () => {
+    const props = { initialSelection: { camera_id: "room2", stream_id: "default" } };
+    const { rerender } = render(<App catalog={catalog} {...props} />);
+    const toast = () => document.querySelector(".toast")!.textContent;
+    // Playback refused for a removed camera reloads the list before a poll
+    // would have shown it gone.
+    rerender(<App catalog={{ cameras: [] }} loading {...props} />);
+    expect(toast()).toBe("");
+    rerender(<App catalog={{ cameras: [room1!] }} {...props} />);
+    expect(toast()).toBe("Room 2 was removed from the camera list.");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toContain("Room 1");
+  });
+  it("says so when the camera on screen leaves the list, and moves to the next", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const onSelect = vi.fn();
+      const props = { initialSelection: { camera_id: "room2", stream_id: "default" }, onSelect };
+      const { rerender } = render(<App catalog={catalog} {...props} />);
+      const toast = () => document.querySelector(".toast")!.textContent;
+      // Another camera leaving, or the list failing, says nothing.
+      rerender(<App catalog={{ cameras: [room2!] }} {...props} />);
+      expect(toast()).toBe("");
+      rerender(<App catalog={{ cameras: [room2!] }} error={samples.denied.error as ErrorBody} {...props} />);
+      expect(toast()).toBe("");
+      rerender(<App catalog={catalog} {...props} />);
+      rerender(<App catalog={{ cameras: [room1!] }} {...props} />);
+      expect(toast()).toBe("Room 2 was removed from the camera list.");
+      expect(onSelect).toHaveBeenLastCalledWith({ camera_id: "room1", stream_id: "default" });
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(toast()).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ends the camera details with Reconnect and Settings", async () => {
     const user = userEvent.setup();
     const settings = vi.fn();
@@ -1652,5 +1691,153 @@ describe("camera actions", () => {
     expect(buttons()).toEqual(["Reconnect", "Settings"]);
     rerender(<App catalog={{ cameras: [failing, room2!] }} />);
     expect(buttons()).toEqual([]);
+  });
+});
+
+describe("camera grid", () => {
+  const room3 = {
+    ...catalog.cameras[1]!,
+    id: "room3",
+    name: "Room 3",
+    availability: "failed" as const,
+  };
+  const three: CameraList = { cameras: [...catalog.cameras, room3] };
+  const room1 = { camera_id: "room1", stream_id: "default" };
+  const room2 = { camera_id: "room2", stream_id: "default" };
+  const tiles = () => screen.getByRole("list", { name: "All cameras" });
+  const tile = (name: string) =>
+    within(tiles()).getByRole("link", { name: new RegExp(`^${name}`) });
+  const row = (name: string) =>
+    within(document.querySelector<HTMLElement>("#camera-rail")!).getByRole("link", {
+      name: new RegExp(name),
+    });
+  const pressed = (name: string) =>
+    screen.getByRole("button", { name }).getAttribute("aria-pressed");
+
+  it("offers the grid with two or more cameras, and plays nothing there", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    expect(within(screen.getByRole("group", { name: "View" })).getAllByRole("button")).toHaveLength(2);
+    expect([pressed("One camera"), pressed("All cameras")]).toEqual(["true", "false"]);
+    expect(onSelect).toHaveBeenLastCalledWith(room1);
+    expect(row("Room 1").querySelector(".status-badge")?.textContent).toBe("Live");
+    await user.click(screen.getByRole("button", { name: "All cameras" }));
+    expect([pressed("One camera"), pressed("All cameras")]).toEqual(["false", "true"]);
+    // The page gives up its viewer slot, and the player and its details go.
+    expect(onSelect).toHaveBeenLastCalledWith(undefined);
+    expect(document.querySelector("video")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Camera details" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All cameras");
+    expect(document.title).toBe("All cameras · camstream");
+    // Tiles name each camera and its status as the rail now does: the server's.
+    expect(within(tiles()).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Room 1",
+      "Room 2Live",
+    ]);
+    expect(row("Room 1").querySelector(".status-badge")).toBeNull();
+    expect(tile("Room 1").getAttribute("aria-current")).toBe("page");
+    expect(tile("Room 1").getAttribute("href")).toBe(row("Room 1").getAttribute("href"));
+    expect(tile("Room 2").getAttribute("aria-current")).toBeNull();
+    expect(tile("Room 2").getAttribute("aria-keyshortcuts")).toBe("2");
+  });
+
+  it("shows each camera's last frame on its tile, or its colour tile", async () => {
+    const user = userEvent.setup();
+    const previewFor = (id: string): PreviewSource =>
+      id === "room2"
+        ? { kind: "frame", url: "data:image/jpeg;base64,cm9vbTI=", at: performance.now() }
+        : { kind: "none" };
+    render(<App catalog={three} previewFor={previewFor} />);
+    await user.click(screen.getByRole("button", { name: "All cameras" }));
+    expect(tile("Room 2").querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,cm9vbTI=");
+    expect(tile("Room 2").textContent).toBe("Room 2LiveSeen just now");
+    expect(tile("Room 1").querySelector(".tile-preview.tile-0 svg")).toBeTruthy();
+    expect(tile("Room 1").querySelector("img")).toBeNull();
+    // A failed camera is dimmed, as in the rail, and keeps its place's colour.
+    expect(tile("Room 3").classList.contains("dim")).toBe(true);
+    expect(tile("Room 3").querySelector(".tile-preview.tile-2")).toBeTruthy();
+  });
+
+  it("plays a chosen tile in Focus view and keeps focus in the viewer", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    await user.click(screen.getByRole("button", { name: "All cameras" }));
+    await user.click(tile("Room 2"));
+    expect(onSelect).toHaveBeenLastCalledWith(room2);
+    expect(pressed("One camera")).toBe("true");
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Room 2");
+    expect(document.querySelectorAll("video")).toHaveLength(1);
+    expect(document.activeElement).toBe(document.getElementById("viewer"));
+    // The camera chosen last plays again from its own tile.
+    await user.click(screen.getByRole("button", { name: "All cameras" }));
+    expect(onSelect).toHaveBeenLastCalledWith(undefined);
+    await user.click(tile("Room 2"));
+    expect(onSelect).toHaveBeenLastCalledWith(room2);
+    expect(document.querySelectorAll("video")).toHaveLength(1);
+  });
+
+  it("switches views with G, and number keys and the rail open a camera from the grid", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<App catalog={three} viewer={input()} onSelect={onSelect} />);
+    await user.keyboard("g");
+    expect(tiles()).toBeTruthy();
+    expect(onSelect).toHaveBeenLastCalledWith(undefined);
+    await user.keyboard("g");
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(onSelect).toHaveBeenLastCalledWith(room1);
+    await user.keyboard("g");
+    await user.keyboard("2");
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(onSelect).toHaveBeenLastCalledWith(room2);
+    await user.keyboard("g");
+    await user.click(row("Room 3"));
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(onSelect).toHaveBeenLastCalledWith({ camera_id: "room3", stream_id: "default" });
+    // The help lists the key.
+    await user.keyboard("?");
+    const help = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(within(help).getByText("Switch between one camera and all cameras").nextElementSibling?.textContent).toBe("G");
+  });
+
+  it("offers no grid for one camera, and keeps it through a reload until one is left", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const one: CameraList = { cameras: [catalog.cameras[0]!] };
+    const view = render(<App catalog={one} viewer={input()} onSelect={onSelect} />);
+    expect(screen.queryByRole("group", { name: "View" })).toBeNull();
+    await user.keyboard("g");
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    view.rerender(<App catalog={three} viewer={input()} onSelect={onSelect} />);
+    await user.click(screen.getByRole("button", { name: "All cameras" }));
+    // A reload in between keeps the grid, which still plays nothing.
+    view.rerender(<App catalog={{ cameras: [] }} loading viewer={input()} onSelect={onSelect} />);
+    view.rerender(<App catalog={three} viewer={input()} onSelect={onSelect} />);
+    expect(tiles()).toBeTruthy();
+    expect(onSelect).toHaveBeenLastCalledWith(undefined);
+    // A camera that leaves the list takes its tile with it.
+    view.rerender(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    expect(within(tiles()).getAllByRole("link")).toHaveLength(2);
+    expect(within(tiles()).queryByText("Room 3")).toBeNull();
+    // With one camera left, it plays in Focus view, which stays the view.
+    view.rerender(<App catalog={one} viewer={input()} onSelect={onSelect} />);
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(onSelect).toHaveBeenLastCalledWith(room1);
+    view.rerender(<App catalog={catalog} viewer={input()} onSelect={onSelect} />);
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(pressed("One camera")).toBe("true");
+  });
+
+  it("returns to Focus view to show a camera asked for elsewhere", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const view = render(<App catalog={catalog} onSelect={onSelect} />);
+    await user.click(screen.getByRole("button", { name: "All cameras" }));
+    view.rerender(<App catalog={catalog} onSelect={onSelect} watchSelection={room2} />);
+    expect(screen.queryByRole("list", { name: "All cameras" })).toBeNull();
+    expect(onSelect).toHaveBeenLastCalledWith(room2);
   });
 });

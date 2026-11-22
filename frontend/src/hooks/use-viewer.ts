@@ -13,6 +13,7 @@ import {
   pictureInPicture,
 } from "../services/browser-media";
 import { linkFor, parseLink, withView } from "../services/links";
+import { FramePreviews } from "../services/frame-previews";
 
 // Replace the address without adding a history entry. Browsers rate-limit
 // history updates and may throw; the view itself must not depend on it.
@@ -28,6 +29,9 @@ function showAddress(link: string) {
 
 /** Camera rows show the server's availability, refreshed this often while visible. */
 export const AVAILABILITY_MS = 4000;
+/** A playing camera's tile frame is kept this long after it starts, then this often. */
+export const FIRST_FRAME_MS = 2000;
+export const FRAME_EVERY_MS = 15000;
 
 export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; refreshCatalog: (minimum?: CatalogRevision) => Promise<CatalogRevision | undefined>; onRecovered: () => Promise<void> } {
   const [catalog, setCatalog] = useState<CameraList>({ cameras: [] });
@@ -49,6 +53,19 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
   catalogRef.current = catalog;
   const video = useRef<HTMLVideoElement | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
+  // The camera whose media the video shows, and the last frame of each camera.
+  const mediaCamera = useRef<string | undefined>(undefined);
+  const [frames] = useState(() => new FramePreviews());
+  const [, setFramesSeen] = useState(0);
+  // Nothing is kept of a camera that left the list, or once the page unloads.
+  const keepFrame = (node: HTMLVideoElement | null) => {
+    const camera = mediaCamera.current;
+    if (
+      node && camera && node.srcObject && node.srcObject === mediaRef.current &&
+      catalogRef.current.cameras.some((item) => item.id === camera)
+    )
+      frames.capture(camera, node);
+  };
   const alive = useRef(true);
   const [controller] = useState(
     () =>
@@ -68,13 +85,14 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
         if (next && old && next.runtime_epoch === old.runtime_epoch && next.generation < old.generation) throw Error();
         if (minimum && next && next.runtime_epoch === minimum.runtime_epoch && next.generation < minimum.generation) throw Error();
         catalogRef.current = result; setCatalog(result); setCatalogStale(false);
+        frames.retain(result.cameras.map((camera) => camera.id));
       }
       const revision = catalogRef.current.revision;
       if (minimum && (!revision || (revision.runtime_epoch === minimum.runtime_epoch && revision.generation < minimum.generation))) throw Error();
       return revision;
     } catch (reason) {
       if (alive.current && sequence === requestSequence.current) {
-        if (safeError(reason).code === "access_denied") { catalogRef.current={cameras:[]};setCatalog(catalogRef.current); setError(safeError(reason)); }
+        if (safeError(reason).code === "access_denied") { catalogRef.current={cameras:[]};setCatalog(catalogRef.current); setError(safeError(reason)); frames.clear(); }
         else { const stale={...catalogRef.current,cameras:catalogRef.current.cameras.map(camera=>({...camera,availability:"unknown" as const}))}; catalogRef.current=stale;setCatalog(stale);setCatalogStale(true); }
       }
       throw reason;
@@ -116,6 +134,8 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
     (node: HTMLVideoElement | null) => {
       const old = video.current;
       if (old && old !== node) {
+        // Leaving a camera, or opening the grid, keeps its last frame.
+        keepFrame(old);
         old.onplaying =
           old.ontimeupdate =
           old.onwaiting =
@@ -166,8 +186,11 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
     const media = snapshot?.media ?? null;
     if (!node) return;
     if (node.srcObject !== media) {
+      // A stop or a new connection replaces the media; keep what it showed.
+      keepFrame(node);
       node.srcObject = media;
       mediaRef.current = media;
+      mediaCamera.current = media ? snapshot?.selection.camera_id : undefined;
       node.muted = true;
       setNeedsPlay(false);
       setPaused(false);
@@ -186,6 +209,23 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
   useEffect(() => {
     if (snapshot?.error?.code === "access_denied") reload();
   }, [snapshot?.error?.code]);
+  // A playing camera's frame is kept soon after it starts and then
+  // periodically, so its tile stays close to what this page last saw.
+  const live = snapshot?.state === "playing" ? snapshot.selection.camera_id : undefined;
+  useEffect(() => {
+    if (!live) return;
+    let timer = setTimeout(function keep() {
+      keepFrame(video.current);
+      timer = setTimeout(keep, FRAME_EVERY_MS);
+    }, FIRST_FRAME_MS);
+    return () => clearTimeout(timer);
+  }, [live]);
+  useEffect(
+    () => frames.subscribe(() => {
+      if (alive.current) setFramesSeen((seen) => seen + 1);
+    }),
+    [frames],
+  );
   useEffect(() => {
     reload();
     const visibility = () =>
@@ -193,6 +233,9 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
     // A page opened in a background tab starts hidden.
     visibility();
     const pagehide = (event: PageTransitionEvent) => {
+      // Frames live only as long as the page, and none is kept as it goes.
+      mediaCamera.current = undefined;
+      frames.clear();
       if (event.persisted) {
         void controller.select(undefined);
         return;
@@ -217,6 +260,7 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
       window.removeEventListener("pageshow", pageshow);
       window.removeEventListener("popstate", popstate);
       if (video.current) void detachVideo(video.current);
+      frames.clear();
       void controller.dispose().catch(() => {});
     };
   }, [controller, reload]);
@@ -291,6 +335,7 @@ export function useViewer(api: ViewerAPI): AppProps & { onReload: () => void; re
     viewer,
     initialSelection,
     onSelect,
+    previewFor: (camera) => frames.previewFor(camera),
     onReload: reload,
     catalogStale,
     refreshCatalog,

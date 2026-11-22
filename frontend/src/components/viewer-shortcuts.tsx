@@ -10,6 +10,7 @@ const SHORTCUTS: [keys: string[], action: string][] = [
   [["R"], "Try again"],
   [["[", "]"], "Previous or next camera"],
   [["1–9"], "Go to a camera in the list"],
+  [["G"], "Switch between one camera and all cameras"],
   [["?"], "Show these shortcuts"],
 ];
 export default function ViewerShortcuts({onClose}:{onClose():void}) {

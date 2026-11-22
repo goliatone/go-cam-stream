@@ -47,7 +47,8 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
         await recovery.current.init();
         if(active)update(n=>n+1);
       }
-      if(active&&(manager.view.draft||manager.view.saved||manager.view.unresolved||manager.view.error==="receipt_expired"))setOpen(true);
+      // A change restored after a reload reopens where it was made, to say how it ended.
+      if(active&&(manager.view.draft||manager.view.saved||manager.view.change||manager.view.unresolved||manager.view.error==="receipt_expired"))setOpen(true);
     });
     const hidden=()=>{if(document.visibilityState==="hidden")void manager.cancelTest()};
     const pagehide=()=>{void manager.cancelTest()};
@@ -56,9 +57,11 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
   },[manager]);
   const reset=recovery.current;
   const {view}=manager,cameras=viewer.catalog.cameras,current=viewer.viewer;
-  // The saved camera whose sign-in the drawer changes.
+  // The saved camera the settings drawer shows.
   const settingsID=open?view.credentialTarget?.id??(view.draft?.credential_update?view.draft.candidate_id:undefined)??(view.saved?.credentials_updated?view.saved.camera_id:undefined):undefined;
   const camera=cameras.find(item=>item.id===settingsID);
+  // Only the manager who added a camera reads and changes its settings.
+  const editable=Boolean(camera?.can_update_credentials);
   // The camera on screen reads this page's state, as its rail row does; any
   // other reads the server's.
   const shown=Boolean(current&&settingsID&&current.selection.camera_id===settingsID&&current.presentation.state!=="unknown");
@@ -68,10 +71,11 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
   const canStop=Boolean(current?.presentation.actions?.onStop);
   // The first of the camera's streams whose source a reset would restore.
   const needs=camera?.streams.find(item=>item.can_reconnect&&(item.recovery_required||reset?.unresolved&&reset.ref?.camera_id===camera.id&&reset.ref.stream_id===item.id));
-  // The server refuses a sign-in change while anyone watches, so the drawer
-  // keeps the count current. Hidden pages skip the request.
+  useEffect(()=>{if(settingsID&&editable)void manager.loadSettings(settingsID)},[settingsID,editable]);
+  // The server refuses a new address or sign-in, and a removal, while anyone
+  // watches, so the drawer keeps the count current. Hidden pages skip the request.
   useEffect(()=>{
-    if(!settingsID||view.saved)return;
+    if(!settingsID||view.saved||!editable)return;
     let active=true,timer:ReturnType<typeof setTimeout>|undefined;
     const poll=async()=>{
       if(document.visibilityState!=="hidden"){
@@ -84,7 +88,7 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
     };
     void poll();
     return()=>{active=false;clearTimeout(timer)};
-  },[settingsID,Boolean(view.saved),ask]);
+  },[settingsID,Boolean(view.saved),editable,Boolean(view.draft?.fenced),ask]);
   const openSettings=(id:string)=>{
     const name=latest.current.viewer.catalog.cameras.find(camera=>camera.id===id)?.name;
     setOpen(true);
@@ -99,7 +103,8 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
     recoveryPending:reset?.unresolved?reset.ref:undefined,
     management:open?{view,actions:{
       submit:input=>{void manager.submit(input)},importFiles:(yaml,env)=>{void manager.importFiles(yaml,env)},test:video=>{void manager.test(video)},
-      submitCredentials:credentials=>{void manager.submitCredentials(credentials)},checkAndSave:(video,credentials)=>{void manager.checkAndSave(video,credentials)},openSettings,
+      submitCredentials:credentials=>{void manager.submitCredentials(credentials)},checkAndSave:(video,credentials,endpoint,stop)=>{void manager.checkAndSave(video,credentials,endpoint,stop)},openSettings,
+      rename:name=>{void manager.rename(name)},remove:stop=>{void manager.remove(stop)},
       retrySave:()=>{void manager.retrySave()},abandon:()=>manager.abandon(),reset:()=>manager.reset(),cancelTest:()=>{void manager.cancelTest()},save:()=>{void manager.save()},recover:()=>{void manager.recover()},
       cancel:()=>{void manager.cancel().then(()=>{if(!manager.view.unresolved)setOpen(false)})},
       close:()=>{setOpen(false);void manager.close().catch(()=>{})},

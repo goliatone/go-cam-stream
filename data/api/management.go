@@ -18,6 +18,9 @@ const (
 	CancelTestCommand        = "camera.draft.test.cancel.v1"
 	SaveCameraCommand        = "camera.save.v1"
 	RecoverCameraCommand     = "camera.recovery.v1"
+	RenameCameraCommand      = "camera.rename.v1"
+	RemoveCameraCommand      = "camera.remove.v1"
+	StopViewersCommand       = "camera.draft.stop_viewers.v1"
 	MaxImportYAMLBytes       = 32 * 1024
 	MaxImportEnvBytes        = 8 * 1024
 	DraftLifetime            = 15 * time.Minute
@@ -80,10 +83,14 @@ type CreateDraftRequest struct {
 	DraftInput
 }
 
+// CredentialDraftRequest stages a saved camera's connection change. An empty
+// username keeps the saved one; an empty password keeps the saved one only when
+// Endpoint names a new address. An empty Endpoint keeps the saved address.
 type CredentialDraftRequest struct {
 	Mutation
 	CameraID    string      `json:"camera_id"`
-	Credentials Credentials `json:"credentials"` // empty username retains the saved username
+	Credentials Credentials `json:"credentials"`
+	Endpoint    string      `json:"endpoint,omitempty"`
 }
 
 func (CredentialDraftRequest) String() string   { return "[credential draft redacted]" }
@@ -144,7 +151,8 @@ type DraftReview struct {
 	Warnings           []DraftWarning     `json:"warnings"`
 	State              DraftState         `json:"state"`
 	Test               *TestResult        `json:"test,omitempty"`
-	CredentialUpdate   bool               `json:"credential_update,omitempty"`
+	CredentialUpdate   bool               `json:"credential_update,omitempty"` // a saved camera's connection change
+	Fenced             bool               `json:"fenced,omitempty"`            // holds the camera's admission fence
 }
 type TestStage string
 
@@ -208,18 +216,59 @@ type SaveCameraResponse struct {
 	CatalogRevision    CatalogRevision `json:"catalog_revision"` // current revision, including receipt replay
 	CredentialsUpdated bool            `json:"credentials_updated,omitempty"`
 }
+
+// CameraSettings is readable only by the manager who created the camera. The
+// endpoint is the saved address as entered, never with credentials.
+type CameraSettings struct {
+	CameraID        string             `json:"camera_id"`
+	Name            string             `json:"name"`
+	Endpoint        string             `json:"endpoint"`
+	DialAddress     string             `json:"dial_address"`
+	Authentication  AuthenticationMode `json:"authentication"`
+	CatalogRevision CatalogRevision    `json:"catalog_revision"`
+}
+
+// The route names the camera; bodies carry no camera ID.
+type RenameCameraRequest struct {
+	Mutation
+	Name            string          `json:"name"`
+	CatalogRevision CatalogRevision `json:"catalog_revision"`
+}
+type RemoveCameraRequest struct {
+	Mutation
+	CatalogRevision CatalogRevision `json:"catalog_revision"`
+	StopViewers     bool            `json:"stop_viewers,omitempty"` // end everyone's playback first
+}
+
+// CameraChange reports a rename or removal, including receipt replay.
+type CameraChange struct {
+	CameraID        string          `json:"camera_id"`
+	CatalogRevision CatalogRevision `json:"catalog_revision"`
+	Removed         bool            `json:"removed,omitempty"`
+	StoppedSessions int             `json:"stopped_sessions,omitempty"`
+}
+
+// StopViewersRequest ends everyone's playback of a settings draft's camera and
+// keeps new sessions out until the draft is saved, canceled or expires.
+type StopViewersRequest struct {
+	Mutation
+	ExpectedRevision uint64 `json:"expected_revision"`
+}
 type OperationKind string
 
 const (
-	OperationCreate     OperationKind = "create"
-	OperationImport     OperationKind = "import"
-	OperationPatch      OperationKind = "patch"
-	OperationCancel     OperationKind = "cancel"
-	OperationTest       OperationKind = "test"
-	OperationComplete   OperationKind = "complete"
-	OperationCancelTest OperationKind = "cancel_test"
-	OperationSave       OperationKind = "save"
-	OperationRecovery   OperationKind = "recovery"
+	OperationCreate      OperationKind = "create"
+	OperationImport      OperationKind = "import"
+	OperationPatch       OperationKind = "patch"
+	OperationCancel      OperationKind = "cancel"
+	OperationTest        OperationKind = "test"
+	OperationComplete    OperationKind = "complete"
+	OperationCancelTest  OperationKind = "cancel_test"
+	OperationSave        OperationKind = "save"
+	OperationRecovery    OperationKind = "recovery"
+	OperationRename      OperationKind = "rename"
+	OperationRemove      OperationKind = "remove"
+	OperationStopViewers OperationKind = "stop_viewers"
 )
 
 type OperationState string
@@ -253,5 +302,6 @@ type OperationResult struct {
 	TestID       string               `json:"test_id,omitempty"`
 	Saved        *SaveCameraResponse  `json:"saved,omitempty"`
 	Recovery     *ReconnectResponse   `json:"recovery,omitempty"`
+	Change       *CameraChange        `json:"change,omitempty"`
 	Error        *ManagementErrorBody `json:"error,omitempty"`
 }

@@ -714,5 +714,122 @@
         }
       ]
     }
+  },
+  "camera_settings": {
+    "type": "CameraSettings",
+    "value": {
+      "camera_id": "camera-fixture",
+      "name": "Camera",
+      "endpoint": "rtsp://camera.local:554/live",
+      "dial_address": "192.168.1.20",
+      "authentication": "credentials",
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 2
+      }
+    }
+  },
+  "credential_address": {
+    "type": "CredentialDraftRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "camera_id": "camera-fixture",
+      "credentials": {
+        "username": "",
+        "password": ""
+      },
+      "endpoint": "rtsp://192.168.1.21:554/live"
+    }
+  },
+  "draft_fenced": {
+    "type": "DraftReview",
+    "value": {
+      "id": "draft-fixture",
+      "candidate_id": "camera-fixture",
+      "revision": 1,
+      "runtime_epoch": "epoch-fixture",
+      "expires_at": "2026-11-22T22:00:00Z",
+      "name": "Camera",
+      "endpoint": "rtsp://192.168.1.21:554/live",
+      "authentication": "credentials",
+      "credentials_present": true,
+      "warnings": [],
+      "state": "ready",
+      "credential_update": true,
+      "fenced": true
+    }
+  },
+  "stop_viewers": {
+    "type": "StopViewersRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "expected_revision": 1
+    }
+  },
+  "rename": {
+    "type": "RenameCameraRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "name": "Porch",
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 2
+      }
+    }
+  },
+  "renamed": {
+    "type": "CameraChange",
+    "value": {
+      "camera_id": "camera-fixture",
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 3
+      }
+    }
+  },
+  "remove": {
+    "type": "RemoveCameraRequest",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "runtime_epoch": "epoch-fixture",
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 2
+      },
+      "stop_viewers": true
+    }
+  },
+  "removed": {
+    "type": "CameraChange",
+    "value": {
+      "camera_id": "camera-fixture",
+      "catalog_revision": {
+        "runtime_epoch": "epoch-fixture",
+        "generation": 3
+      },
+      "removed": true,
+      "stopped_sessions": 2
+    }
+  },
+  "operation_removed": {
+    "type": "OperationResult",
+    "value": {
+      "operation_key": "0123456789abcdef0123456789abcdef",
+      "kind": "remove",
+      "state": "succeeded",
+      "runtime_epoch": "epoch-fixture",
+      "candidate_id": "camera-fixture",
+      "change": {
+        "camera_id": "camera-fixture",
+        "catalog_revision": {
+          "runtime_epoch": "epoch-fixture",
+          "generation": 3
+        },
+        "removed": true
+      }
+    }
   }
 }

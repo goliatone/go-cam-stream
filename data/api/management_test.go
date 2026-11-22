@@ -29,7 +29,7 @@ func TestManagementFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	types := map[string]reflect.Type{}
-	for _, v := range []any{api.Capabilities{}, api.CreateDraftRequest{}, api.ImportDraftRequest{}, api.PatchDraftRequest{}, api.Mutation{}, api.DraftReview{}, api.CreateTestRequest{}, api.CompleteTestRequest{}, api.SaveCameraRequest{}, api.SaveCameraResponse{}, api.OperationResult{}, api.ManagementErrorResponse{}, api.CameraList{}} {
+	for _, v := range []any{api.Capabilities{}, api.CreateDraftRequest{}, api.ImportDraftRequest{}, api.PatchDraftRequest{}, api.Mutation{}, api.DraftReview{}, api.CreateTestRequest{}, api.CompleteTestRequest{}, api.SaveCameraRequest{}, api.SaveCameraResponse{}, api.OperationResult{}, api.ManagementErrorResponse{}, api.CameraList{}, api.CredentialDraftRequest{}, api.CameraSettings{}, api.RenameCameraRequest{}, api.RemoveCameraRequest{}, api.CameraChange{}, api.StopViewersRequest{}} {
 		typ := reflect.TypeOf(v)
 		types[typ.Name()] = typ
 	}
@@ -96,6 +96,18 @@ func TestManagementValidation(t *testing.T) {
 		m.OperationKey = key
 		if m.Validate() == nil {
 			t.Fatal("bad key accepted")
+		}
+	}
+	revision := api.CatalogRevision{RuntimeEpoch: "epoch", Generation: 2}
+	for name, tc := range map[string]struct {
+		valid, invalid interface{ Validate() error }
+	}{
+		"rename": {api.RenameCameraRequest{Mutation: good, Name: "Porch", CatalogRevision: revision}, api.RenameCameraRequest{Mutation: good, CatalogRevision: revision}},
+		"remove": {api.RemoveCameraRequest{Mutation: good, CatalogRevision: revision, StopViewers: true}, api.RemoveCameraRequest{Mutation: good}},
+		"stop":   {api.StopViewersRequest{Mutation: good, ExpectedRevision: 1}, api.StopViewersRequest{Mutation: good}},
+	} {
+		if tc.valid.Validate() != nil || tc.invalid.Validate() == nil {
+			t.Fatal(name, "request validation drift")
 		}
 	}
 	evidence := api.FrameEvidence{Method: "frames_decoded", Frames: 2, Width: 640, Height: 480}

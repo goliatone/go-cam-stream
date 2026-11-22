@@ -18,3 +18,6 @@ export const PlusIcon = icon("plus");
 export const RefreshIcon = icon("refresh");
 export const MoreIcon = icon("more");
 export const SettingsIcon = icon("settings");
+// The view switch: one camera, or all of them.
+export const FocusIcon = icon("camera");
+export const GridIcon = icon("grid");

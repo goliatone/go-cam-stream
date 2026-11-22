@@ -48,6 +48,21 @@ focus shows its key. Each row's ⋯ menu offers **Copy link** and, where they
 apply, **Settings** and **Reconnect**; the arrow keys, Home and End move through
 it and Esc closes it.
 
+With two or more cameras, the top bar switches between **One camera**, the player
+above, and **All cameras**, a grid of tiles; <kbd>G</kbd> switches too. The page
+starts with one camera and keeps the choice until it reloads. Each tile shows the
+camera's name and status as its rail row does, over the last frame this page
+played of it and how long ago that was ("Seen 2 min ago"), or over its colour
+tile. A frame is captured two seconds after a camera starts playing, every 15
+seconds while it plays and when playback leaves it, at most 480 px wide. Frames
+stay in the page's memory: they are never stored or sent, a reload starts without
+them, and a camera that leaves the list loses its frame. Opening the grid keeps
+the playing camera's frame and ends this page's session, so the grid holds no
+viewer slot. Choosing a tile, a rail row or a number key opens that camera with
+one camera on screen and plays it. The grid runs from one column on a phone to as
+many as fit on a wide screen; on a phone the app's mark stands in for its name in
+the top bar.
+
 Each view has an address: `?camera=<id>&stream=<id>`, with the stream omitted for a
 camera's first stream. Opening it selects that view when the catalog lists it.
 Otherwise an unknown stream falls back to the camera's first stream, and an
@@ -159,9 +174,10 @@ Each state is captured at three sizes, in light and in dark:
 - a 375×812 phone's whole page;
 - a 667×330 phone held sideways.
 
-The shortcuts dialog and the collapsed rail are captured too, and the camera sheet
-at all three sizes. That makes 136 views of each version, in about a minute for
-both. The preview's own bar is hidden, so the app fills each size.
+The shortcuts dialog and the collapsed rail are captured too, the camera grid at
+the desktop and phone sizes, and the camera sheet at all three sizes. That makes
+140 views of each version, in about a minute for both. The preview's own bar is
+hidden, so the app fills each size.
 
 The project's Vite serves both versions with the working tree's dependencies; the
 script notes when the ref's lock file differs. A local Chrome or Chromium captures
@@ -274,7 +290,7 @@ Choose **Add Camera**, which has three steps: Connect, Check and Save. For
 **Network camera (RTSP)**, enter a name and an RTSP address and, while
 **Requires sign-in** is on (the default), a username and password. For
 **Camstream Mac app**, drop or choose the companion's exported `.yaml` and
-optional `.env` file. In the Mac app, open **Connection Details → Export
+optional `.env` file. In the Mac app, open **Settings → Server → Export
 Connection Files → Show Files in Finder** while capture runs. Import both files;
 localhost also requires credentials. With the `.yaml` file alone, enter the
 username and password next. Sharing settings in the files are not imported.
@@ -303,22 +319,35 @@ other viewers of that source; **Reconnect camera** starts the reset. It remains
 available with management disabled when reconnect grants remain. **Try again**
 only retries this page's session.
 
-To replace a dashboard-added camera’s password, choose its **Settings**, beside
-the camera details or in its ⋯ menu; an authorized duplicate-address error offers
-the same. Settings opens in a drawer beside the video, or fills the screen below
-768 px. The server refuses a sign-in change while anyone watches the camera, from
-any browser, so the Sign-in section says how many do and offers **Stop watching
-here** while this page plays it. Leave the username blank to reuse the saved one,
-or supply it for a camera that used anonymous access, then choose **Check and
-save**: it checks the connection with the new sign-in and applies it to the
-existing camera once the check passes. **Watch now** then plays the camera.
-Connection shows the camera's state, with **Reconnect** when its source needs it,
-and About lists its streams and media. Cameras configured by the server use the
-[service’s private environment](../config/README.md#mixed-setup).
+A camera's **Settings**, beside the camera details or in its ⋯ menu, opens in a
+drawer beside the video, or fills the screen below 768 px; an authorized
+duplicate-address error offers the same. For a dashboard-added camera, **Name**
+renames it with **Save name**: other pages show the new name on their next
+refresh, and playback goes on. **Connection** changes its address, its sign-in or
+both. Leave the username blank to keep the saved one; with a new address, a
+blank password keeps the saved password too, and a camera that connects without
+a sign-in keeps doing so when both are blank. **Check and save** checks the
+connection with the new settings and applies them to the existing camera once
+the check passes; **Watch now** then plays the camera.
 
-`npm run build` enforces gzip budgets from the manifest: 21,400 bytes for the
-initial JavaScript dependency closure, 15,150 for separately loaded management,
-and 7,000 for all CSS. Total JavaScript and SVG sizes are reported separately.
+The server refuses a new address or sign-in while anyone watches the camera, from
+any browser. Connection says how many do and offers **Stop watching here** while
+this page plays it; once no one watches, **Check and save** is available. When
+others watch, **Stop everyone’s playback…** asks first, then stops playback in
+every browser and checks and saves. That playback stays stopped until the change
+is saved or canceled, and a page that tries to play meanwhile is told the camera
+is busy. **Remove camera** asks first too: the camera leaves every camera list and
+its saved address and sign-in are deleted, and while people watch it, **Stop
+playback and remove** ends their playback as well. A page showing a removed
+camera moves to the next one and says why. A rename or removal whose reply was
+lost is checked again, also after a reload, and the drawer reopens to say how it
+ended. Connection shows the camera's state, with **Reconnect** when its source
+needs it, and About lists its streams and media. Cameras configured by the server
+use the [service’s private environment](../config/README.md#mixed-setup).
+
+`npm run build` enforces gzip budgets from the manifest: 22,500 bytes for the
+initial JavaScript dependency closure, 16,950 for separately loaded management,
+and 7,300 for all CSS. Total JavaScript and SVG sizes are reported separately.
 The management smoke drivers under `scripts/` require an explicitly isolated host,
 an unsaved RTSP source and a locally installed browser driver; they never start
 camera capture or store screenshots. Safari is also checked with its native

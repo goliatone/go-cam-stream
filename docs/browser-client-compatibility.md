@@ -115,11 +115,14 @@ same-build comparison. Do not present this preference as a verified fix.
 Mozilla's implementation also restricts candidates based on capture permission
 ([candidate filtering](https://github.com/mozilla/gecko-dev/blob/master/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp#L4055-L4078)).
 Which additional filter causes the post-restart failure remains unisolated.
-The verified fix is `./taskfile dev:serve PORT --media-address PRIVATE_IPV4`.
-It explicitly binds and advertises WebRTC media on one private IPv4 assigned to
-the Mac, preserving loopback-only HTTP and worker control. Wildcard, public,
-IPv6 and unassigned addresses are rejected. Without the flag, native development
-still forces loopback media. No STUN/TURN service or camera permission is needed.
+The bundled Mac configuration uses this media path in both `./taskfile dev:serve`
+and `./taskfile dev:serve --webcam`. It selects a private IPv4 from an active Wi-Fi
+or Ethernet interface at startup and keeps HTTP and worker control on loopback.
+If none is available, it falls back to loopback media. Custom runs use loopback
+by default. `--media-address PRIVATE_IPV4` selects an assigned address explicitly,
+and `--media-address 127.0.0.1` forces loopback. Wildcard, public, IPv6 and
+unassigned addresses are rejected. The test-pattern path needs no STUN/TURN
+service or camera permission.
 
 On 2026-11-16 Firefox Developer Edition 161.0a2 completed real Mac live export →
 import both files → decoded preview test/cleanup → save → Watch Camera on the

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Credentials, DraftInput, DraftReview, ManagementErrorCode, SaveCameraResponse, TestResult } from "../services/contracts";
-import { managementMessage } from "../services/management-copy";
+import type { CameraChange, CameraSettings, Credentials, DraftInput, DraftReview, ManagementErrorCode, SaveCameraResponse, TestResult } from "../services/contracts";
+import { draftWarnings as warnings, managementMessage } from "../services/management-copy";
 import { openDialog } from "../services/shortcuts";
 import { ConnectionCheck } from "./connection-check";
 import { CloseIcon } from "./icon";
@@ -20,7 +20,12 @@ export interface ManagementView {
   checkingSave?: boolean;
   canAbandon?: boolean;
   canRetrySave?: boolean;
+  /** The saved camera the settings drawer shows. */
   credentialTarget?: { id: string; name?: string | undefined } | undefined;
+  /** That camera's saved name and address, for the manager who added it. */
+  settings?: CameraSettings | undefined;
+  /** The last rename or removal, once confirmed. */
+  change?: CameraChange | undefined;
   duplicateCamera?: string | undefined;
 }
 export interface ManagementActions {
@@ -36,8 +41,11 @@ export interface ManagementActions {
   retrySave?(): void;
   watch(cameraID: string): void;
   submitCredentials?(credentials: Credentials): void;
-  /** Checks and saves a sign-in change in one step. */
-  checkAndSave?(video: HTMLVideoElement, credentials?: Credentials): void;
+  /** Checks and saves an address or sign-in change in one step, stopping everyone's playback first with stop. */
+  checkAndSave?(video: HTMLVideoElement, credentials?: Credentials, endpoint?: string, stop?: boolean): void;
+  rename?(name: string): void;
+  /** With stop, the removal ends everyone's playback of the camera. */
+  remove?(stop: boolean): void;
   openSettings?(cameraID: string): void;
   /** Starts another camera once one is saved. */
   reset?(): void;
@@ -45,16 +53,9 @@ export interface ManagementActions {
 /** How a new camera is connected: by its RTSP address or the Mac app's files. */
 export type ManagementMode = "manual" | "import";
 export interface ManagementDialogProps { view: ManagementView; actions: ManagementActions; mode?: ManagementMode | undefined; settings?: CameraSettingsContext | undefined }
-const warnings = {
-  server_relative_localhost: "Localhost is the server’s own machine. A remote or container server needs your Mac’s network address and Private network capture.",
-  imported_grants_ignored: "Sharing settings in the file are not imported.",
-  initial_address_only: "Use a camera you trust: the server checks only the address it first connects to and follows the camera’s redirects.",
-  creator_only_access: "",
-  fixed_address: "This address stays fixed after saving. Reconnect does not follow the camera to a new address.",
-};
 export { managementMessage } from "../services/management-copy";
 
-/** A sign-in change opens the settings drawer; anything else, Add Camera. */
+/** A saved camera's settings open the drawer; anything else, Add Camera. */
 export default function CameraManagement(props: ManagementDialogProps) {
   const { view } = props;
   return view.credentialTarget || view.draft?.credential_update || view.saved?.credentials_updated

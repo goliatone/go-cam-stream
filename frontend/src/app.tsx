@@ -10,10 +10,14 @@ import type {
 import { LazyManagement, LazyShortcuts } from "./components/lazy-management";
 import type { ManagementDialogProps, ManagementMode } from "./components/camera-management";
 import { CameraLinks, type CameraAction } from "./components/camera-selector";
+import { CameraGrid } from "./components/camera-grid";
+import type { PreviewSource } from "./components/tile-preview";
 import appIcon from "./components/app-icon.svg?no-inline";
 import {
   CameraIcon,
   CloseIcon,
+  FocusIcon,
+  GridIcon,
   KeyboardIcon,
   PlusIcon,
   RefreshIcon,
@@ -62,7 +66,10 @@ export interface AppProps {
   catalogStale?: boolean | undefined;
   /** Asks for the camera list again; it rejects when the list stays stale. */
   refreshCatalog?: (() => Promise<unknown>) | undefined;
+  /** The camera to play: the selection in Focus view, none in Grid view. */
   onSelect?: (selection: StreamRef | undefined) => void;
+  /** What each camera's grid tile shows. */
+  previewFor?: ((cameraID: string) => PreviewSource) | undefined;
 }
 /** Status updates that stop for this long, while the page asks, warn. */
 const STALE_MS = 10000;
@@ -73,6 +80,7 @@ const sameStream = (a: StreamRef, b: StreamRef) =>
 const narrow = () =>
   typeof matchMedia === "function" && matchMedia("(max-width: 1023px)").matches;
 const RAIL_KEY = "camstream.rail";
+const NO_PREVIEW = (): PreviewSource => ({ kind: "none" });
 function initialRail() {
   try {
     const saved = localStorage.getItem(RAIL_KEY);
@@ -92,8 +100,11 @@ export function App({
   onReload,
   onAddCamera, onCameraSettings, watchSelection, onReconnect, recoveryPending, management, catalogStale,
   refreshCatalog,
+  previewFor = NO_PREVIEW,
 }: AppProps) {
   const [requested, setRequested] = useState(initialSelection);
+  // Focus shows one camera; Grid, offered with two or more, shows them all.
+  const [gridChosen, setGrid] = useState(false);
   const [railOpen, setRailOpen] = useState(initialRail);
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheet = useRef<HTMLDialogElement>(null);
@@ -108,8 +119,11 @@ export function App({
   const stream = camera?.streams.find(
     (item) => item.id === selected?.stream_id,
   );
+  const grid = gridChosen && cameras.length > 1;
+  // The grid plays nothing, so it holds no viewer slot.
+  const playing = grid ? undefined : selected;
   const current =
-    selected && viewer && sameStream(selected, viewer.selection)
+    playing && viewer && sameStream(playing, viewer.selection)
       ? viewer
       : undefined;
   const status =
@@ -127,33 +141,64 @@ export function App({
   // This page holds one of the stream's viewer slots.
   const mine = presentation.state === "playing" || presentation.state === "reconnecting";
 
-  // Notify the integration owner of the effective selection, including initial
-  // selection and catalog revocation. This callback performs no transport work here.
+  // Notify the integration owner of the camera to play, including initial
+  // selection, catalog revocation and the grid, which plays none. This
+  // callback performs no transport work here.
   useEffect(() => {
-    onSelect?.(selected);
-  }, [selected?.camera_id, selected?.stream_id]);
+    onSelect?.(playing);
+  }, [playing?.camera_id, playing?.stream_id]);
   useEffect(() => {
-    if (camera) showPageState(pageTitle(camera.name, word), view.tone);
+    if (grid) showPageState(pageTitle("All cameras"), null);
+    else if (camera) showPageState(pageTitle(camera.name, word), view.tone);
     else showPageState(pageTitle(), error ? "danger" : null);
-  }, [camera?.name, word, view.tone, Boolean(error)]);
+  }, [grid, camera?.name, word, view.tone, Boolean(error)]);
+  // A list down to one camera returns to Focus; a reload in between does not.
+  useEffect(() => {
+    if (!loading && !error && cameras.length < 2) setGrid(false);
+  }, [cameras.length, loading, Boolean(error)]);
 
-  useEffect(() => { if (watchSelection) setRequested(watchSelection); }, [watchSelection]);
+  useEffect(() => {
+    if (!watchSelection) return;
+    setRequested(watchSelection);
+    setGrid(false);
+  }, [watchSelection]);
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
+  // The camera on screen can leave the list, removed or no longer shared. The
+  // next playable camera takes its place, and the page says why. A reload or a
+  // failed list in between keeps the camera that was on screen.
+  const shown = useRef<CameraSummary | undefined>(undefined);
+  useEffect(() => {
+    if (loading || error) return;
+    const gone = shown.current;
+    if (gone && !cameras.some((item) => item.id === gone.id))
+      tell(`${gone.name} was removed from the camera list.`);
+    shown.current = camera;
+  }, [camera, cameras, loading, Boolean(error)]);
 
   function select(next: StreamRef) {
     if (selected && sameStream(selected, next)) return;
     setRequested(next);
   }
-  // A row names a camera; choosing the one on screen keeps its stream.
+  // A row or tile names a camera, which opens in Focus view; choosing the one
+  // on screen keeps its stream.
   function choose(next: StreamRef) {
     const root = viewerRoot.current;
-    // Switching replaces the player. Focus on one of its controls, or on the
-    // sheet that its Cameras button opened, would fall back to the page.
+    // Switching replaces the player or the grid. Focus on one of their
+    // controls, or on the sheet the Cameras button opened, would fall back to
+    // the page.
     const keepFocus =
       sheetOpen || Boolean(root?.contains(document.activeElement));
+    const same = next.camera_id === selected?.camera_id;
     hideCameras();
-    if (next.camera_id === selected?.camera_id) return;
-    select(next);
+    setGrid(false);
+    if (same && !grid) return;
+    if (!same) select(next);
+    if (keepFocus) root?.focus({ preventScroll: true });
+  }
+  function showGrid(on: boolean) {
+    const root = viewerRoot.current;
+    const keepFocus = Boolean(root?.contains(document.activeElement));
+    setGrid(on);
     if (keepFocus) root?.focus({ preventScroll: true });
   }
   function chooseCamera(item: CameraSummary | undefined) {
@@ -206,7 +251,7 @@ export function App({
   const menu = (item: CameraSummary): CameraAction[] => {
     const ref = onReconnect && needsReconnect(item);
     return [
-      ...(item.can_update_credentials && onCameraSettings
+      ...(onCameraSettings
         ? [["Settings", () => onCameraSettings(item.id)] as const]
         : []),
       ...(ref ? [["Reconnect", () => onReconnect(ref)] as const] : []),
@@ -224,7 +269,7 @@ export function App({
           Reconnect
         </button>
       )}
-      {camera?.can_update_credentials && onCameraSettings && (
+      {camera && onCameraSettings && (
         <button type="button" class="secondary-button" onClick={() => { hideCameras(); onCameraSettings(camera.id); }}>
           <SettingsIcon />
           Settings
@@ -233,10 +278,11 @@ export function App({
     </div>
   );
 
-  // Camera shortcuts: [ and ] step through playable cameras and 1–9 pick a
-  // row. The player owns its own keys.
+  // Camera shortcuts: [ and ] step through playable cameras, 1–9 pick a row
+  // and G switches between Focus and Grid. The player owns its own keys.
   useShortcuts((key) => {
     if (key === "?") setHelpOpen(true);
+    else if (key === "g" && cameras.length > 1) showGrid(!grid);
     else if (key === "[" || key === "]") {
       const playable = cameras.filter((item) => item.streams.length);
       const step = key === "]" ? 1 : -1;
@@ -253,12 +299,13 @@ export function App({
       class="app"
       data-rail={railOpen ? "open" : "collapsed"}
       {...(noRail ? { "data-norail": "" } : {})}
+      {...(grid ? { "data-view": "grid" } : {})}
     >
       {management && <LazyManagement {...management} />}
       <a class="skip-link" href="#viewer">
         Skip to viewer
       </a>
-      <header class="topbar">
+      <header class={cameras.length > 1 ? "topbar has-views" : "topbar"}>
         {!noRail && (
           <button
             type="button"
@@ -288,10 +335,38 @@ export function App({
               <span class="skeleton title-skeleton" aria-hidden="true" />
               <span class="sr-only">Camera viewer</span>
             </>
+          ) : grid ? (
+            "All cameras"
           ) : (
             (camera?.name ?? "Camera viewer")
           )}
         </h1>
+        {cameras.length > 1 && (
+          <div class="view-switch" role="group" aria-label="View">
+            <button
+              type="button"
+              class="icon-button"
+              aria-label="One camera"
+              aria-pressed={!grid}
+              aria-keyshortcuts="g"
+              title="One camera (G)"
+              onClick={() => showGrid(false)}
+            >
+              <FocusIcon />
+            </button>
+            <button
+              type="button"
+              class="icon-button"
+              aria-label="All cameras"
+              aria-pressed={grid}
+              aria-keyshortcuts="g"
+              title="All cameras (G)"
+              onClick={() => showGrid(true)}
+            >
+              <GridIcon />
+            </button>
+          </div>
+        )}
         <button
           type="button"
           class="icon-button shortcuts-button"
@@ -351,6 +426,13 @@ export function App({
             )}
             {catalogStale && <StaleNotice refresh={refreshCatalog} />}
           </div>
+        ) : grid ? (
+          <CameraGrid
+            cameras={cameras}
+            selected={selected}
+            previewFor={previewFor}
+            onSelect={choose}
+          />
         ) : camera && stream ? (
           <Player
             key={JSON.stringify([camera.id, stream.id])}
@@ -368,7 +450,7 @@ export function App({
           </div>
         )}
       </main>
-      {camera && stream ? (
+      {!grid && camera && stream ? (
         <section class="info-bar" aria-label="Camera details">
           <div class="info-bar-inner">
             <CameraDetails
@@ -412,7 +494,7 @@ export function App({
             <CameraLinks
               cameras={cameras}
               selected={selected}
-              view={view}
+              {...(grid ? {} : { view })}
               onSelect={choose}
               titles={!railOpen}
               actions={menu}

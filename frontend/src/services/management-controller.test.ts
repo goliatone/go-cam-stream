@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import type { Capabilities, DraftReview, Mutation, OperationKind, OperationResult, TestResult } from "./contracts";
+import type { CameraChange, CameraSettings, Capabilities, DraftReview, Mutation, OperationKind, OperationResult, TestResult } from "./contracts";
 import { ManagementFailure, type ManagementAPI } from "./management-api";
 import { ManagementController } from "./management-controller";
 import { CREDENTIAL_RECOVERY_KEY, RECOVERY_STORAGE_KEY, RecoveryStorage } from "./management-storage";
@@ -7,6 +7,7 @@ import { CREDENTIAL_RECOVERY_KEY, RECOVERY_STORAGE_KEY, RecoveryStorage } from "
 const caps:Capabilities={can_manage_cameras:true,recovery_scope:"scope",runtime_epoch:"epoch"};
 const input={name:"PRIVATE-NAME",endpoint:"rtsp://localhost:18556/PRIVATE-PATH",authentication:"credentials" as const,credentials:{username:"PRIVATE-USER",password:"PRIVATE-PASSWORD"}};
 const revision={runtime_epoch:"epoch",generation:1};
+const cameraSettings:CameraSettings={camera_id:"existing",name:"Existing",endpoint:"rtsp://camera.local:554/live",dial_address:"192.0.2.10:554",authentication:"credentials",catalog_revision:revision};
 beforeEach(()=>sessionStorage.clear());
 function fixture(){
  let draft:DraftReview={id:"draft",candidate_id:"candidate",revision:1,runtime_epoch:"epoch",expires_at:new Date(Date.now()+900000).toISOString(),name:input.name,endpoint:input.endpoint,authentication:"credentials",credentials_present:true,warnings:[],state:"ready"};
@@ -19,12 +20,17 @@ function fixture(){
   if(drop.has(kind)){drop.delete(kind);throw new ManagementFailure()}
   return result;
  }
+ function changed(kind:OperationKind,m:Mutation,result:CameraChange){
+  operations.set(m.operation_key,{operation_key:m.operation_key,kind,state:"succeeded",runtime_epoch:"epoch",candidate_id:result.camera_id,change:result});
+  if(drop.has(kind)){drop.delete(kind);throw new ManagementFailure()}
+  return result;
+ }
  const api:ManagementAPI={
   capabilities:vi.fn(async()=>currentCaps),draft:vi.fn(async()=>structuredClone(draft)),
   operation:vi.fn(async (key:string):Promise<OperationResult>=>operations.get(key)??{operation_key:key,kind:"create",state:"not_found",runtime_epoch:"epoch"}),
   create:vi.fn(async request=>done("create",request,structuredClone(draft))),
   credentialDraft:vi.fn(async request=>{
-    draft={...draft,candidate_id:request.camera_id,credential_update:true,state:"ready",warnings:[]};
+    draft={...draft,candidate_id:request.camera_id,credential_update:true,endpoint:request.endpoint??"",state:"ready",warnings:[]};
     delete draft.test;
     return done("create",request,structuredClone(draft));
   }),
@@ -37,6 +43,10 @@ function fixture(){
   cancelTest:vi.fn(async(_id,_test,request)=>{draft={...draft,state:"ready",test:{...draft.test!,stage:"canceled",cleanup:"confirmed"}};return done("cancel_test",request,draft.test!)}),
   save:vi.fn(async request=>done("save",request,{camera_id:"candidate",catalog_revision:{...revision,generation:2}})),
   reconnect:vi.fn(async()=>({affected:[],closed_sessions:[]})),
+  settings:vi.fn(async(id:string)=>({...cameraSettings,camera_id:id})),
+  rename:vi.fn(async(id,request)=>changed("rename",request,{camera_id:id,catalog_revision:{...revision,generation:2}})),
+  remove:vi.fn(async(id,request)=>changed("remove",request,{camera_id:id,catalog_revision:{...revision,generation:2},removed:true,...(request.stop_viewers?{stopped_sessions:2}:{})})),
+  stopViewers:vi.fn(async(_id,request)=>{draft={...draft,fenced:true};return done("stop_viewers",request,structuredClone(draft))}),
  };
  const refresh=vi.fn(async()=>revision);
  const storage=new RecoveryStorage(sessionStorage);
@@ -302,4 +312,109 @@ it("checks and saves a new sign-in in one step, and stops at the first failure",
  await d.checkAndSave(video);
  expect(g.api.credentialDraft).toHaveBeenCalledOnce();expect(g.api.test).toHaveBeenCalledTimes(2);expect(g.api.save).toHaveBeenCalledOnce();
  expect(d.view.saved).toBeTruthy();
+});
+const refuse=(f:ReturnType<typeof fixture>,kind:OperationKind,code:"catalog_revision_conflict"|"camera_busy")=>async(_id:string,request:Mutation)=>{
+ f.operations.set(request.operation_key,{operation_key:request.operation_key,kind,state:"not_committed",runtime_epoch:"epoch",error:{code,message:"refused",retryable:false}});
+ throw new ManagementFailure(code);
+};
+async function drawer(f:ReturnType<typeof fixture>){
+ const c=f.build();await c.init();await c.openCredentials({id:"existing",name:"Existing"});await c.loadSettings("existing");return c;
+}
+it("renames by the revision its settings were read at and resolves a lost reply by its key",async()=>{
+ const f=fixture(),c=await drawer(f);
+ expect(c.view.settings?.name).toBe("Existing");
+ f.drop.add("rename");await c.rename("Porch");
+ expect(f.api.rename).toHaveBeenCalledExactlyOnceWith("existing",expect.objectContaining({name:"Porch",catalog_revision:revision}));
+ expect(f.api.operation).toHaveBeenCalledWith(expect.any(String),"epoch","existing","rename",undefined);
+ expect(c.view).toMatchObject({change:{camera_id:"existing"},unresolved:false,busy:false,credentialTarget:{id:"existing"}});
+ expect(c.view.error).toBeUndefined();
+ // The page's list reaches the change, and the settings are read again.
+ expect(f.refresh).toHaveBeenCalledWith({...revision,generation:2});expect(f.api.settings).toHaveBeenCalledTimes(2);
+ expect(sessionStorage.getItem(CREDENTIAL_RECOVERY_KEY)).toBeNull();
+ // A page that missed a newer change is refused and reads the settings again.
+ vi.mocked(f.api.rename).mockImplementationOnce(refuse(f,"rename","catalog_revision_conflict"));
+ await c.rename("Garage");
+ expect(c.view.error).toBe("catalog_revision_conflict");expect(c.view.unresolved).toBe(false);expect(c.view.change).toBeUndefined();
+ expect(f.api.settings).toHaveBeenCalledTimes(3);
+});
+it("cancels an open settings draft before a rename, and waits for its settings",async()=>{
+ const f=fixture(),c=f.build();await c.init();await c.openCredentials({id:"existing"});
+ await c.rename("Porch");expect(f.api.rename).not.toHaveBeenCalled();
+ await c.loadSettings("existing");await c.submitCredentials({username:"",password:"replacement"});
+ expect(c.view.draft?.credential_update).toBe(true);
+ await c.rename("Porch");
+ expect(f.api.cancel).toHaveBeenCalledOnce();expect(f.api.rename).toHaveBeenCalledOnce();
+ expect(c.view.draft).toBeUndefined();expect(c.view.credentialTarget?.id).toBe("existing");
+ // A late reply for a camera the drawer no longer shows is dropped.
+ await c.openCredentials({id:"other"});await c.loadSettings("existing");expect(c.view.settings).toBeUndefined();
+});
+it.each(["rename","remove"] as const)("restores an unresolved %s after a reload in its camera's drawer",async kind=>{
+ const f=fixture(),c=await drawer(f);
+ vi.mocked(f.api.operation).mockRejectedValueOnce(new ManagementFailure());
+ f.drop.add(kind);await(kind==="rename"?c.rename("Porch"):c.remove());
+ expect(c.view.unresolved).toBe(true);
+ const record=f.storage.read(caps)!;
+ expect(record).toMatchObject({kind,candidate:"existing",credentialUpdate:true});expect(record.draft).toBeUndefined();
+ const restored=f.build();await restored.init();
+ expect(restored.view.credentialTarget?.id).toBe("existing");
+ expect(restored.view.change).toMatchObject({camera_id:"existing",...(kind==="remove"?{removed:true}:{})});
+ expect(f.api[kind]).toHaveBeenCalledOnce();expect(f.storage.read(caps)).toBeUndefined();
+});
+it("drops a rename that can no longer be confirmed after a restart",async()=>{
+ const f=fixture();
+ f.storage.write({scope:"scope",epoch:"epoch",key:"rename-key",kind:"rename",candidate:"existing",credentialUpdate:true,expires:Date.now()+60_000});
+ f.operations.set("rename-key",{operation_key:"rename-key",kind:"rename",state:"expired",runtime_epoch:"epoch",candidate_id:"existing"});
+ const c=f.build();await c.init();
+ expect(c.view).toMatchObject({error:"receipt_expired",unresolved:false,busy:false,credentialTarget:{id:"existing"}});
+ expect(f.storage.read(caps)).toBeUndefined();expect(f.api.rename).not.toHaveBeenCalled();
+});
+it("removes a camera by its settings' revision, stopping playback only when asked",async()=>{
+ const f=fixture(),c=await drawer(f);
+ vi.mocked(f.api.remove).mockImplementationOnce(refuse(f,"remove","camera_busy"));
+ await c.remove();
+ expect(f.api.remove).toHaveBeenLastCalledWith("existing",expect.not.objectContaining({stop_viewers:true}));
+ expect(c.view.error).toBe("camera_busy");expect(c.view.change).toBeUndefined();
+ await c.remove(true);
+ expect(f.api.remove).toHaveBeenLastCalledWith("existing",expect.objectContaining({catalog_revision:revision,stop_viewers:true}));
+ expect(c.view.change).toEqual({camera_id:"existing",catalog_revision:{...revision,generation:2},removed:true,stopped_sessions:2});
+ // A removed camera has no settings left to read.
+ expect(f.api.settings).toHaveBeenCalledOnce();expect(f.refresh).toHaveBeenCalledWith({...revision,generation:2});
+ await c.close();expect(sessionStorage.getItem(CREDENTIAL_RECOVERY_KEY)).toBeNull();
+});
+it("sends a new address once, and starts a new draft for a different one",async()=>{
+ const video=document.createElement("video"),moved="rtsp://moved.local:554/live";
+ const f=fixture(),c=await drawer(f);
+ await c.checkAndSave(video,undefined,moved);
+ expect(f.api.credentialDraft).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({camera_id:"existing",credentials:{username:"",password:""},endpoint:moved}));
+ expect(f.api.test).toHaveBeenCalledOnce();expect(f.api.save).toHaveBeenCalledOnce();expect(c.view.saved).toBeTruthy();await c.close();
+ const g=fixture(),d=await drawer(g);
+ await d.submitCredentials({username:"",password:""},"rtsp://first.local/live");
+ // The same address keeps the draft; another one replaces it.
+ await d.submitCredentials({username:"",password:"replacement"},"rtsp://first.local/live");
+ expect(g.api.patch).toHaveBeenCalledOnce();expect(g.api.cancel).not.toHaveBeenCalled();
+ await d.submitCredentials({username:"",password:""},moved);
+ expect(g.api.cancel).toHaveBeenCalledOnce();expect(g.api.credentialDraft).toHaveBeenCalledTimes(2);
+ expect(g.api.credentialDraft).toHaveBeenLastCalledWith(expect.objectContaining({endpoint:moved}));
+ expect(d.view.draft?.endpoint).toBe(moved);expect(d.view.credentialTarget?.id).toBe("existing");await d.close();
+ // An unchanged address sends none.
+ const h=fixture(),e=await drawer(h);await e.checkAndSave(video,{username:"",password:"replacement"});
+ expect(vi.mocked(h.api.credentialDraft).mock.calls[0]![0]).not.toHaveProperty("endpoint");
+});
+it("stops everyone's playback before the check, and recovers a lost stop by its key",async()=>{
+ const video=document.createElement("video");
+ const f=fixture(),c=await drawer(f);
+ f.drop.add("stop_viewers");
+ await c.checkAndSave(video,{username:"",password:"replacement"},"",true);
+ expect(f.api.stopViewers).toHaveBeenCalledExactlyOnceWith("draft",expect.objectContaining({expected_revision:1}));
+ expect(f.api.operation).toHaveBeenCalledWith(expect.any(String),"epoch","existing","stop_viewers",undefined);
+ const order=(fn:(...args:never[])=>unknown)=>vi.mocked(fn).mock.invocationCallOrder[0]!;
+ expect(order(f.api.credentialDraft)).toBeLessThan(order(f.api.stopViewers));
+ expect(order(f.api.stopViewers)).toBeLessThan(order(f.api.test));
+ expect(f.api.save).toHaveBeenCalledOnce();expect(c.view.saved).toBeTruthy();await c.close();
+ // A draft that already holds the fence is not stopped twice.
+ const g=fixture(),d=await drawer(g);
+ await d.submitCredentials({username:"",password:"replacement"});await d.stopViewers();
+ vi.mocked(g.api.test).mockImplementationOnce(refuse(g,"test","camera_busy") as never);
+ await d.checkAndSave(video,undefined,"",true);
+ expect(g.api.stopViewers).toHaveBeenCalledOnce();expect(d.view.error).toBe("camera_busy");
 });

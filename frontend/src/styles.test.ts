@@ -168,6 +168,7 @@ function pairs(theme: Tokens): Pair[] {
     ["Stale status beside the video", "--warn", token("--bg"), TEXT],
     ["Stale status on a phone", "--warn", token("--surface"), TEXT],
     ["Top bar icon on hover", "--text", token("--fill-strong"), GRAPHIC],
+    ["Chosen view in the top bar", "--accent", token("--accent-soft"), GRAPHIC],
     // The camera icon on each tile, the collapsed rail's only content.
     ...[0, 1, 2, 3, 4, 5, 6, 7].map((n): Pair => [`Camera tile ${n}`, "--on-tile", token(`--tile-${n}`), GRAPHIC]),
     ["Copied link notice", "--surface", token("--text"), TEXT],
@@ -197,6 +198,8 @@ function pairs(theme: Tokens): Pair[] {
     ["Stage text", "--on-stage", token("--stage"), TEXT],
     ["Muted stage text", "--on-stage-muted", token("--stage"), TEXT],
     ["Status badge", "--on-stage-soft", on(WHITE_FRAME, "--glass"), TEXT],
+    // A grid tile's frame may be any picture too.
+    ["Frame age on a tile", "--on-stage-soft", on(WHITE_FRAME, "--glass"), TEXT],
     ["Cameras button", "--on-stage-strong", on(WHITE_FRAME, "--glass"), TEXT],
     ["Reconnecting notice", "--on-stage", on(WHITE_FRAME, "--scrim"), TEXT],
     ["Countdown", "--on-stage-muted", on(WHITE_FRAME, "--scrim"), TEXT],
@@ -242,6 +245,7 @@ const BACKINGS: [selector: string, property: string, value: string][] = [
   ],
   [".has-prompt .player-message", "background", "var(--scrim)"],
   [".stage-badge", "background", "var(--glass)"],
+  [".tile-age", "background", "var(--glass)"],
   [".overlay-cameras", "background", "var(--glass)"],
   [".player-notice", "background", "var(--scrim)"],
   [".video-stage .secondary-button", "background", "var(--glass-weak)"],
@@ -274,6 +278,7 @@ const SETTERS: [styles: RegExp, property: RegExp, selectors: string[]][] = [
   ],
   [/\.player-message(?![\w-])/, BACKGROUND, [".has-prompt .player-message"]],
   [/\.stage-badge(?![\w-])/, BACKGROUND, [".stage-badge"]],
+  [/\.tile-age(?![\w-])/, BACKGROUND, [".tile-age"]],
   [/\.overlay-cameras(?![\w-])/, BACKGROUND, [".overlay-cameras"]],
   [/\.player-notice(?![\w-])/, BACKGROUND, [".player-notice"]],
   // The page's rules come first; on the stage, `.video-stage` outranks each.

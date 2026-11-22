@@ -38,3 +38,25 @@ it("adds up a camera's viewers, and has no count when a stream's is unknown",asy
  expect(fetcher.mock.calls[0]![0]).toBe("/api/cameras/a%2Fb/status");expect(fetcher.mock.calls[0]![1].method).toBe("GET");
  expect(await api.viewers("hall")).toBeUndefined();expect(await api.viewers("empty")).toBeUndefined();
 });
+it("reads settings and sends renames, removals and stop-viewers to their camera and draft routes",async()=>{
+ const revision={runtime_epoch:"epoch",generation:3};
+ const settings={camera_id:"a/b",name:"Porch",endpoint:"rtsp://cam.local/live",dial_address:"192.0.2.10:554",authentication:"credentials",catalog_revision:revision};
+ const change={camera_id:"a/b",catalog_revision:{...revision,generation:4}};
+ const fetcher=vi.fn().mockResolvedValueOnce(json(settings)).mockResolvedValueOnce(json({token:"csrf",header_name:CSRF_HEADER}))
+  .mockResolvedValueOnce(json(change)).mockResolvedValueOnce(json({...change,removed:true})).mockResolvedValueOnce(json({...draft,fenced:true}))
+  .mockResolvedValueOnce(json({camera_id:"a/b",name:"Porch"})).mockResolvedValueOnce(json({camera_id:"a/b"}));
+ const api=new ManagementClient(fetcher);
+ expect(await api.settings("a/b")).toEqual(settings);
+ expect(fetcher.mock.calls[0]![0]).toBe("/api/cameras/a%2Fb/settings");expect(fetcher.mock.calls[0]![1].method).toBe("GET");
+ expect(await api.rename("a/b",{...mutation,name:"Garage",catalog_revision:revision})).toEqual(change);
+ expect(fetcher.mock.calls[2]![0]).toBe("/api/cameras/a%2Fb");expect(fetcher.mock.calls[2]![1]).toMatchObject({method:"PATCH",headers:{[CSRF_HEADER]:"csrf"}});
+ expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({...mutation,name:"Garage",catalog_revision:revision});
+ expect((await api.remove("a/b",{...mutation,catalog_revision:revision,stop_viewers:true})).removed).toBe(true);
+ expect(fetcher.mock.calls[3]![0]).toBe("/api/cameras/a%2Fb");expect(fetcher.mock.calls[3]![1].method).toBe("DELETE");
+ expect(JSON.parse(fetcher.mock.calls[3]![1].body).stop_viewers).toBe(true);
+ expect((await api.stopViewers("draft",{...mutation,expected_revision:1})).fenced).toBe(true);
+ expect(fetcher.mock.calls[4]![0]).toBe("/api/camera-drafts/draft/stop-viewers");expect(fetcher.mock.calls[4]![1].method).toBe("POST");
+ // Replies without the address, revision or camera are refused.
+ await expect(api.settings("a/b")).rejects.toMatchObject({code:"server_unavailable"});
+ await expect(api.rename("a/b",{...mutation,name:"Garage",catalog_revision:revision})).rejects.toMatchObject({code:"server_unavailable"});
+});

@@ -8,9 +8,10 @@ import type {
   StreamRef,
 } from "../services/contracts";
 import type { PlayerControls } from "../components/player";
+import type { PreviewSource } from "../components/tile-preview";
 import type { ManagementActions, ManagementView } from "../components/camera-management";
 import { CameraRecovery } from "../components/camera-recovery";
-import type { DraftReview, TestResult } from "../services/contracts";
+import type { CameraSettings, DraftReview, TestResult } from "../services/contracts";
 import samples from "../../../data/api/examples.json";
 import "../styles.css";
 import "./preview.css";
@@ -144,6 +145,16 @@ const signInDraft: DraftReview = {
   credential_update: true,
   warnings: [],
 };
+// What the server returns to Room 1's manager; addresses never leave Settings.
+const roomSettings: CameraSettings = {
+  camera_id: "room1",
+  name: "Room 1",
+  endpoint: "rtsp://192.168.1.20:554/stream1",
+  dial_address: "192.168.1.20:554",
+  authentication: "credentials",
+  catalog_revision: { runtime_epoch: "preview", generation: 1 },
+};
+const next = { runtime_epoch: "preview", generation: 2 };
 const managing = {
   viewer: undefined,
   manager: undefined,
@@ -168,22 +179,50 @@ const managing = {
       catalog_revision: { runtime_epoch: "preview", generation: 2 },
     },
   },
-  "camera-settings": { phase: "editing", credentialTarget: signIn },
+  "camera-settings": { phase: "editing", credentialTarget: signIn, settings: roomSettings },
   "settings-checking": {
     phase: "testing",
     credentialTarget: signIn,
+    settings: roomSettings,
     draft: { ...signInDraft, state: "testing" },
     test: running,
   },
   "settings-failed": {
     phase: "review",
     credentialTarget: signIn,
+    settings: roomSettings,
     draft: signInDraft,
     test: {
       ...failed,
       error: { code: "authentication_failed", message: "", retryable: true },
     },
   },
+  "settings-new-address": {
+    phase: "review",
+    credentialTarget: signIn,
+    settings: roomSettings,
+    draft: { ...signInDraft, endpoint: "rtsp://192.168.1.40:554/stream1" },
+    error: "camera_unreachable",
+  },
+  "settings-stopped": {
+    phase: "review",
+    credentialTarget: signIn,
+    settings: roomSettings,
+    draft: { ...signInDraft, fenced: true },
+  },
+  "settings-renamed": {
+    phase: "editing",
+    credentialTarget: signIn,
+    settings: roomSettings,
+    change: { camera_id: "room1", catalog_revision: next },
+  },
+  "settings-removed": {
+    phase: "editing",
+    credentialTarget: signIn,
+    settings: roomSettings,
+    change: { camera_id: "room1", catalog_revision: next, removed: true },
+  },
+  "settings-read-only": { phase: "editing", credentialTarget: { id: "room2", name: "Room 2" } },
   "settings-saved": {
     phase: "saved",
     saved: {
@@ -232,6 +271,20 @@ const observed: readonly Scenario[] = [
   "reconnecting",
 ];
 
+// Grid tiles: drawn stand-ins for frames this page kept, seen seconds and
+// minutes before the preview opened. Front porch's source is a kind this page
+// does not know, which shows its colour tile.
+const drawn = (from: string, to: string) =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><linearGradient id="g" x2="1" y2="1"><stop stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient><rect width="16" height="9" fill="url(#g)"/></svg>`,
+  )}`;
+const opened = performance.now();
+const previews: Record<string, PreviewSource> = {
+  room1: { kind: "frame", url: drawn("#2d5a4c", "#c9b78c"), at: opened - 5000 },
+  livingroom: { kind: "frame", url: drawn("#5b463a", "#e0a96d"), at: opened - 180000 },
+  "front-porch": { kind: "snapshot" } as unknown as PreviewSource,
+};
+
 function Preview() {
   const [scenario, setScenario] = useState<Scenario>("connecting");
   // When the scenario or view began and when its synthetic status last
@@ -264,7 +317,10 @@ function Preview() {
     close: back("Close"),
     watch: back("Watch"),
     submitCredentials: () => setEvent("Credentials callback; nothing is sent"),
-    checkAndSave: () => setEvent("Check and save callback; nothing is sent"),
+    checkAndSave: (_video, _credentials, endpoint, stop) =>
+      setEvent(`Check and save callback${endpoint ? " with a new address" : ""}${stop ? ", stopping everyone" : ""}; nothing is sent`),
+    rename: (name) => setEvent(`Rename callback for “${name}”; nothing is saved`),
+    remove: (stop) => setEvent(`Remove callback${stop ? ", stopping everyone" : ""}; nothing is removed`),
     openSettings: () => setManage("camera-settings"),
     reset: () => setManage("add-camera"),
   };
@@ -389,6 +445,9 @@ function Preview() {
     manage === "reconnect",
   );
   const watching = selection.camera_id === "room1" && state === "playing";
+  // Room 2 stands in for a server camera, whose settings are read-only.
+  const readOnly = manage === "settings-read-only";
+  const shown = cameras.cameras.find((camera) => camera.id === (readOnly ? "room2" : "room1"));
   return (
     <>
       <div class="preview-bar">
@@ -453,7 +512,7 @@ function Preview() {
                 mode: manage === "import-camera" ? "import" : "manual",
                 // Room 1 has a second viewer while it plays here.
                 settings: {
-                  camera: cameras.cameras.find((camera) => camera.id === "room1"),
+                  camera: shown && (readOnly ? { ...shown, can_update_credentials: false } : shown),
                   viewers: watching ? 2 : 0,
                   watching,
                   state,
@@ -473,6 +532,7 @@ function Preview() {
             }
           : {})}
         viewer={viewer}
+        previewFor={(id) => previews[id] ?? { kind: "none" }}
         onSelect={(next) => {
           if (next) setSelection(next);
           // A new view starts its own status and recovery times.

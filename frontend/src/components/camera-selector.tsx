@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { CameraSummary, StreamRef } from "../services/contracts";
 import { stateLabels } from "../services/copy";
@@ -17,6 +18,71 @@ const opensElsewhere = (event: MouseEvent) =>
   event.ctrlKey ||
   event.shiftKey ||
   event.altKey;
+
+/**
+ * The status a camera's row or tile shows, and whether it shows one. The
+ * camera on screen shows this page's player state, never "Status unknown".
+ * Others show the server's availability only when it says something: live,
+ * starting or failed. Idle is not shown, because it does not establish that
+ * the camera can play.
+ */
+export function cameraStatus(camera: CameraSummary, own?: ViewState) {
+  const badge = own || describeView({ state: camera.availability });
+  return {
+    badge,
+    shown: own ? badge.label !== stateLabels.unknown : badge.tone !== "idle",
+    // A failed camera is dimmed.
+    dim: !own && badge.tone === "danger",
+  };
+}
+
+/**
+ * A camera's row or tile: a link to its view, or a disabled box for a camera
+ * without streams. The 1–9 keys choose the first nine cameras.
+ */
+export function CameraChoice({
+  camera,
+  index,
+  current,
+  dim,
+  title,
+  class: kind,
+  onSelect,
+  children,
+}: {
+  camera: CameraSummary;
+  index: number;
+  current: boolean;
+  dim: boolean;
+  title?: string | undefined;
+  class: string;
+  onSelect: (selection: StreamRef) => void;
+  children: ComponentChildren;
+}) {
+  const first = camera.streams[0];
+  if (!first)
+    return (
+      <div class={kind} aria-disabled="true">
+        {children}
+      </div>
+    );
+  return (
+    <a
+      class={dim ? `${kind} dim` : kind}
+      href={linkFor(camera)}
+      {...(current ? { "aria-current": "page" as const } : {})}
+      {...(index < 9 ? { "aria-keyshortcuts": String(index + 1) } : {})}
+      {...(title ? { title } : {})}
+      onClick={(event) => {
+        if (opensElsewhere(event)) return;
+        event.preventDefault();
+        onSelect({ camera_id: camera.id, stream_id: first.id });
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 export function CameraLinks({
   cameras,
@@ -41,15 +107,7 @@ export function CameraLinks({
       {cameras.map((camera, i) => {
         const first = camera.streams[0];
         const current = selected?.camera_id === camera.id;
-        const own = current && view;
-        // The selected row shows this page's player state, never "Status
-        // unknown". Other rows show the server's availability only when it says
-        // something: live, starting or failed. Idle is not shown, because it
-        // does not establish that the camera can play. A failed camera is dimmed.
-        const badge = own || describeView({ state: camera.availability });
-        const shown = own
-          ? badge.label !== stateLabels.unknown
-          : badge.tone !== "idle";
+        const { badge, shown, dim } = cameraStatus(camera, current ? view : undefined);
         const items = first ? (actions?.(camera) ?? []) : [];
         // The tile's colour follows the camera's place in the list, so the
         // first eight never share one. Its dot repeats the status, which is all
@@ -77,36 +135,23 @@ export function CameraLinks({
         );
         return (
           <li key={camera.id} class={items.length ? "has-menu" : undefined}>
-            {first ? (
-              <a
-                class={
-                  !own && badge.tone === "danger"
-                    ? "camera-choice dim"
-                    : "camera-choice"
-                }
-                href={linkFor(camera)}
-                {...(current ? { "aria-current": "page" as const } : {})}
-                {...(i < 9 ? { "aria-keyshortcuts": String(i + 1) } : {})}
-                {...(titles
-                  ? {
-                      title: shown
-                        ? `${camera.name} · ${badge.label}`
-                        : camera.name,
-                    }
-                  : {})}
-                onClick={(event) => {
-                  if (opensElsewhere(event)) return;
-                  event.preventDefault();
-                  onSelect({ camera_id: camera.id, stream_id: first.id });
-                }}
-              >
-                {content}
-              </a>
-            ) : (
-              <div class="camera-choice" aria-disabled="true">
-                {content}
-              </div>
-            )}
+            <CameraChoice
+              camera={camera}
+              index={i}
+              current={current}
+              dim={dim}
+              title={
+                titles
+                  ? shown
+                    ? `${camera.name} · ${badge.label}`
+                    : camera.name
+                  : undefined
+              }
+              class="camera-choice"
+              onSelect={onSelect}
+            >
+              {content}
+            </CameraChoice>
             {items.length > 0 && <CameraMenu name={camera.name} items={items} />}
           </li>
         );

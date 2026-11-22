@@ -1,5 +1,5 @@
 import type { ManagementView } from "../components/camera-management";
-import type { Capabilities, CatalogRevision, Credentials, DraftInput, DraftReview, Mutation, OperationKind, OperationResult, SaveCameraResponse } from "./contracts";
+import type { CameraChange, CameraSettings, Capabilities, CatalogRevision, Credentials, DraftInput, DraftReview, Mutation, OperationKind, OperationResult, SaveCameraResponse } from "./contracts";
 import { duplicateCameraID, ManagementFailure, managementCode, type ManagementAPI } from "./management-api";
 import { BrowserPreview, type Preview } from "./management-preview";
 import { operationKey, RecoveryStorage, type RecoveryRecord } from "./management-storage";
@@ -49,7 +49,7 @@ export class ManagementController {
       ...(d?{draft:d.id,candidate:d.candidate_id,revision:d.revision}:{}),...(d?.credential_update?{credentialUpdate:true}:{}),...extra};
     const previous=this.#record;
     this.#remember(record);this.#previous=previous;this.#rejected=false;this.#mutating=true;
-    this.#show({busy:true,unresolved:true,error:undefined,duplicateCamera:undefined,canAbandon:false,canRetrySave:false});
+    this.#show({busy:true,unresolved:true,error:undefined,duplicateCamera:undefined,canAbandon:false,canRetrySave:false,change:undefined});
     return {operation_key:record.key,runtime_epoch:record.epoch};
   }
   #rememberDraft(draft:DraftReview) {
@@ -72,24 +72,42 @@ export class ManagementController {
       this.#rememberDraft(result);
     } catch(error){await this.#failed(error)} finally{this.#mutating=false}
   }
-  async openCredentials(target: NonNullable<ManagementView["credentialTarget"]>) {
-    if (this.view.busy || this.view.unresolved || this.#mutating) return;
-    if (this.view.draft && !this.view.saved && this.view.phase !== "canceled") {
-      if (!await this.cancel()) return;
-    }
-    this.reset();
-    this.#show({ phase: "editing", credentialTarget: target, error: undefined, duplicateCamera: undefined });
+  // One recovery record covers one change, so an open settings draft is
+  // canceled before a rename, a removal or a draft for another address. The
+  // drawer stays on the same camera.
+  async #clear() {
+    const d=this.view.draft,target=this.view.credentialTarget??(d?.credential_update?{id:d.candidate_id,name:d.name}:undefined);
+    if(d&&!this.view.saved&&this.view.phase!=="canceled"&&!await this.cancel())return false;
+    this.reset();this.#show({credentialTarget:target});return true;
   }
-  async submitCredentials(credentials: Credentials) {
+  async openCredentials(target: NonNullable<ManagementView["credentialTarget"]>) {
+    if (this.view.busy || this.view.unresolved || this.#mutating || !await this.#clear()) return;
+    this.#show({ phase: "editing", credentialTarget: target, settings: undefined, change: undefined, error: undefined, duplicateCamera: undefined });
+  }
+  /** Reads a saved camera's name and address. Without them the drawer offers no edits. */
+  async loadSettings(cameraID:string) {
+    try{
+      const settings=await this.api.settings(cameraID),d=this.view.draft;
+      // A late reply for a camera the drawer no longer shows is dropped.
+      if((this.view.credentialTarget?.id??(d?.credential_update?d.candidate_id:undefined))===cameraID)this.#show({settings});
+    }catch{}
+  }
+  /** `endpoint` is a new address, or empty to keep the saved one. */
+  async submitCredentials(credentials: Credentials, endpoint = "") {
     if (this.view.busy || this.view.unresolved || this.#mutating) return;
-    const draft = this.view.draft?.credential_update ? this.view.draft : undefined;
+    let draft = this.view.draft?.credential_update ? this.view.draft : undefined;
     const cameraID = draft?.candidate_id ?? this.view.credentialTarget?.id;
     if (!cameraID) return;
+    // A draft keeps the address it was made for; another address needs a new one.
+    if (draft && draft.endpoint !== endpoint) {
+      if (!await this.#clear()) return;
+      draft = undefined;
+    }
     try {
       const mutation = this.#begin(draft ? "patch" : "create", {credentialUpdate:true});
       const result = draft
         ? await this.api.patch(draft.id, { ...mutation, expected_revision: draft.revision, credentials })
-        : await this.api.credentialDraft({ ...mutation, camera_id: cameraID, credentials });
+        : await this.api.credentialDraft({ ...mutation, camera_id: cameraID, credentials, ...(endpoint ? {endpoint} : {}) });
       this.#rememberDraft(result);
     } catch (error) {
       await this.#failed(error);
@@ -98,14 +116,48 @@ export class ManagementController {
     }
   }
   /**
-   * A sign-in change checks and saves in one step: the new sign-in, when given,
-   * then the connection check, then the save. Any failure stops there and stays
-   * on show; a draft that already holds the new sign-in is checked again as is.
+   * An address or sign-in change checks and saves in one step: the new
+   * details, when given, then the connection check, then the save. With stop,
+   * everyone's playback ends first. Any failure stops there and stays on show;
+   * a draft that already holds the change is checked again as is.
    */
-  async checkAndSave(video:HTMLVideoElement,credentials?:Credentials) {
-    if(credentials){await this.submitCredentials(credentials);if(this.view.error)return;}
+  async checkAndSave(video:HTMLVideoElement,credentials?:Credentials,endpoint="",stop=false) {
+    const d=this.view.draft?.credential_update?this.view.draft:undefined;
+    if(credentials||!d||d.endpoint!==endpoint){await this.submitCredentials(credentials??{username:"",password:""},endpoint);if(this.view.error)return;}
+    if(stop&&!this.view.draft?.fenced){await this.stopViewers();if(this.view.error)return;}
     if(this.view.draft?.state==="ready")await this.test(video);
     if(this.view.draft?.state==="tested"&&!this.view.error)await this.save();
+  }
+  /** Ends every session on the settings draft's camera; the draft then holds its fence. */
+  async stopViewers() {
+    const d=this.view.draft;
+    if(!d?.credential_update||this.view.busy||this.view.unresolved||this.#mutating)return;
+    try{const m=this.#begin("stop_viewers");this.#rememberDraft(await this.api.stopViewers(d.id,{...m,expected_revision:d.revision}))}
+    catch(error){await this.#failed(error)}finally{this.#mutating=false}
+  }
+  rename(name:string) {
+    return this.#change("rename",(m,s)=>this.api.rename(s.camera_id,{...m,name,catalog_revision:s.catalog_revision}));
+  }
+  /** With stop, the removal ends everyone's playback instead of waiting for it. */
+  remove(stop=false) {
+    return this.#change("remove",(m,s)=>this.api.remove(s.camera_id,{...m,catalog_revision:s.catalog_revision,...(stop?{stop_viewers:true}:{})}));
+  }
+  // A rename or removal names the catalog revision its settings were read at,
+  // so a page that missed a newer change is refused and reads them again.
+  async #change(kind:OperationKind,send:(m:Mutation,s:CameraSettings)=>Promise<CameraChange>) {
+    const s=this.view.settings;
+    if(!s||this.view.busy||this.view.unresolved||this.#mutating||!await this.#clear())return;
+    try{await this.#changed(await send(this.#begin(kind,{candidate:s.camera_id,credentialUpdate:true}),s))}
+    catch(error){await this.#failed(error);if(this.view.error==="catalog_revision_conflict")await this.loadSettings(s.camera_id)}
+    finally{this.#mutating=false}
+  }
+  async #changed(change:CameraChange) {
+    try{this.storage.clear()}catch{}
+    this.#record=undefined;
+    this.#show({change,phase:"editing",busy:false,unresolved:false,error:undefined,canAbandon:false,canRetrySave:false});
+    // Open pages, this one included, take the change from the camera list.
+    try{await this.refresh(change.catalog_revision)}catch{}
+    if(!change.removed)await this.loadSettings(change.camera_id);
   }
   async importFiles(yaml:File,env?:File) {
     if(this.view.busy||this.view.unresolved||this.#mutating)return;
@@ -147,7 +199,9 @@ export class ManagementController {
   async recover() {
     if(this.#mutating||this.view.busy)return;
     const r=this.#record;if(!r)return;
-    this.#show({phase:"recovering",busy:true,unresolved:true,canAbandon:false,canRetrySave:false,checkingSave:r.kind==="save"});
+    // A rename or removal names its camera and no draft; the drawer shows it.
+    this.#show({phase:"recovering",busy:true,unresolved:true,canAbandon:false,canRetrySave:false,checkingSave:r.kind==="save",
+      credentialTarget:this.view.credentialTarget??(r.candidate&&!r.draft?{id:r.candidate}:undefined)});
     try {
       const until=Date.now()+20000;
       let op:OperationResult;
@@ -158,6 +212,7 @@ export class ManagementController {
         await delay(500);if(this.#disposed)return;
       }
       if(op.state==="succeeded"&&op.saved){await this.#saved(op.saved);return;}
+      if(op.state==="succeeded"&&op.change){await this.#changed(op.change);return;}
       if(op.state==="succeeded"&&op.draft_id) {
         const d=await this.api.draft(op.draft_id);this.#rememberDraft(d);
         if(d.state==="testing"||d.state==="cleaning"||d.state==="cleanup_failed")this.#show({phase:"testing"});
@@ -185,7 +240,9 @@ export class ManagementController {
         else{this.storage.clear();this.#record=undefined;}
         this.#show({busy:false,unresolved:false,phase:this.view.draft?"review":"editing"});return;
       }
-      if (r.kind === "save" && (op.state === "expired" || op.state === "not_found" && Date.now() >= r.expires)) {
+      // An expired save, rename or removal cannot be told apart from one that
+      // never happened; the camera list shows which.
+      if ((r.kind === "save" || r.candidate && !r.draft) && (op.state === "expired" || op.state === "not_found" && Date.now() >= r.expires)) {
         this.storage.clear();
         this.#record = undefined;
         this.#show({ phase: "canceled", draft: undefined, test: undefined, busy: false, unresolved: false,

@@ -1,4 +1,4 @@
-import type { Capabilities, CompleteTestRequest, CreateDraftRequest, CreateTestRequest, CredentialDraftRequest, DraftReview, ManagementErrorCode, Mutation, OperationKind, OperationResult, PatchDraftRequest, ReconnectResponse, SaveCameraRequest, SaveCameraResponse, StreamRef, TestResult } from "./contracts";
+import type { CameraChange, CameraSettings, Capabilities, CompleteTestRequest, CreateDraftRequest, CreateTestRequest, CredentialDraftRequest, DraftReview, ManagementErrorCode, Mutation, OperationKind, OperationResult, PatchDraftRequest, ReconnectResponse, RemoveCameraRequest, RenameCameraRequest, SaveCameraRequest, SaveCameraResponse, StopViewersRequest, StreamRef, TestResult } from "./contracts";
 import { CSRF_HEADER, CSRF_PATH } from "./contracts";
 import { errorCopy } from "./copy";
 import { managementCopy } from "./management-copy";
@@ -14,6 +14,11 @@ const number = (value: unknown): value is number => Number.isSafeInteger(value) 
 export const duplicateCameraID = (code: unknown, id: unknown) =>
   code === "duplicate_camera" && string(id) && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id) ? id : undefined;
 function invalid(): never { throw new ManagementFailure(); }
+const revision = (value: unknown) => object(value) && string(value.runtime_epoch) && number(value.generation);
+function change(value: unknown): CameraChange {
+  if (!object(value) || !string(value.camera_id) || !revision(value.catalog_revision)) return invalid();
+  return value as unknown as CameraChange;
+}
 function capabilities(value: unknown): Capabilities {
   if (!object(value) || typeof value.can_manage_cameras !== "boolean" || !string(value.recovery_scope) || !string(value.runtime_epoch)) return invalid();
   return {can_manage_cameras:value.can_manage_cameras,recovery_scope:value.recovery_scope,runtime_epoch:value.runtime_epoch};
@@ -46,6 +51,12 @@ export interface ManagementAPI {
   cancelTest(id: string, test: string, request: Mutation): Promise<TestResult>;
   save(request: SaveCameraRequest): Promise<SaveCameraResponse>;
   reconnect(ref: StreamRef, request: Mutation): Promise<ReconnectResponse>;
+  /** A saved camera's name and address, for the manager who added it. */
+  settings(cameraID: string): Promise<CameraSettings>;
+  rename(cameraID: string, request: RenameCameraRequest): Promise<CameraChange>;
+  remove(cameraID: string, request: RemoveCameraRequest): Promise<CameraChange>;
+  /** Ends every session on a settings draft's camera until the change is resolved. */
+  stopViewers(draftID: string, request: StopViewersRequest): Promise<DraftReview>;
 }
 export class ManagementClient implements ManagementAPI {
   #token: string | undefined;
@@ -79,6 +90,7 @@ export class ManagementClient implements ManagementAPI {
     finally { clearTimeout(timer); }
   }
   #draft(id: string) { return `/api/camera-drafts/${encodeURIComponent(id)}`; }
+  #camera(id: string) { return `/api/cameras/${encodeURIComponent(id)}`; }
   async capabilities() { return capabilities(await this.#request("/api/capabilities")); }
   async draft(id: string) { return draft(await this.#request(this.#draft(id))); }
   async operation(key:string,epoch:string,candidate?:string,kind?:OperationKind,draft?:string) {
@@ -105,18 +117,26 @@ export class ManagementClient implements ManagementAPI {
   async cancelTest(id:string,testID:string,request:Mutation) { return test(await this.#request(this.#draft(id)+"/tests/"+encodeURIComponent(testID),"DELETE",request)); }
   async save(request:SaveCameraRequest) {
     const value=await this.#request("/api/cameras","POST",request);
-    if(!object(value)||!string(value.camera_id)||!object(value.catalog_revision)||!string(value.catalog_revision.runtime_epoch)||!number(value.catalog_revision.generation))return invalid();
+    if(!object(value)||!string(value.camera_id)||!revision(value.catalog_revision))return invalid();
     return value as unknown as SaveCameraResponse;
   }
   /** People watching any of a camera's streams, or undefined when any count is unknown. */
   async viewers(cameraID:string) {
-    const value=await this.#request(`/api/cameras/${encodeURIComponent(cameraID)}/status`);
+    const value=await this.#request(this.#camera(cameraID)+"/status");
     const counts=object(value)&&Array.isArray(value.streams)?value.streams.map(item=>object(item)?item.viewers:undefined):[];
     return counts.length&&counts.every(number)?(counts as number[]).reduce((sum,n)=>sum+n,0):undefined;
   }
   async reconnect(ref:StreamRef,request:Mutation) {
-    const value=await this.#request(`/api/cameras/${encodeURIComponent(ref.camera_id)}/streams/${encodeURIComponent(ref.stream_id)}/recovery`,"POST",request);
+    const value=await this.#request(this.#camera(ref.camera_id)+`/streams/${encodeURIComponent(ref.stream_id)}/recovery`,"POST",request);
     if(!object(value)||!Array.isArray(value.affected)||!Array.isArray(value.closed_sessions))return invalid();
     return value as unknown as ReconnectResponse;
   }
+  async settings(cameraID:string) {
+    const value=await this.#request(this.#camera(cameraID)+"/settings");
+    if(!object(value)||!string(value.camera_id)||!string(value.name)||!string(value.endpoint)||!["anonymous","credentials"].includes(String(value.authentication))||!revision(value.catalog_revision))return invalid();
+    return value as unknown as CameraSettings;
+  }
+  async rename(cameraID:string,request:RenameCameraRequest) { return change(await this.#request(this.#camera(cameraID),"PATCH",request)); }
+  async remove(cameraID:string,request:RemoveCameraRequest) { return change(await this.#request(this.#camera(cameraID),"DELETE",request)); }
+  async stopViewers(id:string,request:StopViewersRequest) { return draft(await this.#request(this.#draft(id)+"/stop-viewers","POST",request)); }
 }

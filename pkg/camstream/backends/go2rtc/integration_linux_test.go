@@ -24,10 +24,14 @@ import (
 
 func integration(t *testing.T) *Backend {
 	t.Helper()
+	return integrationWith(t, testConfig(t))
+}
+func integrationWith(t *testing.T, cfg Config) *Backend {
+	t.Helper()
 	if os.Getenv("CAMSTREAM_GO2RTC_INTEGRATION") != "1" {
 		t.Skip("requires pinned Linux arm64 --init container and controlled media")
 	}
-	b, err := New(testConfig(t), testEncoder{})
+	b, err := New(cfg, testEncoder{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,6 +348,35 @@ func TestIntegrationSharedViewersAndFailures(t *testing.T) {
 
 func closeFixture(c io.Closer) {
 	_ = c.Close() //nolint:errcheck // Fault fixtures intentionally close already-closed/broken transports.
+}
+
+// The monitor skips a source while a negotiation holds it, so each negotiation
+// must leave its own observation. Otherwise a viewer arriving just after finds
+// none, or one too old for admission, and is refused (BUG-0003).
+func TestIntegrationNegotiationRecordsObservation(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.FailureTimeout, cfg.PollInterval = 30*time.Second, 20*time.Second // no monitor poll during the test
+	b := integrationWith(t, cfg)
+	o := origin(t, b, 34000, 34001)
+	if _, err := b.EnsureStream(context.Background(), testSpec("one", relay(o).URL)); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []camstream.SessionID{"first", "second"} {
+		p := newPeer(t, "tcp")
+		state, err := b.CreateSession(context.Background(), camstream.SessionSpec{ID: id, SourceKey: "one", Offer: offer(t, p)})
+		if err != nil || state.Answer == nil || state.ObservedAt.IsZero() {
+			t.Fatal(id, state, err)
+		}
+		// The source must be observed no earlier than the session's answer, however
+		// long the negotiation took.
+		st, err := b.StreamStatus(context.Background(), "one")
+		if err != nil || st.Upstream != camstream.PresencePresent || st.ActiveSessions == nil || st.ObservedAt.Before(state.ObservedAt) {
+			t.Fatalf("%s: source observed at %v, before the answer at %v: %+v %v", id, st.ObservedAt, state.ObservedAt, st, err)
+		}
+		if err = p.pc.SetRemoteDescription(pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: state.Answer.SDP}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestIntegrationAbandonedNegotiation(t *testing.T) {

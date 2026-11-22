@@ -76,7 +76,7 @@ export const errorCopy: Record<ErrorCode, { title: string; detail: string }> = {
   camera_busy: {
     title: "This camera is busy",
     detail:
-      "It can stream one view at a time, and a different stream of it is playing. Switch to that stream, or try again after it stops.",
+      "It’s being changed, or a different stream of it is playing. Try again in a moment, or switch to that stream.",
   },
   cleanup_incomplete: {
     title: "The previous connection is still closing",

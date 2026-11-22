@@ -62,6 +62,8 @@ const EXTRAS = [
   { size: "desktop", scenario: "busy", name: "sheet", click: "Choose another camera" },
   { size: "phone", scenario: "busy", name: "sheet", click: "Choose another camera" },
   { size: "landscape", scenario: "playing", name: "sheet", click: ".overlay-cameras" },
+  { size: "desktop", scenario: "playing", name: "grid", click: ".view-switch button:last-child" },
+  { size: "phone", scenario: "playing", name: "grid", click: ".view-switch button:last-child" },
 ];
 
 /** What the preview needs from outside its folder: the API examples it imports. */

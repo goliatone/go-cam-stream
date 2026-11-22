@@ -118,15 +118,7 @@ func (b *Backend) negotiate(v *session) error {
 		s.lastProgress = time.Now()
 		s.received = 0
 	}
-	if s.ingest != nil {
-		check, finish := context.WithTimeout(ctx, b.cfg.PollInterval)
-		obs, observeErr := b.observe(check, s.ingest)
-		finish()
-		if observeErr == nil && obs.received() > s.received {
-			s.received = obs.received()
-			s.lastProgress = time.Now()
-		}
-	}
+	b.observeIngest(ctx, s)
 	var err error
 	v.worker, err = b.launch(ctx, false, relay(s.ingest))
 	if v.worker != nil {
@@ -159,7 +151,33 @@ func (b *Backend) negotiate(v *session) error {
 	v.answer = &camstream.Answer{SDP: string(body)}
 	v.lastProgress = time.Now()
 	v.state.ObservedAt = time.Now()
+	// The monitor skipped this source for the whole negotiation. Without a new
+	// observation, a viewer arriving next would find none, or one too old to
+	// admit it.
+	b.observeIngest(ctx, s)
 	return nil
+}
+
+// observeIngest records a successful observation of the source's ingest, as the
+// monitor's poll does. Operations that hold the source call it, because the
+// monitor skips a busy source and its last observation would otherwise age.
+// A failed observation leaves the previous one in place.
+func (b *Backend) observeIngest(ctx context.Context, s *source) {
+	if s.ingest == nil {
+		return
+	}
+	check, finish := context.WithTimeout(ctx, b.cfg.PollInterval)
+	defer finish()
+	now := time.Now()
+	obs, err := b.observe(check, s.ingest)
+	if err != nil {
+		return
+	}
+	s.observed = now
+	if n := obs.received(); n > s.received {
+		s.received = n
+		s.lastProgress = now
+	}
 }
 func (b *Backend) SessionStatus(ctx context.Context, id camstream.SessionID) (camstream.SessionState, error) {
 	b.mu.Lock()

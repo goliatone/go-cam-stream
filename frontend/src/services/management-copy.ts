@@ -31,7 +31,15 @@ export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
   playback_evidence_insufficient: "The preview hasn’t shown moving video yet.",
   recovery_lost: "The server restarted or the reconnect record expired. Refresh source status before explicitly reconnecting again.",
   operation_in_progress: "A change is still in progress. Try again in a moment.",
-  receipt_expired: "The earlier save can’t be confirmed anymore. Check the camera list before trying again.",
+  receipt_expired: "The earlier change can’t be confirmed anymore. Check the camera list before trying again.",
+};
+/** Notes on a draft's address and files. */
+export const draftWarnings = {
+  server_relative_localhost: "Localhost is the server’s own machine. A remote or container server needs your Mac’s network address and Private network capture.",
+  imported_grants_ignored: "Sharing settings in the file are not imported.",
+  initial_address_only: "Use a camera you trust: the server checks only the address it first connects to and follows the camera’s redirects.",
+  creator_only_access: "",
+  fixed_address: "Reconnect does not follow the camera to a new address. Change the address in the camera’s Settings instead.",
 };
 export function managementMessage(code: ManagementErrorCode) {
   return (Object.prototype.hasOwnProperty.call(managementCopy,code)?managementCopy[code]:undefined)

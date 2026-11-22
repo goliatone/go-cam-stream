@@ -9,7 +9,13 @@ import {
 } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app";
-import { AVAILABILITY_MS, useViewer } from "./use-viewer";
+import {
+  AVAILABILITY_MS,
+  FIRST_FRAME_MS,
+  FRAME_EVERY_MS,
+  useViewer,
+} from "./use-viewer";
+import { FramePreviews } from "../services/frame-previews";
 import type { PlaybackSnapshot } from "../services/playback";
 import type { CameraList } from "../services/contracts";
 import samples from "../../../data/api/examples.json";
@@ -682,4 +688,155 @@ it("fences older lists behind Save and preserves the selected video on membershi
  expect(host.catalog.cameras).toContainEqual(added);expect(document.querySelector("video")).toBe(video);expect(control.select).toHaveBeenCalledTimes(selectionCalls);expect(control.dispose).not.toHaveBeenCalled();
  api.list.mockResolvedValueOnce({...catalog,revision:rev(1)});
  await act(async()=>{await expect(host.refreshCatalog(rev(2))).rejects.toThrow()});expect(host.catalog.cameras).toContainEqual({...added,availability:"unknown"});
+});
+
+describe("tile frames", () => {
+  /** Gives the video a picture, as playing media does. */
+  const picture = (video: HTMLVideoElement) =>
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1280 },
+      videoHeight: { configurable: true, value: 720 },
+      readyState: { configurable: true, value: 4 },
+    });
+  // jsdom draws and encodes nothing.
+  let made = 0;
+  function drawFrames() {
+    made = 0;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(
+      () => `data:image/jpeg;base64,frame-${++made}`,
+    );
+  }
+
+  it("keeps the playing camera's frame soon after it plays, then periodically, and as it stops", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    const capture = vi.spyOn(FramePreviews.prototype, "capture").mockImplementation(() => {});
+    try {
+      vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+      render(<Live />);
+      await advance(0);
+      const connecting = snapshot("connecting");
+      act(() => control.changed!(connecting));
+      const video = picture(document.querySelector("video")!);
+      // Nothing is kept before the video plays.
+      await advance(FIRST_FRAME_MS * 2);
+      expect(capture).not.toHaveBeenCalled();
+      act(() => control.changed!({ ...connecting, state: "playing" }));
+      await advance(FIRST_FRAME_MS - 1);
+      expect(capture).not.toHaveBeenCalled();
+      await advance(1);
+      expect(capture).toHaveBeenCalledExactlyOnceWith("room1", video);
+      await advance(FRAME_EVERY_MS);
+      expect(capture).toHaveBeenCalledTimes(2);
+      // Stopping keeps the picture before the media goes, and ends the schedule.
+      act(() => control.changed!({ selection: ref, state: "closing", media: null }));
+      expect(capture).toHaveBeenCalledTimes(3);
+      expect(capture).toHaveBeenLastCalledWith("room1", video);
+      await advance(FRAME_EVERY_MS * 2);
+      expect(capture).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops playback for the grid and shows the frame it kept on the camera's tile", async () => {
+    drawFrames();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<Live />);
+    await waitFor(() => expect(control.select).toHaveBeenCalledWith(ref, { audio: true, video: true }));
+    act(() => control.changed!(snapshot("playing")));
+    const video = picture(document.querySelector("video")!);
+    fireEvent.click(screen.getByRole("button", { name: "All cameras" }));
+    // The grid plays nothing, so the page holds no viewer slot.
+    await waitFor(() => expect(control.select.mock.lastCall?.[0]).toBeUndefined());
+    expect(video.srcObject).toBeNull();
+    expect(document.querySelector("video")).toBeNull();
+    const tiles = screen.getByRole("list", { name: "All cameras" });
+    const room1 = await within(tiles).findByRole("link", { name: /^Room 1.*Seen just now$/ });
+    expect(room1.querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,frame-1");
+    expect(within(tiles).getByRole("link", { name: /Room 2/ }).querySelector("img")).toBeNull();
+    // Choosing the other tile plays it in Focus view.
+    fireEvent.click(within(tiles).getByRole("link", { name: /Room 2/ }));
+    await waitFor(() =>
+      expect(control.select).toHaveBeenLastCalledWith(
+        { camera_id: "room2", stream_id: "default" },
+        catalog.cameras[1]!.streams[0]!.capabilities,
+      ),
+    );
+    expect(document.querySelectorAll("video")).toHaveLength(1);
+  });
+
+  it("forgets the frame of a camera that leaves the list, and every frame when the page hides", async () => {
+    drawFrames();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    let host!: ReturnType<typeof useViewer>;
+    function Bound() {
+      host = useViewer(api);
+      return <App {...host} />;
+    }
+    render(<Bound />);
+    await waitFor(() => expect(control.select).toHaveBeenCalled());
+    const stopAfterPlaying = async (camera_id: string) => {
+      const live = { selection: { camera_id, stream_id: "default" }, state: "playing" as const, media: {} as MediaStream };
+      act(() => control.changed!(live));
+      picture(document.querySelector("video")!);
+      act(() => control.changed!({ ...live, state: "closed", media: null }));
+      await waitFor(() => expect(host.previewFor!(camera_id)).toMatchObject({ kind: "frame" }));
+    };
+    await stopAfterPlaying("room1");
+    // A list that fails to load keeps the frames it cannot confirm gone.
+    api.list.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      await host.refreshCatalog().catch(() => {});
+    });
+    expect(host.previewFor!("room1")).toMatchObject({ url: "data:image/jpeg;base64,frame-1" });
+    api.list.mockResolvedValueOnce({ cameras: [catalog.cameras[1]!] });
+    await act(async () => {
+      await host.refreshCatalog();
+    });
+    expect(host.previewFor!("room1")).toEqual({ kind: "none" });
+    await stopAfterPlaying("room2");
+    fireEvent(window, new PageTransitionEvent("pagehide", { persisted: false }));
+    expect(host.previewFor!("room2")).toEqual({ kind: "none" });
+  });
+
+  it("keeps no frame of a camera that left the list, or of a page entering the back-forward cache", async () => {
+    drawFrames();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    let host!: ReturnType<typeof useViewer>;
+    function Bound() {
+      host = useViewer(api);
+      return <App {...host} />;
+    }
+    render(<Bound />);
+    await waitFor(() => expect(control.select).toHaveBeenCalledWith(ref, { audio: true, video: true }));
+    act(() => control.changed!(snapshot("playing")));
+    picture(document.querySelector("video")!);
+    // Its player goes after the list without it arrives.
+    api.list.mockResolvedValueOnce({ cameras: [catalog.cameras[1]!] });
+    await act(async () => {
+      await host.refreshCatalog();
+    });
+    await waitFor(() =>
+      expect(control.select).toHaveBeenLastCalledWith(
+        { camera_id: "room2", stream_id: "default" },
+        catalog.cameras[1]!.streams[0]!.capabilities,
+      ),
+    );
+    expect(host.previewFor!("room1")).toEqual({ kind: "none" });
+    const room2 = { selection: { camera_id: "room2", stream_id: "default" }, state: "playing" as const, media: {} as MediaStream };
+    act(() => control.changed!(room2));
+    picture(document.querySelector("video")!);
+    fireEvent(window, new PageTransitionEvent("pagehide", { persisted: true }));
+    act(() => control.changed!(undefined));
+    await act(async () => {});
+    expect(host.previewFor!("room2")).toEqual({ kind: "none" });
+    expect(made).toBe(0);
+  });
 });

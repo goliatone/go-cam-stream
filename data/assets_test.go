@@ -21,6 +21,10 @@ func TestEmbeddedWeb(t *testing.T) {
 		if r.Code != 200 || !strings.Contains(r.Body.String(), "/assets/") || r.Header().Get("Cache-Control") != "no-store" {
 			t.Fatal(name, r.Code)
 		}
+		// Grid tiles show the page's own frames as data: URLs.
+		if policy := r.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "img-src 'self' data:;") {
+			t.Fatalf("%s policy does not allow data: images: %q", name, policy)
+		}
 	}
 	for _, name := range []string{"/api/missing", "/api/cameras/missing", "/admin/missing", "/healthz/missing", "/readyz/missing", "/assets/missing.js", "/web/manifest.json", "/preview.html", "/cameras/unknown"} {
 		r := httptest.NewRecorder()

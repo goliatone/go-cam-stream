@@ -280,6 +280,21 @@ main:focus,
   color: inherit;
   background: var(--fill-strong);
 }
+/* The view switch: one camera, or all of them. It ends the bar, before the
+   shortcuts button. */
+.view-switch {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+}
+.view-switch + .shortcuts-button {
+  margin-left: 0;
+}
+.view-switch [aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 main {
   grid-area: main;
   display: flex;
@@ -1259,7 +1274,7 @@ kbd {
 }
 /* An empty live region keeps its place in the accessibility tree, not in the
    layout. */
-.management-dialog .dialog-inner > [role="status"]:empty {
+.management-dialog :is(.dialog-inner, .drawer-section) > [role="status"]:empty {
   position: absolute;
 }
 /* The actions stay in view while the dialog scrolls. */
@@ -1383,6 +1398,15 @@ kbd {
   margin: 0;
   font-size: var(--fs-lg);
   font-weight: 600;
+}
+/* A field and its button, or a row of buttons, inside a drawer section. */
+.drawer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.drawer-row input {
+  flex: 1 1 12em;
 }
 .drawer-facts {
   display: grid;
@@ -1688,6 +1712,81 @@ kbd {
     opacity: 0.5;
   }
 }
+/* Grid view: every camera as a tile, from one column on phones to as many as
+   fit on wide screens. */
+[data-view="grid"] main {
+  padding-bottom: var(--gutter);
+}
+.camera-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.grid-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 8px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+}
+a.grid-tile:hover {
+  background: var(--fill-soft);
+}
+.grid-tile[aria-current="page"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.grid-tile[aria-disabled="true"] {
+  color: var(--text-disabled);
+}
+.grid-tile.dim {
+  color: var(--text-muted);
+}
+.grid-tile .camera-label {
+  padding: 0 4px;
+}
+/* The picture follows the name in the link, which the name then starts, and
+   is drawn above it. A frame covers its colour tile. */
+.tile-preview {
+  position: relative;
+  display: grid;
+  order: -1;
+  place-items: center;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  color: var(--on-tile);
+}
+.tile-preview svg {
+  width: 40px;
+  height: 40px;
+}
+.tile-preview img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.tile-age {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--glass);
+  color: var(--on-stage-soft);
+  font-size: var(--fs-xs);
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1715,6 +1814,10 @@ kbd {
   }
   .rail-toggle,
   .shortcuts-button {
+    display: none;
+  }
+  /* The view switch takes the wordmark's room; the mark still names the app. */
+  .has-views .brand-name {
     display: none;
   }
   main {
@@ -1748,7 +1851,7 @@ kbd {
     border-right: 0;
     background: none;
   }
-  .app[data-norail] main {
+  .app:is([data-norail], [data-view="grid"]) main {
     position: static;
     padding: var(--gutter);
     background: none;
@@ -1836,10 +1939,10 @@ kbd {
   .player-toolbar {
     padding-bottom: max(8px, env(safe-area-inset-bottom));
   }
-  .app[data-norail] {
+  .app:is([data-norail], [data-view="grid"]) {
     overflow: auto;
   }
-  .app[data-norail] main {
+  .app:is([data-norail], [data-view="grid"]) main {
     position: static;
     padding: 16px;
     background: none;

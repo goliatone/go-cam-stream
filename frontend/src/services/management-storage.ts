@@ -17,7 +17,7 @@ export interface RecoveryRecord {
 }
 export const RECOVERY_STORAGE_KEY = "camstream.camera-operation.v1";
 export const CREDENTIAL_RECOVERY_KEY = RECOVERY_STORAGE_KEY+".credentials";
-const kinds = ["create","import","patch","cancel","test","complete","cancel_test","save","recovery"];
+const kinds = ["create","import","patch","cancel","test","complete","cancel_test","save","recovery","rename","remove","stop_viewers"];
 const id = (value:unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 // Pick only permitted fields even if a caller passes an object with extra keys.
 export function recoveryRecord(record: RecoveryRecord): RecoveryRecord {
