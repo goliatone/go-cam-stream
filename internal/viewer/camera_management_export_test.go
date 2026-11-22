@@ -43,3 +43,10 @@ func ExpireManagedReceiptsForTest(s *CameraManagementService) {
 		s.durable.Receipts[i].ExpiresAt = time.Now().Add(-time.Second)
 	}
 }
+
+// SetManagedRepositoryForTest swaps the repository between operations.
+func SetManagedRepositoryForTest(s *CameraManagementService, repository ManagedStateRepository) {
+	_ = s.acquire(context.Background())
+	defer s.release()
+	s.options.Repository = repository
+}

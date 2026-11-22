@@ -5,6 +5,7 @@ The reference application uses EC70 strategies, isolated stock-go2rtc workers,
 Tailscale Serve identity and an embedded Preact player.
 
 - [Installation, native-first validation and rollback](docs/GUIDE_INSTALLATION.md)
+- [Raspberry Pi setup](docs/GUIDE_INSTALLATION.md#discover-and-provision-a-raspberry-pi) covers finding Pis on your LAN with `find-pis` and installing Camstream as a systemd service over SSH with `provision-camstream`.
 - [Controller and CLI](internal/app/README.md)
 - [Reproducible controlled-media validation](internal/app/README.md#reproducible-controlled-media-validation)
 - [Configuration](config/README.md)

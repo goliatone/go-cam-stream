@@ -42,10 +42,11 @@ func TestManagementRegisteredHTTPWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := ""
+	login := "manager"
 	request := func(method, path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequestWithContext(context.Background(), method, "https://camera.test"+path, strings.NewReader(body))
 		r.RemoteAddr = "127.0.0.1:1234"
-		r.Header.Set(api.ServeLoginHeader, "manager")
+		r.Header.Set(api.ServeLoginHeader, login)
 		r.Header.Set("Content-Type", "application/json")
 		if token != "" {
 			r.Header.Set(api.CSRFHeader, token)
@@ -150,5 +151,76 @@ func TestManagementRegisteredHTTPWorkflow(t *testing.T) {
 	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &d) != nil || !d.CredentialUpdate || d.CandidateID != saved.CameraID ||
 		strings.Contains(out.Body.String(), replace.Credentials.Password) || strings.Contains(out.Body.String(), duplicate.Endpoint) {
 		t.Fatal("credential draft did not return a safe review", out.Code)
+	}
+	stop, _ := json.Marshal(api.StopViewersRequest{Mutation: mutation(20), ExpectedRevision: d.Revision})
+	token = ""
+	if out = request("POST", api.DraftsPath+"/"+d.ID+"/stop-viewers", string(stop)); out.Code != 403 {
+		t.Fatal("missing CSRF accepted for stop-viewers", out.Code)
+	}
+	token = bootstrap.Token
+	var fenced api.DraftReview
+	if out = request("POST", api.DraftsPath+"/"+d.ID+"/stop-viewers", string(stop)); out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &fenced) != nil || !fenced.Fenced {
+		t.Fatal("stop-viewers", out.Code, out.Body.String())
+	}
+	cancel, _ := json.Marshal(mutation(21))
+	if out = request("DELETE", api.DraftsPath+"/"+d.ID, string(cancel)); out.Code != 200 || strings.Contains(out.Body.String(), `"fenced"`) {
+		t.Fatal("canceling the fenced draft", out.Code, out.Body.String())
+	}
+	out = request("GET", "/api/cameras/"+saved.CameraID+"/settings", "")
+	var settings api.CameraSettings
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &settings) != nil || settings.CameraID != saved.CameraID ||
+		settings.Endpoint != "rtsp://localhost:18556/macbook" || settings.Authentication != api.AuthenticationCredentials ||
+		strings.Contains(out.Body.String(), "PRIVATE") || strings.Contains(out.Body.String(), "username") {
+		t.Fatal("settings read", out.Code, out.Body.String())
+	}
+	rename := api.RenameCameraRequest{Mutation: mutation(10), Name: "Porch", CatalogRevision: settings.CatalogRevision}
+	body, _ = json.Marshal(rename)
+	token = ""
+	if out = request("PATCH", "/api/cameras/"+saved.CameraID, string(body)); out.Code != 403 {
+		t.Fatal("missing CSRF accepted for rename", out.Code)
+	}
+	token = bootstrap.Token
+	if out = request("PATCH", "/api/cameras/"+saved.CameraID, `{"name":"Porch","unknown":true}`); out.Code != 400 {
+		t.Fatal("rename accepted an unknown field", out.Code)
+	}
+	out = request("PATCH", "/api/cameras/"+saved.CameraID, string(body))
+	var change api.CameraChange
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &change) != nil || change.CameraID != saved.CameraID || change.CatalogRevision.Generation != settings.CatalogRevision.Generation+1 {
+		t.Fatal("rename", out.Code, out.Body.String())
+	}
+	out = request("GET", api.OperationsPath+"/"+rename.OperationKey+"?runtime_epoch=epoch&kind=rename&candidate_id="+saved.CameraID, "")
+	var op api.OperationResult
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &op) != nil || op.State != api.OperationSucceeded || op.Change == nil || op.Kind != api.OperationRename {
+		t.Fatal("rename lookup", out.Code, out.Body.String())
+	}
+	stale, _ := json.Marshal(api.RenameCameraRequest{Mutation: mutation(11), Name: "Stale", CatalogRevision: settings.CatalogRevision})
+	if out = request("PATCH", "/api/cameras/"+saved.CameraID, string(stale)); out.Code != 409 || !strings.Contains(out.Body.String(), string(api.CodeCatalogConflict)) {
+		t.Fatal("stale rename", out.Code, out.Body.String())
+	}
+	login = "other"
+	if out = request("GET", "/api/cameras/"+saved.CameraID+"/settings", ""); out.Code != 403 || strings.Contains(out.Body.String(), "18556") {
+		t.Fatal("another manager read the settings", out.Code, out.Body.String())
+	}
+	other, _ := json.Marshal(api.RenameCameraRequest{Mutation: mutation(12), Name: "Taken", CatalogRevision: change.CatalogRevision})
+	if out = request("PATCH", "/api/cameras/"+saved.CameraID, string(other)); out.Code != 403 {
+		t.Fatal("another manager renamed the camera", out.Code, out.Body.String())
+	}
+	remove, _ := json.Marshal(api.RemoveCameraRequest{Mutation: mutation(13), CatalogRevision: change.CatalogRevision, StopViewers: true})
+	if out = request("DELETE", "/api/cameras/"+saved.CameraID, string(remove)); out.Code != 403 {
+		t.Fatal("another manager removed the camera", out.Code, out.Body.String())
+	}
+	login = "manager"
+	token = ""
+	if out = request("DELETE", "/api/cameras/"+saved.CameraID, string(remove)); out.Code != 403 {
+		t.Fatal("missing CSRF accepted for removal", out.Code)
+	}
+	token = bootstrap.Token
+	out = request("DELETE", "/api/cameras/"+saved.CameraID, string(remove))
+	var removed api.CameraChange
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &removed) != nil || !removed.Removed || removed.CameraID != saved.CameraID {
+		t.Fatal("removal", out.Code, out.Body.String())
+	}
+	if out = request("GET", "/api/cameras/"+saved.CameraID+"/settings", ""); out.Code != 403 {
+		t.Fatal("settings for a removed camera", out.Code, out.Body.String())
 	}
 }

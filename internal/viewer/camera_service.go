@@ -84,7 +84,9 @@ func (s *CameraService) CreateSession(ctx context.Context, camera cs.CameraID, s
 	return out, nil
 }
 
-func (s *CameraService) beginCredentialUpdate(camera cs.CameraID) (func(), error) {
+// beginSourceChange fences new sessions for one camera while its source is
+// replaced or retired. It fails while a session is being admitted.
+func (s *CameraService) beginSourceChange(camera cs.CameraID) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.updating[camera] || s.admissions[camera] != 0 {
@@ -109,7 +111,10 @@ func (s *CameraService) CloseSession(ctx context.Context, id cs.SessionID) error
 	if err != nil {
 		return denied()
 	}
-	viewer := owner == principal(ctx) && s.allowed(ctx, camera, stream, view)
+	// A removal closes every session before its camera leaves the catalog, so
+	// the owner may still close its own; a revoked grant keeps the camera listed.
+	_, listed := s.snapshot(ctx).cameras[camera]
+	viewer := owner == principal(ctx) && (!listed || s.allowed(ctx, camera, stream, view))
 	operator := s.allowed(ctx, camera, stream, reconnect)
 	if !viewer && !operator {
 		return denied()

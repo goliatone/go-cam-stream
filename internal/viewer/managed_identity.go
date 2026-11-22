@@ -118,3 +118,46 @@ func (i *IdentityIndex) Promote(draft, camera string, binding AddressBinding) er
 	delete(i.owners, draft)
 	return nil
 }
+
+// Forget drops a removed camera's committed keys so that a later camera may use
+// its address. Draft reservations stay with their drafts. A managed camera's
+// owner is its ID, which never equals a base camera's physical ID.
+func (i *IdentityIndex) Forget(camera string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for key, owner := range i.committed {
+		if owner == camera {
+			delete(i.committed, key)
+		}
+	}
+}
+
+// Replace moves a saved camera to the binding its settings draft reserved: the
+// camera's old keys are dropped and the reserved keys are committed to it.
+func (i *IdentityIndex) Replace(draft, camera string, binding AddressBinding) error {
+	keys, err := binding.IdentityKeys()
+	if err != nil || camera == "" {
+		return invalid()
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if !equalKeys(i.owners[draft], keys) {
+		return invalid()
+	}
+	for _, key := range keys {
+		if i.reserved[key] != draft || (i.committed[key] != "" && i.committed[key] != camera) {
+			return duplicateCamera()
+		}
+	}
+	for key, owner := range i.committed {
+		if owner == camera {
+			delete(i.committed, key)
+		}
+	}
+	for _, key := range keys {
+		i.committed[key] = camera
+		delete(i.reserved, key)
+	}
+	delete(i.owners, draft)
+	return nil
+}

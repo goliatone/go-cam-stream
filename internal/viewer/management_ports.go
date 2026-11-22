@@ -24,6 +24,10 @@ type CameraManagement interface {
 	CancelTest(context.Context, string, string, api.Mutation) (api.TestResult, error)
 	SaveCamera(context.Context, api.SaveCameraRequest) (api.SaveCameraResponse, error)
 	Operation(context.Context, string, string, string, ...api.OperationLookup) (api.OperationResult, error) // key, candidate ID, original epoch
+	CameraSettings(context.Context, string) (api.CameraSettings, error)
+	RenameCamera(context.Context, string, api.RenameCameraRequest) (api.CameraChange, error)
+	RemoveCamera(context.Context, string, api.RemoveCameraRequest) (api.CameraChange, error)
+	StopViewers(context.Context, string, api.StopViewersRequest) (api.DraftReview, error)
 }
 
 // CameraRecovery remains usable independently of management enablement. Its

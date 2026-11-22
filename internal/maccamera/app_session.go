@@ -139,6 +139,11 @@ type appSession struct {
 	conversationGuest  *api.NativeConversationPrejoin
 }
 
+var (
+	ErrAppSessionBusy     = errors.New("another camera session is already open")
+	ErrAppSessionSettings = errors.New("the app settings folder is unavailable")
+)
+
 // AppSession binds all owned capture to the native parent's stdin pipe. EOF,
 // read failure, a signal or protocol failure cancels and reaps owned capture.
 // The caller must keep the pipe open, and must not invoke CLI start detached.
@@ -151,7 +156,15 @@ func (s *Service) AppSession(ctx context.Context, in io.ReadCloser, out io.Write
 func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	lock, err := a.service.namedLock("app-session.lock")
 	if err != nil {
-		return a.encoder.Encode(AppReply{Version: 1, Event: "session_error", Error: appError("busy")})
+		code, failure := "settings_unavailable", ErrAppSessionSettings
+		if errors.Is(err, errCameraBusy) {
+			code, failure = "busy", ErrAppSessionBusy
+		}
+		reply := AppReply{Version: 1, Event: "session_error", Error: &AppError{Code: code, Message: failure.Error()}}
+		if err = a.encoder.Encode(reply); err != nil {
+			return err
+		}
+		return failure
 	}
 	defer lock.Close() //nolint:errcheck // Release the native session lock after capture cleanup.
 	ctx, cancel := context.WithCancel(ctx)
@@ -311,6 +324,9 @@ func (a *appSession) startOwned(ctx context.Context) (any, *AppError) {
 	if status.State != "stopped" {
 		return nil, appError("busy")
 	}
+	if err := a.captureReleaseError(); err != nil {
+		return nil, err
+	}
 	a.failure = nil
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -365,6 +381,11 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 		return a.status(ctx)
 	case "stop", "quit":
 		a.stopOwned()
+		if r.Method == "stop" {
+			if err := a.captureReleaseError(); err != nil {
+				return nil, err
+			}
+		}
 		a.failure = nil
 		return a.service.stoppedStatus("stopped"), nil
 	case "export":
@@ -372,6 +393,20 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 	default:
 		return nil, appError("invalid_request")
 	}
+}
+
+// A previous owner's supervisor can hold the instance lock before it creates
+// its status socket. Probe without stopping that owner.
+func (a *appSession) captureReleaseError() *AppError {
+	lock, err := a.service.lock()
+	if errors.Is(err, errCameraBusy) {
+		return appError("busy")
+	}
+	if err != nil {
+		return appError("status_unavailable")
+	}
+	_ = lock.Close() //nolint:errcheck // Release the probe so a supervisor can acquire the lock.
+	return nil
 }
 
 func (a *appSession) export() (any, *AppError) {

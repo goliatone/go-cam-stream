@@ -15,14 +15,19 @@ import (
 
 var _ CameraManagement = (*CameraManagementService)(nil)
 
+// pendingCameraSave is the one managed-state change between its commit and its
+// publication: a draft save, or a rename or removal of a saved camera. An
+// uncertain commit keeps it until recovery establishes the durable state.
 type pendingCameraSave struct {
 	owner, key, draft string
+	kind              api.OperationKind // save, rename or remove
+	change            catalogChange     // the saved camera this publication alters
+	stopped           int               // sessions a removal closed
 	state             ManagedState
 	catalog           ManagedCatalog
 	merged            config.Catalog
 	revision          api.CatalogRevision
 	promoted          bool
-	credentialCamera  cs.CameraID
 	oldSource         cs.SourceKey
 	releaseAdmission  func()
 }
@@ -104,7 +109,7 @@ func saveFingerprint(r api.SaveCameraRequest) string {
 func (s *CameraManagementService) savedCamera(ctx context.Context, key string) (*ManagedRecord, error) {
 	var receiptCamera cs.CameraID
 	for _, receipt := range s.durable.Receipts {
-		if receipt.Owner == principal(ctx) && receipt.OperationKey == key {
+		if receipt.isSave() && receipt.Owner == principal(ctx) && receipt.OperationKey == key {
 			receiptCamera = receipt.CandidateID
 			break
 		}
@@ -124,6 +129,12 @@ func (s *CameraManagementService) saveResponse(r *ManagedRecord, operationKey st
 	return api.SaveCameraResponse{CameraID: string(r.ID), CatalogRevision: s.options.Viewer.CatalogRevision(), CredentialsUpdated: operationKey != r.CreationKey}
 }
 func (s *CameraManagementService) replaySave(ctx context.Context, r api.SaveCameraRequest) (api.SaveCameraResponse, bool, error) {
+	if receipt := s.receipt(principal(ctx), r.OperationKey); receipt != nil && !receipt.isSave() {
+		return api.SaveCameraResponse{}, true, api.ManagementFailure(api.CodeOperationConflict)
+	}
+	if s.removedCamera(principal(ctx), r.OperationKey) != nil {
+		return api.SaveCameraResponse{}, true, api.ManagementFailure(api.CodeReceiptExpired)
+	}
 	record, err := s.savedCamera(ctx, r.OperationKey)
 	if err != nil {
 		return api.SaveCameraResponse{}, true, err
@@ -132,7 +143,7 @@ func (s *CameraManagementService) replaySave(ctx context.Context, r api.SaveCame
 		return api.SaveCameraResponse{}, false, nil
 	}
 	for _, receipt := range s.durable.Receipts {
-		if receipt.Owner == principal(ctx) && receipt.OperationKey == r.OperationKey {
+		if receipt.isSave() && receipt.Owner == principal(ctx) && receipt.OperationKey == r.OperationKey {
 			if receipt.Fingerprint != saveFingerprint(r) {
 				return api.SaveCameraResponse{}, true, api.ManagementFailure(api.CodeOperationConflict)
 			}
@@ -157,7 +168,9 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		_ = s.recoverSave(ctx)
 	}
 	draft := s.drafts[r.DraftID]
-	rotation := draft != nil && draft.owner == principal(ctx) && draft.review.CredentialUpdate
+	// A sign-in change keeps its pinned address; an address change is checked
+	// against fresh base identities like a new camera.
+	rotation := draft != nil && draft.owner == principal(ctx) && draft.review.CredentialUpdate && !draft.addressChange
 	response, found, replayErr := s.replaySave(ctx, r)
 	s.release()
 	if found {
@@ -220,20 +233,19 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 				next.Destroy()
 			}
 		}()
-		receipts := next.Receipts[:0]
-		for _, receipt := range next.Receipts {
-			if time.Now().Before(receipt.ExpiresAt) {
-				receipts = append(receipts, receipt)
-			}
-		}
-		next.Receipts = receipts
-		if len(next.Receipts) >= api.MaxSaveReceipts {
-			return nil, cs.NewError(cs.CodeCapacityExceeded, nil)
+		if e = pruneReceipts(&next); e != nil {
+			return nil, e
 		}
 		var record ManagedRecord
 		if d.review.CredentialUpdate {
 			record = previous
-			record.CredentialID = d.credential.ID
+			record.CredentialID = ""
+			if d.credential != nil {
+				record.CredentialID = d.credential.ID
+			}
+			if d.addressChange {
+				record.Binding, record.Path, record.Query = d.binding, d.config.Profiles[0].Path, d.config.Profiles[0].Query
+			}
 			for i := range next.Cameras {
 				if next.Cameras[i].ID == record.ID {
 					next.Cameras[i] = record
@@ -272,10 +284,10 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		if e != nil {
 			return nil, storageFailure()
 		}
-		pending := &pendingCameraSave{owner: d.owner, key: r.OperationKey, draft: d.review.ID, state: ManagedState{Revision: s.stateRevision + 1, CommitID: randomManagementID(), Payload: body}, catalog: next, merged: merged, revision: revision}
+		pending := &pendingCameraSave{owner: d.owner, key: r.OperationKey, draft: d.review.ID, kind: api.OperationSave, state: ManagedState{Revision: s.stateRevision + 1, CommitID: randomManagementID(), Payload: body}, catalog: next, merged: merged, revision: revision}
 		if d.review.CredentialUpdate {
-			pending.credentialCamera = record.ID
-			pending.releaseAdmission, pending.oldSource, e = s.prepareCredentialUpdate(ctx, previous)
+			pending.change = catalogChange{camera: record.ID, credentials: true, address: d.addressChange}
+			pending.releaseAdmission, pending.oldSource, e = s.prepareCredentialUpdate(ctx, d, previous)
 			if e != nil {
 				clear(body)
 				return nil, e
@@ -313,19 +325,30 @@ func (s *CameraManagementService) publishSave() error {
 	if p == nil {
 		return nil
 	}
-	d := s.drafts[p.draft]
-	if d == nil {
-		return unknownSave()
+	var d *cameraDraft
+	if p.kind == api.OperationSave {
+		if d = s.drafts[p.draft]; d == nil {
+			return unknownSave()
+		}
 	}
-	if err := s.options.Viewer.publishCatalog(p.merged, p.revision, s.options.Policy.Managers(), p.credentialCamera, func() error {
+	if err := s.options.Viewer.publishCatalog(p.merged, p.revision, s.options.Policy.Managers(), p.change, func() error {
 		if err := s.options.Secrets.Publish(p.catalog.Credentials); err != nil {
 			return err
 		}
-		if p.credentialCamera != "" {
-			return s.options.Core.DiscardPreparedSource(p.oldSource)
+		if p.oldSource != "" {
+			if err := s.options.Core.DiscardPreparedSource(p.oldSource); err != nil {
+				return err
+			}
 		}
-		if !p.promoted {
-			if err := s.identities.Promote(d.review.ID, d.review.CandidateID, d.binding); err != nil {
+		if p.change.remove {
+			s.identities.Forget(string(p.change.camera))
+		}
+		if d != nil && !p.promoted && (p.change.camera == "" || p.change.address) {
+			promote := s.identities.Promote
+			if p.change.address {
+				promote = s.identities.Replace
+			}
+			if err := promote(d.review.ID, d.review.CandidateID, d.binding); err != nil {
 				return err
 			}
 			p.promoted = true
@@ -339,10 +362,15 @@ func (s *CameraManagementService) publishSave() error {
 	s.stateRevision = p.state.Revision
 	clear(p.state.Payload)
 	s.pendingSave = nil
-	d.review.State = api.DraftSaved
-	s.discardCredential(d)
+	if d != nil {
+		d.review.State = api.DraftSaved
+		s.discardCredential(d)
+		if p.releaseAdmission != nil {
+			s.identities.Release(d.review.ID)
+		}
+		s.releaseFence(d)
+	}
 	if p.releaseAdmission != nil {
-		s.identities.Release(d.review.ID)
 		p.releaseAdmission()
 	}
 	return nil
@@ -352,7 +380,8 @@ func (s *CameraManagementService) abandonSave() {
 	if p == nil {
 		return
 	}
-	if d := s.drafts[p.draft]; d != nil {
+	if d := s.drafts[p.draft]; d != nil && p.kind == api.OperationSave {
+		s.releaseFence(d)
 		d.review.State = api.DraftTested
 		if time.Since(d.passedAt) > api.TestPassLifetime {
 			d.failTest(api.ManagementFailure(api.CodeTestExpired))
@@ -391,11 +420,15 @@ func (s *CameraManagementService) recoverSave(ctx context.Context) error {
 		if err = s.publishSave(); err != nil {
 			return unknownSave()
 		}
-		record, e := s.savedCamera(WithPrincipal(ctx, p.owner), p.key)
-		if e != nil || record == nil {
-			return unknownSave()
+		if p.kind == api.OperationSave {
+			record, e := s.savedCamera(WithPrincipal(ctx, p.owner), p.key)
+			if e != nil || record == nil {
+				return unknownSave()
+			}
+			response = s.saveResponse(record, p.key)
+		} else {
+			response = s.changeResponse(p.change.camera, p.change.remove, p.stopped)
 		}
-		response = s.saveResponse(record, p.key)
 	} else if outcome == CommitNotCommitted && state.Revision == s.stateRevision {
 		s.abandonSave()
 		resultErr = storageFailure()
@@ -407,6 +440,49 @@ func (s *CameraManagementService) recoverSave(ctx context.Context) error {
 		settleManagementOperation(op, response, resultErr)
 	}
 	s.opMu.Unlock()
+	return nil
+}
+
+// receipt finds the durable receipt for an owner's operation key, of any kind.
+func (s *CameraManagementService) receipt(owner, key string) *ManagedReceipt {
+	for i := range s.durable.Receipts {
+		if r := &s.durable.Receipts[i]; r.Owner == owner && r.OperationKey == key {
+			return r
+		}
+	}
+	return nil
+}
+
+// pruneReceipts drops expired receipts and the tombstones no remaining receipt
+// names, and leaves room for one more of each.
+func pruneReceipts(next *ManagedCatalog) error {
+	receipts := next.Receipts[:0]
+	named := map[cs.CameraID]bool{}
+	for _, receipt := range next.Receipts {
+		if time.Now().Before(receipt.ExpiresAt) {
+			receipts = append(receipts, receipt)
+			named[receipt.CandidateID] = true
+		}
+	}
+	next.Receipts = receipts
+	next.Removed = slices.DeleteFunc(next.Removed, func(t ManagedTombstone) bool { return !named[t.ID] })
+	if len(next.Removed) == 0 {
+		next.Removed = nil
+	}
+	if len(next.Receipts) >= api.MaxSaveReceipts {
+		return cs.NewError(cs.CodeCapacityExceeded, nil)
+	}
+	return nil
+}
+
+// removedCamera reports a tombstone for a creation key, so a replay of a
+// removed camera's creation stays answerable without creating it again.
+func (s *CameraManagementService) removedCamera(owner, key string) *ManagedTombstone {
+	for i := range s.durable.Removed {
+		if t := &s.durable.Removed[i]; t.Creator == owner && t.CreationKey == key {
+			return t
+		}
+	}
 	return nil
 }
 

@@ -175,6 +175,24 @@ func (h Routes) registerManagement(r admin.AdminRouter) {
 		}
 		return h.managementDispatch(c, api.CancelTestCommand, viewer.CancelTest{DraftID: c.Param("draft_id"), TestID: c.Param("test_id"), Request: q})
 	})
+	r.Get("/api/cameras/:camera_id/settings", func(c router.Context) error {
+		v, e := service.CameraSettings(c.Context(), string(camera(c)))
+		return managementResult(c, v, e)
+	})
+	r.Patch("/api/cameras/:camera_id", func(c router.Context) error {
+		var q api.RenameCameraRequest
+		if e := decodeManagement(c, &q); e != nil {
+			return managementResult(c, nil, e)
+		}
+		return h.managementDispatch(c, api.RenameCameraCommand, viewer.RenameCamera{CameraID: string(camera(c)), Request: q})
+	})
+	r.Delete("/api/cameras/:camera_id", func(c router.Context) error {
+		var q api.RemoveCameraRequest
+		if e := decodeManagement(c, &q); e != nil {
+			return managementResult(c, nil, e)
+		}
+		return h.managementDispatch(c, api.RemoveCameraCommand, viewer.RemoveCamera{CameraID: string(camera(c)), Request: q})
+	})
 	r.Post("/api/cameras", func(c router.Context) error {
 		var q api.SaveCameraRequest
 		if e := decodeManagement(c, &q); e != nil {
@@ -210,6 +228,12 @@ func (h Routes) managementDraftPost(c router.Context) error {
 			return managementResult(c, nil, e)
 		}
 		return h.managementDispatch(c, api.ImportDraftCommand, viewer.ImportDraft{Request: q})
+	case len(parts) == 2 && parts[1] == "stop-viewers":
+		var q api.StopViewersRequest
+		if e := decodeManagement(c, &q); e != nil {
+			return managementResult(c, nil, e)
+		}
+		return h.managementDispatch(c, api.StopViewersCommand, viewer.StopViewers{DraftID: parts[0], Request: q})
 	case len(parts) == 2 && parts[1] == "tests":
 		var q api.CreateTestRequest
 		if e := decodeManagement(c, &q); e != nil {

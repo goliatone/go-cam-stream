@@ -43,6 +43,8 @@ type cameraDraft struct {
 	testOutcome     api.TestStage // terminal intent, independent of fallible cleanup
 	testCancel      context.CancelFunc
 	cancelRequested bool
+	addressChange   bool   // a settings draft that moves its camera to config's address
+	fence           func() // releases the admission fence a settings draft holds
 }
 type managementOperation struct {
 	owner, target string
@@ -192,12 +194,15 @@ func (s *CameraManagementService) operation(ctx context.Context, m api.Mutation,
 		if s.stopped.Load() {
 			err = cs.NewError(cs.CodeServerUnavailable, nil)
 		} else if err = ctx.Err(); err == nil {
-			blockedSave = kind == api.OperationSave && s.pendingSave != nil
+			// One managed-state change commits at a time. Saves, renames and
+			// removals wait for an uncertain predecessor to be resolved.
+			commits := kind == api.OperationSave || kind == api.OperationRename || kind == api.OperationRemove
+			blockedSave = commits && s.pendingSave != nil
 			if blockedSave {
 				err = api.ManagementFailure(api.CodeOperationInProgress)
 			} else {
 				result, err = fn()
-				savePending = kind == api.OperationSave && s.pendingSave.matches(owner, m.OperationKey)
+				savePending = commits && s.pendingSave.matches(owner, m.OperationKey)
 			}
 		}
 	}
@@ -250,6 +255,9 @@ func settleManagementOperation(op *managementOperation, result any, err error) {
 		op.status.Revision = v.DraftRevision
 	case api.SaveCameraResponse:
 		op.status.Saved = &v
+	case api.CameraChange:
+		op.status.CandidateID = v.CameraID
+		op.status.Change = &v
 	}
 }
 
@@ -366,6 +374,7 @@ func (s *CameraManagementService) ownedDraft(ctx context.Context, id string) (*c
 		}
 		d.review.State = api.DraftExpired
 		s.discardCredential(d)
+		s.releaseFence(d)
 		return nil, api.ManagementFailure(api.CodeDraftExpired)
 	}
 	return d, nil
@@ -406,6 +415,7 @@ func (s *CameraManagementService) PatchDraft(ctx context.Context, id string, r a
 			if err := s.replaceDraftPassword(d, *r.Credentials); err != nil {
 				return nil, err
 			}
+			d.review.Authentication = api.AuthenticationCredentials
 			s.identities.Release(id)
 			d.passedAt, d.testOutcome, d.review.Test = time.Time{}, "", nil
 			d.review.Revision++
@@ -453,6 +463,7 @@ func (s *CameraManagementService) CancelDraft(ctx context.Context, id string, r 
 			return pendingCleanup(d), err
 		}
 		s.discardCredential(d)
+		s.releaseFence(d)
 		d.review.State = api.DraftCanceled
 		return cloneReview(d.review), nil
 	})
@@ -467,10 +478,28 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 	}
 	defer s.release()
 	if s.pendingSave.matches(principal(ctx), key) && s.options.Policy.CanManage(ctx) {
+		kind := s.pendingSave.kind
 		if err := s.recoverSave(ctx); err != nil {
 			body := api.ManagementPublicError(err).Error
-			return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationUnknown, RuntimeEpoch: s.epoch, Error: &body}, nil
+			return api.OperationResult{OperationKey: key, Kind: kind, State: api.OperationUnknown, RuntimeEpoch: s.epoch, Error: &body}, nil
 		}
+	}
+	if receipt := s.receipt(principal(ctx), key); receipt != nil && !receipt.isSave() {
+		if err := s.options.Policy.Require(ctx); err != nil {
+			return api.OperationResult{}, err
+		}
+		if candidate != "" && candidate != string(receipt.CandidateID) {
+			return api.OperationResult{}, denied()
+		}
+		change := s.changeResponse(receipt.CandidateID, receipt.Kind == api.OperationRemove, 0)
+		return api.OperationResult{OperationKey: key, Kind: receipt.Kind, State: api.OperationSucceeded, RuntimeEpoch: s.epoch, CandidateID: string(receipt.CandidateID), Change: &change}, nil
+	}
+	if removed := s.removedCamera(principal(ctx), key); removed != nil {
+		if candidate != "" && candidate != string(removed.ID) {
+			return api.OperationResult{}, denied()
+		}
+		// The camera this save created has been removed since.
+		return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationExpired, RuntimeEpoch: s.epoch, CandidateID: string(removed.ID)}, nil
 	}
 	record, saveErr := s.savedCamera(ctx, key)
 	if saveErr != nil {
@@ -494,6 +523,9 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 		if len(hint) > 0 {
 			lookup = hint[0]
 		}
+		if lookup.Kind == api.OperationRename || lookup.Kind == api.OperationRemove {
+			return s.missingChange(ctx, key, lookup.Kind, candidate, epoch), nil
+		}
 		save := lookup.Kind == "" || lookup.Kind == api.OperationSave
 		// A saved camera may have a rotation whose receipt was pruned or
 		// discarded by rollback preparation. Its creation anchor cannot
@@ -516,6 +548,24 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 	var result api.OperationResult
 	_ = json.Unmarshal(body, &result)
 	return result, nil
+}
+
+// missingChange answers a rename or removal lookup with no receipt and no
+// cached operation. In this runtime the request never arrived. After a restart
+// a removal whose camera is still there did not commit. Otherwise the receipt
+// may have expired or been dropped by rollback preparation, so the outcome is
+// expired and the page compares the camera it can read.
+func (s *CameraManagementService) missingChange(ctx context.Context, key string, kind api.OperationKind, candidate, epoch string) api.OperationResult {
+	result := api.OperationResult{OperationKey: key, Kind: kind, State: api.OperationNotFound, RuntimeEpoch: s.epoch}
+	if epoch == s.epoch {
+		return result
+	}
+	if kind == api.OperationRemove && candidate != "" && s.options.Viewer.canUpdateCredentials(ctx, cs.CameraID(candidate)) {
+		result.State = api.OperationNotCommitted
+		return result
+	}
+	result.State, result.CandidateID = api.OperationExpired, candidate
+	return result
 }
 
 // Called while holding the management gate. An exact save can be retried only
@@ -585,6 +635,7 @@ func (s *CameraManagementService) expire(ctx context.Context) {
 			}
 			if expired {
 				s.discardCredential(d)
+				s.releaseFence(d)
 				d.review.State = api.DraftExpired
 			}
 		}
@@ -619,6 +670,7 @@ func (s *CameraManagementService) Close(ctx context.Context) error {
 			break
 		}
 		s.discardCredential(d)
+		s.releaseFence(d)
 	}
 	if cleanupErr == nil {
 		s.durable.Destroy()

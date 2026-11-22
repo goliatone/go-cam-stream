@@ -35,6 +35,15 @@ Use --listen 0.0.0.0 --host MAC_LAN_IP_OR_DNS for access from the Linux server.
 Keep the exported tools/ folder beside this binary. Audio is off by default; audio-on requires runtime-3. No recording.
 `
 
+var errAppSessionRuntime = errors.New("the bundled camera runtime is unavailable")
+
+// These app-session exit statuses are also consumed by the native HelperClient.
+const (
+	appSessionRuntimeExit  = 70
+	appSessionBusyExit     = 71
+	appSessionSettingsExit = 72
+)
+
 func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		if _, err := fmt.Fprint(out, usage); err != nil {
@@ -51,6 +60,14 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 			return 0
 		}
 		_, _ = fmt.Fprintln(stderr, err) //nolint:errcheck // Exit code still reports failure if stderr is closed.
+		switch {
+		case errors.Is(err, errAppSessionRuntime):
+			return appSessionRuntimeExit
+		case errors.Is(err, maccamera.ErrAppSessionBusy):
+			return appSessionBusyExit
+		case errors.Is(err, maccamera.ErrAppSessionSettings):
+			return appSessionSettingsExit
+		}
 		return 1
 	}
 	return 0
@@ -105,6 +122,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if args[0] != "stop" && args[0] != "status" && args[0] != "export-legacy" {
 		s.Tools, err = maccamera.ResolveTools()
 		if err != nil {
+			if args[0] == "app-session" {
+				return errAppSessionRuntime
+			}
 			return err
 		}
 	}

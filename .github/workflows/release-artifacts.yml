@@ -47,6 +47,8 @@ jobs:
           fetch-depth: 0
       - name: Check taskfile release flow in disposable repositories
         run: python3 -m unittest discover -s scripts -p 'test_taskfile_release.py' -q
+      - name: Check app and dashboard icon assets
+        run: python3 -m unittest discover -s macos -p 'test_app_icon.py' -q
       - id: plan
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -233,6 +235,7 @@ jobs:
         run: |
           ./scripts/build-web.sh
           npm --prefix frontend test
+          go test ./data
           curl --fail --location --retry 3 --max-time 180 \
             https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_linux_arm64 -o "$RUNNER_TEMP/go2rtc"
           # package.sh verifies the pinned digest before copying/building.

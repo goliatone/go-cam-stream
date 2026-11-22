@@ -15,7 +15,7 @@ import (
 )
 
 func normalizeDraft(input api.DraftInput) (api.DraftInput, rtsp.Config, error) {
-	if input.Name == "" || len(input.Name) > rtsp.MaxLabelBytes || !utf8.ValidString(input.Name) || strings.ContainsFunc(input.Name, unicode.IsControl) || len(input.Endpoint) > 8192 {
+	if !validCameraName(input.Name) || len(input.Endpoint) > 8192 {
 		return input, rtsp.Config{}, invalid()
 	}
 	u, err := url.Parse(input.Endpoint)
@@ -42,9 +42,19 @@ func normalizeDraft(input api.DraftInput) (api.DraftInput, rtsp.Config, error) {
 	if input.Credentials != nil && !validManagedCredential(ManagedCredential{Username: []byte(input.Credentials.Username), Password: []byte(input.Credentials.Password)}) {
 		return input, cfg, api.ManagementFailure(api.CodeCredentialsRequired)
 	}
-	normalized := url.URL{Scheme: "rtsp", Host: net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), Path: cfg.Profiles[0].Path, RawQuery: cfg.Profiles[0].Query}
-	input.Endpoint = normalized.String()
+	input.Endpoint = endpointString(cfg.Host, cfg.Port, cfg.Profiles[0].Path, cfg.Profiles[0].Query)
 	return input, cfg, nil
+}
+
+// validCameraName is the display-name rule for drafts and renames.
+func validCameraName(name string) bool {
+	return name != "" && len(name) <= rtsp.MaxLabelBytes && utf8.ValidString(name) && !strings.ContainsFunc(name, unicode.IsControl)
+}
+
+// endpointString is the normalized address form reviews and settings return.
+func endpointString(host string, port uint16, path, query string) string {
+	u := url.URL{Scheme: "rtsp", Host: net.JoinHostPort(host, strconv.Itoa(int(port))), Path: path, RawQuery: query}
+	return u.String()
 }
 func importCamera(request api.ImportDraftRequest) (api.DraftInput, error) {
 	fail := func() (api.DraftInput, error) { return api.DraftInput{}, api.ManagementFailure(api.CodeImportInvalid) }

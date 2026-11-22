@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/goliatone/go-admin/admin"
 	"github.com/goliatone/go-cam-stream/config"
@@ -27,9 +28,22 @@ func newDevelopmentController(cfg config.Config, logger admin.Logger, opts Devel
 	if opts.Go2RTC != "" {
 		cfg.Backend.Executable = opts.Go2RTC
 	}
-	mediaAddress, err := developmentMediaAddress(opts.MediaAddress, net.InterfaceAddrs)
-	if err != nil {
-		return nil, err
+	var mediaAddress string
+	if opts.MediaAddress == "auto" {
+		mediaAddress = automaticDevelopmentMediaAddress(net.Interfaces, (*net.Interface).Addrs)
+		if logger != nil {
+			if mediaAddress == "127.0.0.1" {
+				logger.Info("No private IPv4 on an active Mac network interface. WebRTC media uses loopback; Firefox may require --media-address.")
+			} else {
+				logger.Info("WebRTC media will bind " + mediaAddress + ". HTTP and worker control remain loopback.")
+			}
+		}
+	} else {
+		var err error
+		mediaAddress, err = developmentMediaAddress(opts.MediaAddress, net.InterfaceAddrs)
+		if err != nil {
+			return nil, err
+		}
 	}
 	cfg.Backend.MediaAddress, cfg.Backend.CandidateAddress = mediaAddress, mediaAddress
 	workers := filepath.Join(cfg.Backend.RuntimeDir, "workers")
@@ -97,8 +111,33 @@ func (e developmentSourceEncoder) Encode(ctx context.Context, source cs.Source) 
 	return go2rtc.Input{URL: "exec:" + strconv.Quote(e.ffmpeg) + " -hide_banner -loglevel error -nostdin" + inputArgs + " -an -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency -profile:v baseline -g 30 -bf 0 -rtsp_transport tcp -f rtsp {output}"}, nil
 }
 
-// developmentMediaAddress is an explicit media-only opt-in. The HTTP ingress,
-// worker API and RTSP listener keep their independent loopback boundaries.
+// Choose a private IPv4 from an active macOS Wi-Fi or Ethernet interface.
+// Ignore loopback, tunnels and virtual bridges during automatic selection.
+func automaticDevelopmentMediaAddress(list func() ([]net.Interface, error), addresses func(*net.Interface) ([]net.Addr, error)) string {
+	interfaces, err := list()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	const active = net.FlagUp | net.FlagRunning
+	for _, iface := range interfaces {
+		if !strings.HasPrefix(iface.Name, "en") || iface.Flags&active != active {
+			continue
+		}
+		addrs, err := addresses(&iface)
+		if err != nil {
+			continue
+		}
+		for _, address := range addrs {
+			prefix, err := netip.ParsePrefix(address.String())
+			if err == nil && prefix.Addr().Is4() && prefix.Addr().IsPrivate() {
+				return prefix.Addr().String()
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
+// Validate an explicit media address. HTTP and worker control stay on loopback.
 func developmentMediaAddress(value string, interfaces func() ([]net.Addr, error)) (string, error) {
 	if value == "" || value == "127.0.0.1" {
 		return "127.0.0.1", nil

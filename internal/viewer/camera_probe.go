@@ -88,7 +88,9 @@ func (s *CameraManagementService) CreateTest(ctx context.Context, id string, r a
 			if err != nil {
 				return nil, err
 			}
-		} else {
+		}
+		// A new camera and an address change test and pin a fresh address.
+		if !d.review.CredentialUpdate || d.addressChange {
 			if err = s.observeBaseIdentities(ctx); err != nil {
 				return nil, err
 			}
@@ -98,18 +100,24 @@ func (s *CameraManagementService) CreateTest(ctx context.Context, id string, r a
 					return nil, err
 				}
 			}
+		}
+		if !d.review.CredentialUpdate {
 			record = ManagedRecord{ID: cs.CameraID(d.review.CandidateID), PhysicalID: cs.PhysicalCameraID(d.review.CandidateID), Name: d.review.Name, Binding: d.binding, Path: d.config.Profiles[0].Path, Query: d.config.Profiles[0].Query}
 		}
 		if err = s.reserveDraft(ctx, d); err != nil {
 			return nil, err
 		}
 		if d.review.CredentialUpdate {
-			release, _, err := s.prepareCredentialUpdate(ctx, record)
+			// Park the saved source; the test then dials the draft's settings.
+			release, _, err := s.prepareCredentialUpdate(ctx, d, record)
 			if err != nil {
 				s.identities.Release(id)
 				return nil, err
 			}
 			defer release()
+			if d.addressChange {
+				record.Binding, record.Path, record.Query = d.binding, d.config.Profiles[0].Path, d.config.Profiles[0].Query
+			}
 		}
 		if d.credential != nil {
 			record.CredentialID = d.credential.ID
@@ -124,7 +132,7 @@ func (s *CameraManagementService) CreateTest(ctx context.Context, id string, r a
 		d.passedAt = time.Time{}
 		d.testOutcome = ""
 		d.review.State = api.DraftTesting
-		if !d.review.CredentialUpdate {
+		if !d.review.CredentialUpdate || d.addressChange {
 			d.review.DialAddress = d.binding.Selected
 		}
 		d.review.Test = &api.TestResult{ID: randomManagementID(), AttemptKey: r.OperationKey, DraftRevision: d.review.Revision, Stage: api.TestNegotiating, ExpiresAt: now.Add(api.TestDeadline), Cleanup: api.CleanupPending}

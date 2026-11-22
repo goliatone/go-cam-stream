@@ -111,3 +111,44 @@ func TestDevelopmentMediaAddress(t *testing.T) {
 		t.Fatal("inspection failure accepted")
 	}
 }
+
+func TestAutomaticDevelopmentMediaAddress(t *testing.T) {
+	const active = net.FlagUp | net.FlagRunning
+	interfaces := []net.Interface{
+		{Name: "lo0", Flags: active | net.FlagLoopback},
+		{Name: "bridge100", Flags: active},
+		{Name: "utun6", Flags: active},
+		{Name: "en2", Flags: net.FlagUp},
+		{Name: "en3", Flags: active},
+		{Name: "en0", Flags: active},
+	}
+	list := func() ([]net.Interface, error) { return interfaces, nil }
+	addresses := func(iface *net.Interface) ([]net.Addr, error) {
+		switch iface.Name {
+		case "en3":
+			return nil, errors.New("interface disappeared")
+		case "en0":
+			return []net.Addr{
+				&net.IPNet{IP: net.ParseIP("fd00::10"), Mask: net.CIDRMask(64, 128)},
+				&net.IPNet{IP: net.ParseIP("169.254.1.2"), Mask: net.CIDRMask(16, 32)},
+				&net.IPNet{IP: net.ParseIP("8.8.8.8"), Mask: net.CIDRMask(24, 32)},
+				&net.IPNet{IP: net.ParseIP("172.20.0.38"), Mask: net.CIDRMask(24, 32)},
+			}, nil
+		default:
+			t.Fatalf("unexpected address lookup on %s", iface.Name)
+			return nil, nil
+		}
+	}
+	if got := automaticDevelopmentMediaAddress(list, addresses); got != "172.20.0.38" {
+		t.Fatalf("got %s, want the active private IPv4", got)
+	}
+	interfaces = interfaces[:len(interfaces)-1]
+	if got := automaticDevelopmentMediaAddress(list, addresses); got != "127.0.0.1" {
+		t.Fatalf("got %s, want loopback when no eligible interface is available", got)
+	}
+	if got := automaticDevelopmentMediaAddress(func() ([]net.Interface, error) {
+		return nil, errors.New("interface list unavailable")
+	}, addresses); got != "127.0.0.1" {
+		t.Fatalf("got %s, want loopback after discovery failure", got)
+	}
+}

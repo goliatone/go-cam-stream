@@ -31,11 +31,14 @@ func PrepareManagedRollback(ctx context.Context, store ManagedStateRepository) (
 			creationReceipts = append(creationReceipts, receipt)
 		}
 	}
+	// Older hosts read neither editing receipts nor tombstones. A removed
+	// camera's creation receipt left with it, so dropping its tombstone frees
+	// nothing that a creation replay could reach.
 	removed := len(catalog.Receipts) - len(creationReceipts)
-	if removed == 0 {
+	if removed == 0 && len(catalog.Removed) == 0 {
 		return 0, nil
 	}
-	catalog.Receipts = creationReceipts
+	catalog.Receipts, catalog.Removed = creationReceipts, nil
 	payload, err := json.Marshal(catalog)
 	if err != nil {
 		return 0, storageFailure()

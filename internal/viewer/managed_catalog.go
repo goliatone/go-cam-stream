@@ -45,16 +45,33 @@ func (ManagedCredential) String() string   { return "[managed credential]" }
 func (ManagedCredential) GoString() string { return "[managed credential]" }
 
 type ManagedReceipt struct {
-	OperationKey string      `json:"operation_key"`
-	Owner        string      `json:"owner"`
-	CandidateID  cs.CameraID `json:"candidate_id"`
-	Fingerprint  string      `json:"fingerprint"` // save contains only IDs/revisions, never a credential hash
-	ExpiresAt    time.Time   `json:"expires_at"`
+	OperationKey string            `json:"operation_key"`
+	Owner        string            `json:"owner"`
+	CandidateID  cs.CameraID       `json:"candidate_id"`
+	Kind         api.OperationKind `json:"kind,omitempty"` // empty for a save or sign-in change
+	Fingerprint  string            `json:"fingerprint"`    // save contains only IDs/revisions, never a credential hash
+	ExpiresAt    time.Time         `json:"expires_at"`
 }
+
+// isSave reports whether a receipt records a draft save rather than a change
+// made directly to a saved camera.
+func (r ManagedReceipt) isSave() bool { return r.Kind == "" }
+
+// ManagedTombstone keeps a removed camera's creation anchor while a receipt
+// still names it, so neither its creation nor its removal can be replayed into
+// a second camera. Tombstones leave with their last receipt.
+type ManagedTombstone struct {
+	ID          cs.CameraID `json:"id"`
+	Creator     string      `json:"creator"`
+	CreationKey string      `json:"creation_key"`
+	RemovedAt   time.Time   `json:"removed_at"`
+}
+
 type ManagedCatalog struct {
 	Cameras     []ManagedRecord     `json:"cameras"`
 	Credentials []ManagedCredential `json:"credentials"`
 	Receipts    []ManagedReceipt    `json:"receipts"`
+	Removed     []ManagedTombstone  `json:"removed,omitempty"`
 }
 
 func (ManagedCatalog) String() string   { return "[managed catalog redacted]" }
@@ -79,7 +96,7 @@ func DecodeManagedCatalog(state ManagedState) (ManagedCatalog, error) {
 	return out, nil
 }
 func (m ManagedCatalog) Validate() error {
-	if m.Cameras == nil || m.Credentials == nil || m.Receipts == nil || len(m.Cameras) > 65535 || len(m.Credentials) > len(m.Cameras) || len(m.Receipts) > api.MaxSaveReceipts {
+	if m.Cameras == nil || m.Credentials == nil || m.Receipts == nil || len(m.Cameras) > 65535 || len(m.Credentials) > len(m.Cameras) || len(m.Receipts) > api.MaxSaveReceipts || len(m.Removed) > api.MaxSaveReceipts {
 		return storageFailure()
 	}
 	ids := map[cs.CameraID]bool{}
@@ -122,10 +139,31 @@ func (m ManagedCatalog) Validate() error {
 	if len(used) != len(credentials) {
 		return storageFailure()
 	}
+	removed := map[cs.CameraID]string{} // tombstone ID -> creator
+	for _, t := range m.Removed {
+		key := t.Creator + "\x00" + t.CreationKey
+		if !config.ValidID(string(t.ID)) || !config.ValidLogin(t.Creator) || ids[t.ID] || removed[t.ID] != "" || anchors[key] || t.RemovedAt.IsZero() || (api.Mutation{OperationKey: t.CreationKey, RuntimeEpoch: "stored"}).Validate() != nil {
+			return storageFailure()
+		}
+		removed[t.ID] = t.Creator
+		anchors[key] = true
+	}
 	receipts := map[string]bool{}
 	for _, r := range m.Receipts {
 		key := r.Owner + "\x00" + r.OperationKey
-		if receipts[key] || !ids[r.CandidateID] || (api.Mutation{OperationKey: r.OperationKey, RuntimeEpoch: "stored"}).Validate() != nil || r.Fingerprint == "" || r.ExpiresAt.IsZero() {
+		if receipts[key] || (api.Mutation{OperationKey: r.OperationKey, RuntimeEpoch: "stored"}).Validate() != nil || r.Fingerprint == "" || r.ExpiresAt.IsZero() {
+			return storageFailure()
+		}
+		receipts[key] = true
+		// A removal receipt names its tombstone. A change receipt never reuses a
+		// creation key; a save receipt may only reuse its own camera's.
+		if r.Kind == api.OperationRemove {
+			if removed[r.CandidateID] != r.Owner || anchors[key] {
+				return storageFailure()
+			}
+			continue
+		}
+		if !ids[r.CandidateID] || (!r.isSave() && (r.Kind != api.OperationRename || anchors[key])) {
 			return storageFailure()
 		}
 		matched := false
@@ -137,7 +175,6 @@ func (m ManagedCatalog) Validate() error {
 		if !matched {
 			return storageFailure()
 		}
-		receipts[key] = true
 	}
 	return nil
 }

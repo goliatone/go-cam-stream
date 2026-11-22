@@ -192,6 +192,51 @@ func (m SaveCamera) Validate() error {
 	return m.Request.Mutation.Validate()
 }
 
+type RenameCamera struct {
+	Request  api.RenameCameraRequest `json:"request"`
+	CameraID string                  `json:"camera_id"`
+}
+
+func (RenameCamera) Type() string       { return api.RenameCameraCommand }
+func (RenameCamera) String() string     { return "[management command redacted]" }
+func (m RenameCamera) GoString() string { return m.String() }
+func (m RenameCamera) Validate() error {
+	if !config.ValidID(m.CameraID) {
+		return invalid()
+	}
+	return m.Request.Validate()
+}
+
+type RemoveCamera struct {
+	Request  api.RemoveCameraRequest `json:"request"`
+	CameraID string                  `json:"camera_id"`
+}
+
+func (RemoveCamera) Type() string       { return api.RemoveCameraCommand }
+func (RemoveCamera) String() string     { return "[management command redacted]" }
+func (m RemoveCamera) GoString() string { return m.String() }
+func (m RemoveCamera) Validate() error {
+	if !config.ValidID(m.CameraID) {
+		return invalid()
+	}
+	return m.Request.Validate()
+}
+
+type StopViewers struct {
+	Request api.StopViewersRequest `json:"request"`
+	DraftID string                 `json:"draft_id"`
+}
+
+func (StopViewers) Type() string       { return api.StopViewersCommand }
+func (StopViewers) String() string     { return "[management command redacted]" }
+func (m StopViewers) GoString() string { return m.String() }
+func (m StopViewers) Validate() error {
+	if !config.ValidID(m.DraftID) {
+		return invalid()
+	}
+	return m.Request.Validate()
+}
+
 type RecoverCamera struct {
 	Request api.Mutation  `json:"request"`
 	Ref     api.StreamRef `json:"ref"`
@@ -258,6 +303,21 @@ func RegisterManagement(bus *admin.CommandBus, service CameraManagement, recover
 	}
 	if err = registerManagementCommand(set, func(ctx context.Context, m SaveCamera) (api.SaveCameraResponse, error) {
 		return service.SaveCamera(ctx, m.Request)
+	}); err != nil {
+		return nil, err
+	}
+	if err = registerManagementCommand(set, func(ctx context.Context, m RenameCamera) (api.CameraChange, error) {
+		return service.RenameCamera(ctx, m.CameraID, m.Request)
+	}); err != nil {
+		return nil, err
+	}
+	if err = registerManagementCommand(set, func(ctx context.Context, m RemoveCamera) (api.CameraChange, error) {
+		return service.RemoveCamera(ctx, m.CameraID, m.Request)
+	}); err != nil {
+		return nil, err
+	}
+	if err = registerManagementCommand(set, func(ctx context.Context, m StopViewers) (api.DraftReview, error) {
+		return service.StopViewers(ctx, m.DraftID, m.Request)
 	}); err != nil {
 		return nil, err
 	}

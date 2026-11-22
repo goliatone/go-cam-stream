@@ -286,15 +286,35 @@ func TestAppSessionDuplicateAndNonOwnerStop(t *testing.T) {
 	if r.Event != "session_error" || r.Error == nil || r.Error.Code != "busy" {
 		t.Fatal("duplicate session accepted")
 	}
-	other.finished(t)
+	select {
+	case err := <-other.done:
+		if !errors.Is(err, ErrAppSessionBusy) {
+			t.Fatalf("duplicate session exit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("duplicate session did not exit")
+	}
 	lock, err := s.lock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close() //nolint:errcheck // Test cleanup.
-	owner.request(t, "stop", nil)
-	if _, err = s.lock(); err == nil {
-		t.Fatal("non-owned instance unlocked")
+	t.Cleanup(func() { _ = lock.Close() })
+	if reply := owner.request(t, "start", nil); reply.Error == nil || reply.Error.Code != "busy" || reply.Result != nil {
+		t.Fatalf("start accepted while another supervisor holds the instance without a socket: %+v", reply)
+	}
+	if reply := owner.request(t, "stop", nil); reply.Error == nil || reply.Error.Code != "busy" || reply.Result != nil {
+		t.Fatalf("stop confirmed release while another supervisor holds the instance: %+v", reply)
+	}
+	if _, err = s.lock(); !errors.Is(err, errCameraBusy) {
+		t.Fatalf("stop changed the non-owned instance lock: %v", err)
+	}
+	if err = lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reply := owner.request(t, "stop", nil)
+	status, ok := reply.Result.(map[string]any)
+	if reply.Error != nil || !ok || status["state"] != "stopped" {
+		t.Fatalf("stop did not confirm release after the supervisor exited: %+v", reply)
 	}
 	owner.request(t, "quit", nil)
 	owner.finished(t)
