@@ -77,20 +77,20 @@ func (s *CameraManagementService) reserveDraft(ctx context.Context, d *cameraDra
 	return err
 }
 
-// Lock admission while removing an inactive source and its old worker definition.
+// Lock admission while releasing an inactive source's backend resources.
 // The caller releases the fence after testing or after resolving the durable save.
-func (s *CameraManagementService) prepareCredentialUpdate(ctx context.Context, record ManagedRecord) (func(), error) {
+func (s *CameraManagementService) prepareCredentialUpdate(ctx context.Context, record ManagedRecord) (func(), cs.SourceKey, error) {
 	camera, err := compileManaged(ctx, record)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	release, err := s.options.Viewer.beginCredentialUpdate(record.ID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if err = s.options.Core.RetireInactiveSource(ctx, camera.Camera, "default"); err != nil {
+	if err = s.options.Core.PrepareInactiveSource(ctx, camera.Camera, "default"); err != nil {
 		release()
-		return nil, err
+		return nil, "", err
 	}
-	return release, nil
+	return release, camera.Sources["default"], nil
 }

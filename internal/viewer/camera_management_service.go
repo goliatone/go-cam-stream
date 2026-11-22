@@ -51,6 +51,7 @@ type managementOperation struct {
 	result        any
 	err           error
 	expires       time.Time
+	blockedSave   bool
 	recovery      *pendingProbeCleanup
 }
 type CameraManagementService struct {
@@ -156,21 +157,33 @@ func (s *CameraManagementService) operation(ctx context.Context, m api.Mutation,
 	}
 	now := time.Now()
 	count := 0
+	var oldestBlocked *managementOperation
+	var oldestBlockedKey string
 	for key, op := range s.operations {
 		if op.status.State != api.OperationProcessing && op.status.State != api.OperationUnknown && now.After(op.expires) {
 			delete(s.operations, key)
+		} else if op.blockedSave {
+			if oldestBlocked == nil || op.expires.Before(oldestBlocked.expires) {
+				oldestBlocked, oldestBlockedKey = op, key
+			}
 		} else if target != "" && op.target == target && op.owner == owner {
 			count++
 		}
 	}
-	if len(s.operations) >= api.MaxOperations || count >= api.MaxDraftOperations {
+	if count >= api.MaxDraftOperations || (len(s.operations) >= api.MaxOperations && oldestBlocked == nil) {
 		s.opMu.Unlock()
 		return nil, cs.NewError(cs.CodeCapacityExceeded, nil)
+	}
+	// Keep definite outcomes for blocked saves without letting them exhaust
+	// the space needed for a real mutation or its recovery record.
+	if len(s.operations) >= api.MaxOperations {
+		delete(s.operations, oldestBlockedKey)
 	}
 	op := &managementOperation{owner: owner, target: target, digest: digest, expires: now.Add(api.DraftLifetime + api.TerminalRecoveryLifetime), status: api.OperationResult{OperationKey: m.OperationKey, Kind: kind, State: api.OperationProcessing, RuntimeEpoch: s.epoch}}
 	s.operations[key] = op
 	s.opMu.Unlock()
 	var result any
+	var savePending, blockedSave bool
 	err = s.acquire(ctx)
 	if err == nil {
 		// Publish the result before releasing the transition gate. A cleanup
@@ -179,17 +192,24 @@ func (s *CameraManagementService) operation(ctx context.Context, m api.Mutation,
 		if s.stopped.Load() {
 			err = cs.NewError(cs.CodeServerUnavailable, nil)
 		} else if err = ctx.Err(); err == nil {
-			result, err = fn()
+			blockedSave = kind == api.OperationSave && s.pendingSave != nil
+			if blockedSave {
+				err = api.ManagementFailure(api.CodeOperationInProgress)
+			} else {
+				result, err = fn()
+				savePending = kind == api.OperationSave && s.pendingSave.matches(owner, m.OperationKey)
+			}
 		}
 	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	op.blockedSave = blockedSave
 	pending, recovering := result.(pendingProbeCleanup)
 	if recovering {
 		result = nil
 	}
 	settleManagementOperation(op, result, err)
-	if kind == api.OperationSave && api.ManagementPublicError(err).Error.Code == string(api.CodeSaveUnknown) {
+	if savePending && api.ManagementPublicError(err).Error.Code == string(api.CodeSaveUnknown) {
 		op.status.State = api.OperationUnknown
 	}
 	if recovering && cs.DescribeError(err).Code == cs.CodeCleanupIncomplete {
@@ -441,35 +461,28 @@ func (s *CameraManagementService) CancelDraft(ctx context.Context, id string, r 
 	}
 	return cloneReview(v.(api.DraftReview)), nil
 }
-func (s *CameraManagementService) Operation(ctx context.Context, key, candidate, epoch string) (api.OperationResult, error) {
+func (s *CameraManagementService) Operation(ctx context.Context, key, candidate, epoch string, hint ...api.OperationLookup) (api.OperationResult, error) {
 	if err := s.acquire(ctx); err != nil {
 		return api.OperationResult{}, err
 	}
-	if err := s.recoverSave(ctx); err != nil {
-		pending := s.pendingSave
-		if pending != nil && pending.owner == principal(ctx) && pending.key == key && s.options.Policy.CanManage(ctx) {
+	defer s.release()
+	if s.pendingSave.matches(principal(ctx), key) && s.options.Policy.CanManage(ctx) {
+		if err := s.recoverSave(ctx); err != nil {
 			body := api.ManagementPublicError(err).Error
-			s.release()
 			return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationUnknown, RuntimeEpoch: s.epoch, Error: &body}, nil
 		}
-		s.release()
-		return api.OperationResult{}, denied()
 	}
 	record, saveErr := s.savedCamera(ctx, key)
 	if saveErr != nil {
-		s.release()
 		return api.OperationResult{}, saveErr
 	}
 	if record != nil {
 		if candidate != "" && candidate != string(record.ID) {
-			s.release()
 			return api.OperationResult{}, denied()
 		}
 		response := s.saveResponse(record, key)
-		s.release()
 		return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationSucceeded, RuntimeEpoch: s.epoch, CandidateID: string(record.ID), Saved: &response}, nil
 	}
-	s.release()
 	if err := s.options.Policy.Require(ctx); err != nil {
 		return api.OperationResult{}, err
 	}
@@ -477,8 +490,22 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 	defer s.opMu.Unlock()
 	op := s.operations[principal(ctx)+"\x00"+key]
 	if op == nil {
+		var lookup api.OperationLookup
+		if len(hint) > 0 {
+			lookup = hint[0]
+		}
+		save := lookup.Kind == "" || lookup.Kind == api.OperationSave
+		// A saved camera may have a rotation whose receipt was pruned or
+		// discarded by rollback preparation. Its creation anchor cannot
+		// establish the result of an unrelated key.
+		if save && s.options.Viewer.canUpdateCredentials(ctx, cs.CameraID(candidate)) {
+			if epoch == s.epoch && s.canRetryCredentialSave(ctx, lookup.DraftID, candidate) {
+				return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationNotFound, RuntimeEpoch: s.epoch}, nil
+			}
+			return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationExpired, RuntimeEpoch: s.epoch, CandidateID: candidate}, nil
+		}
 		if epoch != s.epoch {
-			if candidate != "" {
+			if save && candidate != "" {
 				return api.OperationResult{OperationKey: key, Kind: api.OperationSave, State: api.OperationNotCommitted, RuntimeEpoch: s.epoch}, nil
 			}
 			return api.OperationResult{}, api.ManagementFailure(api.CodeDraftLost)
@@ -489,6 +516,18 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 	var result api.OperationResult
 	_ = json.Unmarshal(body, &result)
 	return result, nil
+}
+
+// Called while holding the management gate. An exact save can be retried only
+// against its still-current tested draft.
+func (s *CameraManagementService) canRetryCredentialSave(ctx context.Context, id, camera string) bool {
+	d := s.drafts[id]
+	if d == nil || d.owner != principal(ctx) || d.review.CandidateID != camera || !d.review.CredentialUpdate ||
+		d.review.State != api.DraftTested || time.Now().After(d.review.ExpiresAt) || time.Since(d.passedAt) > api.TestPassLifetime {
+		return false
+	}
+	_, err := s.credentialTarget(ctx, d)
+	return err == nil
 }
 
 // Start enables bounded expiry/deadline cleanup under an explicit host lifetime.
@@ -512,22 +551,29 @@ func (s *CameraManagementService) Start(ctx context.Context) error {
 			case <-runtime.Done():
 				return
 			case <-ticker.C:
-				s.expire()
+				s.expire(runtime)
 			}
 		}
 	}()
 	return nil
 }
-func (s *CameraManagementService) expire() {
+func (s *CameraManagementService) expire(ctx context.Context) {
 	if s.stopped.Load() {
 		return
 	}
-	if s.acquire(context.Background()) != nil {
+	if s.acquire(ctx) != nil {
 		return
 	}
 	defer s.release()
 	if s.stopped.Load() {
 		return
+	}
+	if s.pendingSave != nil {
+		recovery, cancel := context.WithTimeout(ctx, s.options.CleanupTimeout)
+		// A later tick retries transient storage errors. The pending save
+		// keeps its admission fence until durability is established.
+		_ = s.recoverSave(recovery)
+		cancel()
 	}
 	now := time.Now()
 	for id, d := range s.drafts {

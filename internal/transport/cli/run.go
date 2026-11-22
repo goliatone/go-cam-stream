@@ -14,6 +14,7 @@ import (
 
 const usage = `camstream serve --config FILE
 camstream config validate --config FILE
+camstream managed-state prepare-rollback --config FILE
 camstream list --origin HTTPS_ORIGIN
 camstream status --origin HTTPS_ORIGIN --camera ID [--stream ID]
 camstream diagnose --origin HTTPS_ORIGIN --camera ID [--stream ID]
@@ -21,15 +22,20 @@ camstream reconnect --origin HTTPS_ORIGIN --camera ID --stream ID
 `
 
 type ServeFunc func(context.Context, string) error
+type PrepareRollbackFunc func(context.Context, string) (int, error)
 
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, serve ServeFunc) int {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, serve ServeFunc, rollback ...PrepareRollbackFunc) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "help" {
 		if _, err := io.WriteString(stdout, usage); err != nil {
 			return 1
 		}
 		return 0
 	}
-	value, err := execute(ctx, args, serve)
+	var prepare PrepareRollbackFunc
+	if len(rollback) != 0 {
+		prepare = rollback[0]
+	}
+	value, err := execute(ctx, args, serve, prepare)
 	if value != nil {
 		if encodeErr := json.NewEncoder(stdout).Encode(value); encodeErr != nil {
 			return 1
@@ -47,17 +53,21 @@ type options struct{ action, path, origin, camera, stream string }
 func parse(args []string) (options, error) {
 	o := options{action: args[0]}
 	args = args[1:]
-	if o.action == "config" {
-		if len(args) == 0 || args[0] != "validate" {
+	if o.action == "config" || o.action == "managed-state" {
+		expected := "validate"
+		if o.action == "managed-state" {
+			expected = "prepare-rollback"
+		}
+		if len(args) == 0 || args[0] != expected {
 			return o, invalid()
 		}
-		o.action = "validate"
+		o.action = expected
 		args = args[1:]
 	}
 	flags := flag.NewFlagSet(o.action, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	switch o.action {
-	case "serve", "validate":
+	case "serve", "validate", "prepare-rollback":
 		flags.StringVar(&o.path, "config", "", "startup configuration")
 	case "list", "status", "diagnose", "reconnect":
 		flags.StringVar(&o.origin, "origin", "", "Serve HTTPS origin")
@@ -79,7 +89,7 @@ func parse(args []string) (options, error) {
 	}
 	return o, nil
 }
-func execute(ctx context.Context, args []string, serve ServeFunc) (any, error) {
+func execute(ctx context.Context, args []string, serve ServeFunc, prepare PrepareRollbackFunc) (any, error) {
 	o, err := parse(args)
 	if errors.Is(err, flag.ErrHelp) {
 		return map[string]string{"usage": usage}, nil
@@ -95,6 +105,16 @@ func execute(ctx context.Context, args []string, serve ServeFunc) (any, error) {
 	}
 	if o.action == "validate" {
 		return validate(ctx, o.path)
+	}
+	if o.action == "prepare-rollback" {
+		if o.path == "" || prepare == nil {
+			return nil, invalid()
+		}
+		removed, err := prepare(ctx, o.path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int{"credential_receipts_removed": removed}, nil
 	}
 	if o.action != "list" && (!config.ValidID(o.camera) || (o.stream != "" && !config.ValidID(o.stream))) {
 		return nil, invalid()

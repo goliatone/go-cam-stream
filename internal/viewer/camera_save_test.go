@@ -2,13 +2,17 @@ package viewer_test
 
 import (
 	"context"
+	"net/netip"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goliatone/go-cam-stream/config"
 	"github.com/goliatone/go-cam-stream/data/api"
 	"github.com/goliatone/go-cam-stream/internal/viewer"
+	cs "github.com/goliatone/go-cam-stream/pkg/camstream"
+	"github.com/goliatone/go-cam-stream/pkg/camstream/strategies/rtsp"
 )
 
 func saveFixture(t *testing.T, configure ...func(*viewer.ManagementOptions)) (*viewer.CameraManagementService, context.Context, *viewer.PrivateStateStore) {
@@ -35,12 +39,31 @@ func saveFixture(t *testing.T, configure ...func(*viewer.ManagementOptions)) (*v
 }
 func testedDraft(t *testing.T, s *viewer.CameraManagementService, ctx context.Context) (api.DraftReview, api.SaveCameraRequest) {
 	t.Helper()
-	d, p := startManagementPreview(t, s, ctx)
-	_, err := s.CompleteTest(ctx, d.ID, p.ID, api.CompleteTestRequest{Mutation: mutation(3), ExpectedRevision: 1, Evidence: api.FrameEvidence{Method: "frames_decoded", Frames: 3, Width: 640, Height: 360}})
+	return testedSave(t, s, ctx, draftRequest(1), 2, 1)
+}
+
+func testedSave(t *testing.T, s *viewer.CameraManagementService, ctx context.Context, create api.CreateDraftRequest, testOperation int, generation uint64) (api.DraftReview, api.SaveCameraRequest) {
+	t.Helper()
+	d, err := s.CreateDraft(ctx, create)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return d, api.SaveCameraRequest{Mutation: mutation(4), DraftID: d.ID, ExpectedRevision: 1, CatalogRevision: api.CatalogRevision{RuntimeEpoch: "epoch", Generation: 1}}
+	p, err := s.CreateTest(ctx, d.ID, api.CreateTestRequest{
+		Mutation: mutation(testOperation), ExpectedRevision: d.Revision, Offer: api.SDPOffer{Type: "offer", SDP: "v=0\r\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.CompleteTest(ctx, d.ID, p.ID, api.CompleteTestRequest{
+		Mutation: mutation(testOperation + 1), ExpectedRevision: d.Revision, Evidence: api.FrameEvidence{Method: "frames_decoded", Frames: 3, Width: 640, Height: 360},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, api.SaveCameraRequest{
+		Mutation: mutation(testOperation + 2), DraftID: d.ID, ExpectedRevision: d.Revision,
+		CatalogRevision: api.CatalogRevision{RuntimeEpoch: "epoch", Generation: generation},
+	}
 }
 func TestManagementSaveConcurrentReplayRestartAndDisabledAccess(t *testing.T) {
 	s, ctx, store := saveFixture(t)
@@ -130,6 +153,187 @@ func TestManagementSaveUnknownBarrierAndCancellationFence(t *testing.T) {
 		t.Fatal("recovery duplicated save", err)
 	}
 }
+
+func TestUncertainSaveLeavesOtherOperationsRecoverable(t *testing.T) {
+	s, actor, store := saveFixture(t)
+	original, durable := testedDraft(t, s, actor)
+	if _, err := s.SaveCamera(actor, durable); err != nil {
+		t.Fatal(err)
+	}
+	other := viewer.WithPrincipal(actor, "other")
+	request := draftRequest(11)
+	request.Endpoint = "rtsp://localhost:18557/other"
+	pendingDraft, pending := testedSave(t, s, other, request, 12, 2)
+	actorCreate := draftRequest(21)
+	actorCreate.Endpoint = "rtsp://localhost:18558/next"
+	openDraft, err := s.CreateDraft(actor, actorCreate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restore := viewer.FailManagedSyncForTest(store)
+	defer restore()
+	if _, err = s.SaveCamera(other, pending); api.ManagementPublicError(err).Error.Code != string(api.CodeSaveUnknown) {
+		t.Fatal("expected uncertain save", err)
+	}
+	op, err := s.Operation(actor, durable.OperationKey, original.CandidateID, durable.RuntimeEpoch, api.OperationLookup{Kind: api.OperationSave})
+	if err != nil || op.State != api.OperationSucceeded || op.Saved == nil || op.Saved.CameraID != original.CandidateID {
+		t.Fatal("durable confirmation", op, err)
+	}
+	if replay, err := s.SaveCamera(actor, durable); err != nil || replay.CameraID != original.CandidateID {
+		t.Fatal("durable replay", replay, err)
+	}
+	op, err = s.Operation(actor, actorCreate.OperationKey, openDraft.CandidateID, actorCreate.RuntimeEpoch, api.OperationLookup{Kind: api.OperationCreate})
+	if err != nil || op.State != api.OperationSucceeded || op.DraftID != openDraft.ID {
+		t.Fatal("draft confirmation", op, err)
+	}
+	op, err = s.Operation(actor, pending.OperationKey, pendingDraft.CandidateID, pending.RuntimeEpoch, api.OperationLookup{Kind: api.OperationSave})
+	if err != nil || op.State != api.OperationNotFound || op.Saved != nil {
+		t.Fatal("unrelated actor received the pending result", op, err)
+	}
+	op, err = s.Operation(other, pending.OperationKey, pendingDraft.CandidateID, pending.RuntimeEpoch)
+	if err != nil || op.State != api.OperationUnknown {
+		t.Fatal("lost pending owner's confirmation", op, err)
+	}
+	altered := pending
+	altered.ExpectedRevision++
+	if _, err = s.SaveCamera(other, altered); api.ManagementPublicError(err).Error.Code != string(api.CodeOperationConflict) {
+		t.Fatal("accepted a different request for the pending key", err)
+	}
+	restore()
+	if replay, err := s.SaveCamera(other, pending); err != nil || replay.CameraID != pendingDraft.CandidateID {
+		t.Fatal("pending replay did not recover", replay, err)
+	}
+}
+
+type pauseSaveResolution struct{}
+
+func TestConcurrentSaveBlockedBeforeWriteHasDefiniteOutcome(t *testing.T) {
+	resolving, resume := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	defer release()
+	s, actor, store := saveFixture(t, func(o *viewer.ManagementOptions) {
+		o.Base = config.Catalog{Cameras: []config.CatalogCamera{{
+			Camera: cs.Camera{ID: "base", PhysicalID: "base-device", Name: "Base", Config: rtsp.Config{
+				Host: "fixed.example.test", Port: 8554, Profiles: []rtsp.Profile{{ID: "default", Path: "/live"}},
+			}},
+			Streams: []cs.Stream{{ID: "default", Name: "Default"}},
+			Sources: map[cs.StreamID]cs.SourceKey{"default": "base-source"},
+		}}}
+		o.Lookup = func(ctx context.Context, _ string) ([]netip.Addr, error) {
+			if ctx.Value(pauseSaveResolution{}) == true {
+				close(resolving)
+				select {
+				case <-resume:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+		}
+	})
+	firstDraft, first := testedDraft(t, s, actor)
+	other := viewer.WithPrincipal(actor, "other")
+	create := draftRequest(11)
+	create.Endpoint = "rtsp://localhost:18557/other"
+	secondDraft, second := testedSave(t, s, other, create, 12, 1)
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := s.SaveCamera(context.WithValue(other, pauseSaveResolution{}, true), second)
+		secondResult <- err
+	}()
+	select {
+	case <-resolving:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second save did not reach address resolution")
+	}
+	restore := viewer.FailManagedSyncForTest(store)
+	defer restore()
+	if _, err := s.SaveCamera(actor, first); api.ManagementPublicError(err).Error.Code != string(api.CodeSaveUnknown) {
+		t.Fatal("expected uncertain first save", err)
+	}
+	release()
+	if err := <-secondResult; api.ManagementPublicError(err).Error.Code != string(api.CodeOperationInProgress) {
+		t.Fatal("second save should be blocked before commit", err)
+	}
+	checkSecond := func() {
+		t.Helper()
+		op, err := s.Operation(other, second.OperationKey, secondDraft.CandidateID, second.RuntimeEpoch, api.OperationLookup{Kind: api.OperationSave})
+		if err != nil || op.State != api.OperationNotCommitted || op.Error == nil || op.Error.Code != string(api.CodeOperationInProgress) {
+			t.Fatal("second save has no definite outcome", op, err)
+		}
+	}
+	checkSecond()
+	restore()
+	op, err := s.Operation(actor, first.OperationKey, firstDraft.CandidateID, first.RuntimeEpoch)
+	if err != nil || op.State != api.OperationSucceeded || op.Saved == nil {
+		t.Fatal("first save did not recover", op, err)
+	}
+	checkSecond()
+	state, err := store.Load(other)
+	if err != nil || state.Revision != 1 {
+		t.Fatal("second save modified the store", state.Revision, err)
+	}
+	second.Mutation = mutation(15)
+	second.CatalogRevision = op.Saved.CatalogRevision
+	if saved, err := s.SaveCamera(other, second); err != nil || saved.CameraID != secondDraft.CandidateID {
+		t.Fatal("fresh save could not use the tested draft", saved, err)
+	}
+}
+
+func TestContendedSavesLeaveRoomToFinishDraft(t *testing.T) {
+	for _, tc := range []struct {
+		action   string
+		attempts int
+	}{
+		{"save", api.MaxOperations},
+		{"cancel", api.MaxDraftOperations},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			s, owner, store := saveFixture(t)
+			firstDraft, first := testedDraft(t, s, owner)
+			other := viewer.WithPrincipal(owner, "other")
+			create := draftRequest(11)
+			create.Endpoint = "rtsp://localhost:18557/other"
+			draft, blocked := testedSave(t, s, other, create, 12, 1)
+			restore := viewer.FailManagedSyncForTest(store)
+			defer restore()
+			if _, err := s.SaveCamera(owner, first); api.ManagementPublicError(err).Error.Code != string(api.CodeSaveUnknown) {
+				t.Fatal("expected uncertain first save", err)
+			}
+			for i := range tc.attempts {
+				blocked.Mutation = mutation(100 + i)
+				if _, err := s.SaveCamera(other, blocked); api.ManagementPublicError(err).Error.Code != string(api.CodeOperationInProgress) {
+					t.Fatalf("blocked save %d: %v", i, err)
+				}
+			}
+			restore()
+			saved, err := s.Operation(owner, first.OperationKey, firstDraft.CandidateID, first.RuntimeEpoch)
+			if err != nil || saved.State != api.OperationSucceeded || saved.Saved == nil {
+				t.Fatal("first operation did not recover", saved, err)
+			}
+			last, err := s.Operation(other, blocked.OperationKey, draft.CandidateID, blocked.RuntimeEpoch)
+			if err != nil || last.State != api.OperationNotCommitted || last.Error == nil || last.Error.Code != string(api.CodeOperationInProgress) {
+				t.Fatal("missing definite outcome for latest blocked save", last, err)
+			}
+			next := mutation(100 + tc.attempts)
+			if tc.action == "cancel" {
+				canceled, err := s.CancelDraft(other, draft.ID, next)
+				if err != nil || canceled.State != api.DraftCanceled {
+					t.Fatal("blocked operations exhausted cancellation capacity", canceled.State, err)
+				}
+				return
+			}
+			blocked.Mutation = next
+			blocked.CatalogRevision = saved.Saved.CatalogRevision
+			result, err := s.SaveCamera(other, blocked)
+			if err != nil || result.CameraID != draft.CandidateID {
+				t.Fatal("blocked operations exhausted save capacity", result, err)
+			}
+		})
+	}
+}
+
 func TestManagementSaveRejectsStaleAndUntested(t *testing.T) {
 	s, ctx, _ := saveFixture(t)
 	d, err := s.CreateDraft(ctx, draftRequest(1))

@@ -104,7 +104,7 @@ func (s *CameraManagementService) CreateTest(ctx context.Context, id string, r a
 			return nil, err
 		}
 		if d.review.CredentialUpdate {
-			release, err := s.prepareCredentialUpdate(ctx, record)
+			release, _, err := s.prepareCredentialUpdate(ctx, record)
 			if err != nil {
 				s.identities.Release(id)
 				return nil, err

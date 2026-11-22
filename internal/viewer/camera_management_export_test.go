@@ -19,14 +19,20 @@ func ExpireManagementTestForTest(s *CameraManagementService, id string, sweep bo
 	s.drafts[id].review.Test.ExpiresAt = time.Now().Add(-time.Second)
 	s.release()
 	if sweep {
-		s.expire()
+		s.expire(context.Background())
 	}
 }
 
 // FailManagedSyncForTest models a failed post-rename directory durability barrier.
 func FailManagedSyncForTest(s *PrivateStateStore) func() {
+	s.mu.Lock()
 	s.files.syncDirHook = func() error { return storageFailure() }
-	return func() { s.files.syncDirHook = nil }
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.files.syncDirHook = nil
+	}
 }
 
 // ExpireManagedReceiptsForTest keeps permanent creation anchors intact.

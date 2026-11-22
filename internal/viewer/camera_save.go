@@ -23,7 +23,12 @@ type pendingCameraSave struct {
 	revision          api.CatalogRevision
 	promoted          bool
 	credentialCamera  cs.CameraID
+	oldSource         cs.SourceKey
 	releaseAdmission  func()
+}
+
+func (p *pendingCameraSave) matches(owner, key string) bool {
+	return p != nil && p.owner == owner && p.key == key
 }
 
 func copyManagedCatalog(m ManagedCatalog) ManagedCatalog {
@@ -146,21 +151,19 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 	if err := s.acquire(ctx); err != nil {
 		return api.SaveCameraResponse{}, err
 	}
-	err := s.recoverSave(ctx)
+	if s.pendingSave.matches(principal(ctx), r.OperationKey) && s.options.Policy.CanManage(ctx) {
+		// If recovery is still pending, the operation cache checks the request
+		// fingerprint and returns the original outcome.
+		_ = s.recoverSave(ctx)
+	}
 	draft := s.drafts[r.DraftID]
 	rotation := draft != nil && draft.owner == principal(ctx) && draft.review.CredentialUpdate
-	if err == nil {
-		response, found, replayErr := s.replaySave(ctx, r)
-		if found {
-			s.release()
-			return response, replayErr
-		}
-	}
+	response, found, replayErr := s.replaySave(ctx, r)
 	s.release()
-	if err != nil {
-		return api.SaveCameraResponse{}, err
+	if found {
+		return response, replayErr
 	}
-	if err = s.options.Policy.Require(ctx); err != nil {
+	if err := s.options.Policy.Require(ctx); err != nil {
 		return api.SaveCameraResponse{}, err
 	}
 	// Cached failures/replies need no DNS. New mutations resolve outside the gate.
@@ -168,6 +171,7 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 	known := s.operations[principal(ctx)+"\x00"+r.OperationKey] != nil
 	s.opMu.Unlock()
 	var bindings []AddressBinding
+	var err error
 	observed := time.Now()
 	if !known && !rotation {
 		bindings, err = s.resolveBaseBindings(ctx)
@@ -177,9 +181,6 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		observed = time.Now()
 	}
 	value, err := s.operation(ctx, r.Mutation, api.OperationSave, r.DraftID, r, func() (any, error) {
-		if s.pendingSave != nil {
-			return nil, unknownSave()
-		}
 		if s.options.Repository == nil {
 			return nil, storageFailure()
 		}
@@ -274,7 +275,7 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		pending := &pendingCameraSave{owner: d.owner, key: r.OperationKey, draft: d.review.ID, state: ManagedState{Revision: s.stateRevision + 1, CommitID: randomManagementID(), Payload: body}, catalog: next, merged: merged, revision: revision}
 		if d.review.CredentialUpdate {
 			pending.credentialCamera = record.ID
-			pending.releaseAdmission, e = s.prepareCredentialUpdate(ctx, previous)
+			pending.releaseAdmission, pending.oldSource, e = s.prepareCredentialUpdate(ctx, previous)
 			if e != nil {
 				clear(body)
 				return nil, e
@@ -320,7 +321,10 @@ func (s *CameraManagementService) publishSave() error {
 		if err := s.options.Secrets.Publish(p.catalog.Credentials); err != nil {
 			return err
 		}
-		if p.credentialCamera == "" && !p.promoted {
+		if p.credentialCamera != "" {
+			return s.options.Core.DiscardPreparedSource(p.oldSource)
+		}
+		if !p.promoted {
 			if err := s.identities.Promote(d.review.ID, d.review.CandidateID, d.binding); err != nil {
 				return err
 			}

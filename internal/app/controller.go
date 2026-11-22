@@ -241,17 +241,9 @@ func (c *Controller) startPlayback(runtimeCtx context.Context) error {
 
 // Load under both ownership locks before any HTTP request is admitted.
 func (c *Controller) loadManagement(ctx context.Context) error {
-	root, err := filepath.EvalSymlinks(c.cfg.Backend.RuntimeDir)
+	directory, err := managedStateDirectory(c.cfg)
 	if err != nil {
-		return api.ManagementFailure(api.CodeStorageUnavailable)
-	}
-	directory := c.cfg.Management.StateDir
-	if directory == "" {
-		directory = filepath.Join(root, "managed-state")
-	}
-	rel, err := filepath.Rel(filepath.Join(root, "workers"), directory)
-	if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
-		return api.ManagementFailure(api.CodeStorageUnavailable)
+		return err
 	}
 	_, statErr := os.Lstat(directory)
 	var state viewer.ManagedState
@@ -275,6 +267,22 @@ func (c *Controller) loadManagement(ctx context.Context) error {
 		return err
 	}
 	return c.management.Start(ctx)
+}
+
+func managedStateDirectory(cfg config.Config) (string, error) {
+	root, err := filepath.EvalSymlinks(cfg.Backend.RuntimeDir)
+	if err != nil {
+		return "", api.ManagementFailure(api.CodeStorageUnavailable)
+	}
+	directory := cfg.Management.StateDir
+	if directory == "" {
+		directory = filepath.Join(root, "managed-state")
+	}
+	rel, err := filepath.Rel(filepath.Join(root, "workers"), directory)
+	if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return "", api.ManagementFailure(api.CodeStorageUnavailable)
+	}
+	return directory, nil
 }
 
 func (c *Controller) closeOwnership() error {

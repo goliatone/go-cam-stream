@@ -140,7 +140,8 @@ func (h Routes) registerManagement(r admin.AdminRouter) {
 			v, e := h.Management.Recovery.RecoveryOperation(c.Context(), c.Param("key"), c.Query("runtime_epoch"))
 			return managementResult(c, v, e)
 		}
-		v, e := service.Operation(c.Context(), c.Param("key"), c.Query("candidate_id"), c.Query("runtime_epoch"))
+		lookup := api.OperationLookup{Kind: api.OperationKind(c.Query("kind")), DraftID: c.Query("draft_id")}
+		v, e := service.Operation(c.Context(), c.Param("key"), c.Query("candidate_id"), c.Query("runtime_epoch"), lookup)
 		return managementResult(c, v, e)
 	})
 	r.Post(api.DraftsPath, func(c router.Context) error {
