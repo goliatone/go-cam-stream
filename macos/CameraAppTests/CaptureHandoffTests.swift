@@ -5,10 +5,13 @@ import Foundation
 func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -> Void) {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let noStop: () -> Void = {}
-    func launched() -> (CameraModel, FixtureCameraHelper) {
+    func launched(releaseConfirmed: Bool = false) -> (CameraModel, FixtureCameraHelper) {
         let helper = FixtureCameraHelper()
         let model = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory)
         model.launch()
+        if releaseConfirmed {
+            model.requestConversationCapture(stop: noStop) { if let lease = $0 { model.releaseConversationCapture(lease) } }
+        }
         return (model, helper)
     }
     func streaming(_ model: CameraModel) {
@@ -18,6 +21,22 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
     func stopCount(_ helper: FixtureCameraHelper) -> Int { helper.methods.filter { $0 == "stop" }.count }
     func failedEvent(_ code: String) -> [String: Any] {
         ["version": 1, "event": "capture_stopped", "result": ["state": "failed"], "error": ["code": code]]
+    }
+
+    do { // The previous supervisor may outlive a cold launch.
+        let (model, helper) = launched()
+        check(!model.capture.releasedForCall && stopCount(helper) == 0, "cold launch leaves release unconfirmed without issuing Stop")
+        helper.hold = "stop"
+        var granted: UUID??
+        model.requestConversationCapture(stop: noStop) { granted = .some($0) }
+        check(granted == nil && stopCount(helper) == 1, "the first device request waits for a lock-backed Stop")
+        helper.deliver(["error": ["code": "busy"]])
+        check(granted == .some(nil) && !model.conversationCapture, "a cold launch cannot grant a lease while another owner holds capture")
+        helper.hold = nil
+        model.requestConversationCapture(stop: noStop) { granted = .some($0) }
+        check((granted ?? nil) != nil && stopCount(helper) == 2, "retry checks release again and grants the lease when capture is free")
+        if let lease = granted ?? nil { model.releaseConversationCapture(lease) }
+        _ = model.quit()
     }
 
     do { // Healthy stop and an active stream.
@@ -39,16 +58,18 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
     }
 
     do { // Refused Start: nothing ran, except possibly for busy.
-        let (model, helper) = launched()
+        let (model, helper) = launched(releaseConfirmed: true)
         helper.hold = "start"
         model.start()
         helper.deliver(["error": ["code": "not_configured"]])
         check(model.capture.phase == .error && model.capture.releasedForCall, "a refused Start leaves capture released")
         let lease = model.claimConversationCapture(stop: noStop)
-        check(lease != nil && model.capture.problem == cameraMessage("not_configured"),
+        check(lease != nil && model.capture.problem == cameraMessage("not_configured") && model.saved == nil,
               "a failed start allows call devices and preserves the stream error")
         model.releaseConversationCapture(lease!)
-        model.start()
+        model.startCamera()
+        check(Array(helper.methods.suffix(2)) == ["configure", "start"],
+              "after the camera service reports no settings, Try Again applies them before starting")
         helper.deliver(["error": ["code": "busy"]])
         helper.hold = nil
         check(model.capture.phase == .error && !model.capture.releasedForCall && model.claimConversationCapture(stop: noStop) == nil,
@@ -63,7 +84,7 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
     }
 
     do { // A capture failure the helper reported after reaping its run.
-        let (model, helper) = launched()
+        let (model, helper) = launched(releaseConfirmed: true)
         streaming(model)
         let stops = stopCount(helper)
         helper.onEvent?(failedEvent("capture_failed"))
@@ -143,7 +164,7 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
         model.stop()
         var granted: UUID?? = .none
         model.requestConversationCapture(stop: noStop) { granted = .some($0) }
-        helper.onFailure?()
+        helper.onFailure?(.disconnected)
         check(granted == .some(nil) && !model.capture.releasedForCall && model.claimConversationCapture(stop: noStop) == nil,
               "helper loss fails a pending call request closed")
         _ = model.quit()
@@ -156,7 +177,6 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
                                 openBrowser: { opened = $0; return true })
         model.launch()
         streaming(model)
-        camera.onEvent?(failedEvent("capture_failed"))
         let roomID = conversation["room_id"] as! String
         camera.conversationReply = ["result": [
             "page_url": "https://call.example.test/r/" + roomID,
@@ -164,8 +184,12 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
             "admission": ["room": conversation, "role": "host", "token": "host-fixture-grant"],
         ]]
         model.startConversationInBrowser()
-        check(model.hostInBrowser && opened != nil && model.conversationCapture && model.capture.problem != nil,
-              "browser hosting works after a confirmed stream failure")
+        check(!model.hostInBrowser && opened == nil && model.conversationNotice?.problem == true,
+              "browser hosting explains why it cannot use an occupied camera")
+        camera.onEvent?(failedEvent("capture_failed"))
+        model.hostConversationInBrowser()
+        check(model.hostInBrowser && opened != nil && model.conversationCapture && model.capture.problem != nil && model.conversationNotice == nil,
+              "a successful browser handoff clears the call warning and preserves the stream failure")
         model.closeConversation()
         _ = model.quit()
     }

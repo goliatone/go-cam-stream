@@ -151,7 +151,7 @@ func runAudioTests(repo: URL, check: @escaping (Bool, String) -> Void) throws {
         let real = HelperClient()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("camstream-t05-" + UUID().uuidString)
         var done = false, failed = false, stopped = false, legacyDefault = false
-        real.onFailure = { failed = true }
+        real.onFailure = { _ in failed = true }
         real.onExit = { done = true }
         real.onReady = {
             check(real.audioVersion == 1, "live Go helper advertises audio v1")
@@ -180,7 +180,7 @@ func runAudioTransportTests(fixture: URL, check: @escaping (Bool, String) -> Voi
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let client = HelperClient()
         var done = false, failed = false, answered = false
-        client.onFailure = { failed = true }
+        client.onFailure = { _ in failed = true }
         client.onExit = { done = true }
         client.onReady = {
             check(client.audioVersion == (mode == "audio-contract" ? 1 : mode == "future-audio-contract" ? 2 : 0), "audio feature version from ready")

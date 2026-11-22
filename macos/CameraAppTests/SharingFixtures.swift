@@ -23,7 +23,7 @@ final class FixtureSharingHelper: SharingHelper {
 final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelper {
     var onReady: (() -> Void)?
     var onEvent: (([String: Any]) -> Void)?
-    var onFailure: (() -> Void)?
+    var onFailure: ((HelperFailure) -> Void)?
     var onExit: (() -> Void)?
     var previewVersion = 0
     var audioVersion = 0
@@ -32,6 +32,7 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
     var callConnectorVersion = 0
     var incomingInvitations: [String] = []
     var conversationReply: [String: Any] = [:]
+    var launchFailure: HelperFailure?
     var heldConversationMethods: Set<ConversationMethod> = []
     var pendingConversation: [ConversationMethod: ([String: Any]) -> Void] = [:]
     var idle: Bool { true }
@@ -43,7 +44,10 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
         get { sharing.onSharingEvent }
         set { sharing.onSharingEvent = newValue }
     }
-    func launch(executable: URL, directory: URL) { onReady?() }
+    func launch(executable: URL, directory: URL) {
+        if let launchFailure { onFailure?(launchFailure); onExit?() }
+        else { onReady?() }
+    }
     func request(_ method: String, config: CameraConfig?, previewGeneration: String?, completion: @escaping ([String: Any]) -> Void) {
         methods.append(method)
         switch method {
@@ -71,5 +75,6 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
         }
         completion(conversationReply)
     }
+    func reserveCallCapture(in directory: URL) -> (() -> Void)? { {} }
     func shutdown() { onExit?() }
 }

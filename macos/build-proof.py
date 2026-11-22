@@ -107,18 +107,19 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
         *[str(p) for p in sources], "-o", str(contents / "MacOS" / executable))
     permission_text = {"NSCameraUsageDescription": "Share the built-in webcam as a private RTSP camera while this app is running."}
     if production:
-        permission_text["NSCameraUsageDescription"] = "Use your webcam when you start a private stream or explicitly enable it in a conversation."
-        permission_text["NSMicrophoneUsageDescription"] = "Use your microphone when you enable it for a private stream or explicitly enable it in a conversation."
+        permission_text["NSCameraUsageDescription"] = "Camstream Camera uses your webcam only when you choose Start Camera or turn on your camera in a conversation."
+        permission_text["NSMicrophoneUsageDescription"] = "Camstream Camera uses your microphone only when you turn on microphone audio for the server stream or in a conversation."
     url_types = [{"CFBundleURLName": "com.goliatone.camstream.camera.conversation",
                   "CFBundleURLSchemes": ["camstream"], "CFBundleTypeRole": "Viewer"}] if production else []
     icon = compile_app_icon(contents / "Resources", lock["target"]["minimum_macos"]) if production else {}
+    network = {"NSAppTransportSecurity": {"NSAllowsLocalNetworking": True}} if production else {}
     with (contents / "Info.plist").open("wb") as file:
         plistlib.dump({"CFBundleExecutable": executable,
             "CFBundleIdentifier": "com.goliatone.camstream.camera" + ("" if production else ".proof"),
             "CFBundleName": bundle_name, "CFBundleDisplayName": bundle_name, "LSUIElement": False,
             "CFBundlePackageType": "APPL", "CFBundleVersion": version, "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": lock["target"]["minimum_macos"], "NSHighResolutionCapable": True,
-            "CFBundleURLTypes": url_types, **icon, **permission_text,
+            "CFBundleURLTypes": url_types, **icon, **permission_text, **network,
             **({BUILD_ID_KEY: build_id} if build_id else {}),
         }, file)
     entitlements = str(root / ("macos/CameraApp/entitlements.plist" if production else "macos/CameraProof/entitlements.plist"))

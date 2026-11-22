@@ -76,15 +76,17 @@ extension CameraModel {
     var activity: ActivitySummary {
         let call = conversationActivity
         let icon: ActivitySummary.Icon = call != nil ? .call : capture.phase == .streaming ? .streaming :
-            capture.phase == .error ? .attention : .idle
+            capture.phase == .error || helperFailure != nil ? .attention : .idle
         return ActivitySummary(stream: streamLine, share: sharing.activityLine, call: call.map(Self.callLine),
                                icon: icon, shared: sharing.showsHeaderStatus)
     }
 
     /// Stream state with the selected devices while the stream runs. An
     /// automatic camera choice is not named because the helper does not
-    /// report which device it opened.
+    /// report which device it opened. Without the camera service there is
+    /// no stream or microphone to describe, so only the service state shows.
     var streamLine: String {
+        guard ready else { return title }
         var camera = title
         if capture.active, let saved, saved.device != "auto", !saved.device.isEmpty { camera += " (\(saved.device))" }
         var microphone = microphoneSummary

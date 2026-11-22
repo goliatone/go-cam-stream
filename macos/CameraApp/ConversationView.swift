@@ -6,25 +6,8 @@ struct ConversationView: View {
     @State private var invitation = ""
 
     var body: some View {
+        // The call connector's status and reconnect live in Settings → Calls.
         VStack(alignment: .leading, spacing: 12) {
-            if model.callConnectorStatus != .external || model.reconnectingCallConnector {
-                HStack {
-                    if model.reconnectingCallConnector {
-                        ProgressView("Reconnecting the call connector…").controlSize(.small)
-                    } else {
-                        Label(model.callConnectorStatus.title,
-                              systemImage: model.callConnectorStatus == .connected ? "checkmark.circle" : "network")
-                    }
-                    Spacer()
-                    if model.callConnectorStatus == .setupRequired {
-                        Button("Show Settings Folder", action: model.revealSettingsFolder)
-                    } else {
-                        Button("Reconnect", action: model.reconnectCallConnector)
-                            .disabled(model.reconnectingCallConnector || !model.ready || model.openingConversation)
-                            .accessibilityHint("Restarts Camstream’s dedicated call connector.")
-                    }
-                }.accessibilityIdentifier("call-connector-status")
-            }
             if let feedback = model.conversationRouteFeedback {
                 FeedbackCard(feedback: feedback, perform: model.perform, identifier: "conversation-route-error")
                 if model.checkingConversationRoute { ProgressView("Checking the guest link…").controlSize(.small) }
@@ -37,8 +20,8 @@ struct ConversationView: View {
                 // The call page offers Copy Invitation in its waiting tile; the Call menu keeps it too.
                 if model.capture.active {
                     HStack {
-                        Text("Stop the camera stream to use call devices.").font(.callout).foregroundStyle(.secondary)
-                        Button("Stop Camera Stream", action: model.stop).disabled(!model.canStop)
+                        Text("Stop the server stream to use your camera and microphone here.").font(.callout).foregroundStyle(.secondary)
+                        Button("Stop Camera", action: model.stop).disabled(!model.canStop)
                     }
                 }
                 ConversationWebView(surface: surface).id(ObjectIdentifier(surface))
@@ -75,8 +58,9 @@ struct ConversationView: View {
                                 }
                             }.fixedSize()
                         }.disabled(!canStart)
-                        Text(model.helperBlockedReason ?? "Your camera and microphone start off.")
-                            .foregroundStyle(.secondary)
+                        if model.ready {
+                            Text("Your camera and microphone start off.").foregroundStyle(.secondary)
+                        }
                         Text("To join, paste the invitation link from the host.")
                             .foregroundStyle(.secondary)
                         HStack {

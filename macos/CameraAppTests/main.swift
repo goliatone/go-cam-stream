@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 var checks = 0
@@ -109,21 +110,28 @@ do {
 }
 
 let fixture = URL(fileURLWithPath: CommandLine.arguments[1])
-for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof", "exit-before-eof"] {
+for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof", "exit-before-eof", "closed-input"] {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let directory = root.appendingPathComponent(mode)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let client = HelperClient()
-    var failures = 0, replies: [Int] = [], exits = 0
-    client.onFailure = {
-        failures += 1
+    let client = HelperClient(shutdownGrace: 0.5)
+    var failures: [HelperFailure] = [], replies: [Int] = [], exits = 0
+    var requestsAfterReady = 0, closedReaderStillRunning = false
+    client.onFailure = { failure in
+        failures.append(failure)
+        if mode == "closed-input",
+           let value = try? String(contentsOf: directory.appendingPathComponent("closed-input-pid"), encoding: .utf8),
+           let pid = pid_t(value) {
+            closedReaderStillRunning = kill(pid, 0) == 0
+        }
         // UI failure handling may synchronously cancel/reconcile another action.
-        if failures == 1 { client.request("status") { _ in replies.append(99) } }
+        if failures.count == 1 { client.request("status") { _ in replies.append(99) } }
     }
     client.onExit = { exits += 1 }
     client.onReady = {
         if mode == "eof" || mode == "exit-before-eof" { return }
         for index in 0..<3 {
+            requestsAfterReady += 1
             client.request("status") { _ in
                 replies.append(index)
                 if replies.count == 3 { client.shutdown() }
@@ -140,10 +148,134 @@ for mode in ["normal", "bad-version", "wrong-id", "oversized", "eof", "exit-befo
     RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     check(exits == 1 && !client.idle, "\(mode) remains closed after exit and late request")
     if mode == "normal" {
-        check(replies == [0, 1, 2] && failures == 0, "serialized correlated replies")
+        check(replies == [0, 1, 2] && failures.isEmpty, "serialized correlated replies")
         check(FileManager.default.fileExists(atPath: directory.appendingPathComponent("cleaned").path), "Quit drains stdout until helper cleanup")
-    } else { check(failures == 1 && replies.isEmpty, "\(mode) fails closed without delivering untrusted response") }
+    } else { check(failures.count == 1 && replies.isEmpty, "\(mode) fails closed without delivering untrusted response") }
+    if mode == "closed-input" {
+        check(requestsAfterReady == 3 && failures == [.disconnected] && closedReaderStillRunning,
+              "a request after ready detects closed stdin while the helper is still running")
+    }
     try FileManager.default.removeItem(at: root)
+}
+
+do {
+    let pipe = Pipe()
+    let fd = pipe.fileHandleForWriting.fileDescriptor
+    let flags = fcntl(fd, F_GETFL)
+    check(flags != -1 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1, "fixture configures a nonblocking pipe")
+    let full = Data(repeating: 0, count: 4096).withUnsafeBytes { bytes in
+        while Darwin.write(fd, bytes.baseAddress, bytes.count) > 0 {}
+        while Darwin.write(fd, bytes.baseAddress, 1) > 0 {}
+        return errno == EAGAIN
+    }
+    check(full, "fixture fills the owner pipe before the helper starts")
+
+    let client = HelperClient(responseTimeout: 1, shutdownGrace: 0.2, terminateGrace: 0.2, makeInputPipe: { pipe })
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("backpressured")
+    var failure: HelperFailure?, exited = false, answered = false, heartbeat = false
+    client.onReady = {
+        client.request("status") { _ in answered = true }
+        DispatchQueue.main.async { heartbeat = true }
+    }
+    client.onFailure = { failure = $0 }
+    client.onExit = { exited = true }
+    client.launch(executable: fixture, directory: directory)
+    let deadline = Date().addingTimeInterval(3)
+    while !exited && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(heartbeat && exited && failure == .timeout && !answered,
+          "main queue and shutdown deadline progress while a write is backpressured")
+}
+
+do {
+    let client = HelperClient()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let directory = root.appendingPathComponent("owner-pipe")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var rejected = false, answered = false, failed = false, exited = false
+    client.onReady = {
+        var form = SharingForm()
+        form.relayMode = "coturn"
+        form.relayURLs = "turns:" + String(repeating: "x", count: 17_000) + ".example.test"
+        client.requestSharing(.configure, arguments: .init(settings: form.settings)) { reply in
+            rejected = (reply["error"] as? [String: String])?["code"] == "sharing_settings_too_large"
+        }
+        client.request("status") { _ in answered = true; client.shutdown() }
+    }
+    client.onFailure = { _ in failed = true }
+    client.onExit = { exited = true }
+    client.launch(executable: fixture, directory: directory)
+    let deadline = Date().addingTimeInterval(5)
+    while !exited && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(rejected && answered && exited && !failed, "oversized settings are rejected without breaking the ready transport")
+}
+
+for quitDuringHang in [false, true] {
+    let client = HelperClient(responseTimeout: 1, shutdownGrace: 0.2, terminateGrace: 0.2)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let directory = root.appendingPathComponent("hung")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var failures: [HelperFailure] = [], exits = 0, answered = false
+    client.onReady = {
+        if quitDuringHang { client.shutdown() }
+        else { client.request("status") { _ in answered = true } }
+    }
+    client.onFailure = { failures.append($0) }
+    client.onExit = { exits += 1 }
+    client.launch(executable: fixture, directory: directory)
+    let deadline = Date().addingTimeInterval(5)
+    while exits == 0 && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(exits == 1 && failures == (quitDuringHang ? [] : [.timeout]) && !answered,
+          "\(quitDuringHang ? "Quit" : "response timeout") reaps a suspended helper without delivering a reply")
+    check(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("cleaned").path),
+          "the suspended helper did not exit through its cooperative EOF handler")
+
+    let replacement = root.appendingPathComponent("normal")
+    try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+    client.onReady = { client.request("status") { _ in answered = true } }
+    client.launch(executable: fixture, directory: replacement)
+    RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+    check(answered && exits == 1 && client.idle, "the reaped helper's deadlines do not affect its replacement")
+    client.shutdown()
+    let quitDeadline = Date().addingTimeInterval(3)
+    while exits == 1 && Date() < quitDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(exits == 2 && FileManager.default.fileExists(atPath: replacement.appendingPathComponent("cleaned").path),
+          "the replacement still quits through normal cleanup")
+}
+
+do {
+    let client = HelperClient()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    var failure: HelperFailure?, exits = 0
+    client.onFailure = { failure = $0 }
+    client.onExit = { exits += 1 }
+    let startupCases: [(String, HelperFailure)] = [
+        ("startup-busy", .busy), ("startup-settings", .settings), ("startup-runtime", .runtime), ("missing", .launch)
+    ]
+    for (index, test) in startupCases.enumerated() {
+        let (mode, expected) = test
+        let executable = mode == "missing" ? root.appendingPathComponent("missing-helper") : fixture
+        client.launch(executable: executable, directory: root.appendingPathComponent(mode))
+        let deadline = Date().addingTimeInterval(5)
+        while exits <= index && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        check(exits == index + 1 && failure == expected && !client.idle, "\(mode) reports the classified startup failure once")
+    }
+    let directory = root.appendingPathComponent("normal")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    failure = nil
+    var receivedStatus = false
+    client.onReady = {
+        client.request("status") { reply in
+            receivedStatus = (reply["result"] as? [String: String])?["state"] == "stopped"
+            client.shutdown()
+        }
+    }
+    client.launch(executable: fixture, directory: directory)
+    let deadline = Date().addingTimeInterval(5)
+    while exits == startupCases.count && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(exits == startupCases.count + 1 && receivedStatus && failure == nil, "relaunch after failed helpers completes a clean handoff")
 }
 print("PASS: \(checks) total native state/transport checks (no camera access)")
 
@@ -262,6 +394,8 @@ runInvitationTests(conversations: conversationViews, check: { check($0, $1) })
 print("PASS: \(checks) native checks including host invitation copy and browser-hosted room state")
 try runConnectionTests(check: { check($0, $1) })
 print("PASS: \(checks) native checks including the connection checklist and RTSP address copy")
+runConsoleTests(conversations: conversationViews, sharing: sharingExamplesForActivity, check: { check($0, $1) })
+print("PASS: \(checks) native checks including the camera console, settings that apply when valid and Start Camera and Create Link")
 do {
     let fixtureCamera = FixtureSharingCamera()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -281,7 +415,7 @@ do {
     check(fixtureCamera.incomingInvitations == [invitation], "ready helper receives the pending invitation once")
     check(app.conversationPrejoin?.admission.role == .guest && app.conversationPrejoin?.pageURL.fragment == nil,
           "invitation returns a clean prejoin URL and scoped guest admission")
-    check(app.section == 3 && app.conversationSurface != nil, "incoming invitation opens the native conversation panel")
+    check(app.screen == .call && app.conversationSurface != nil, "incoming invitation opens the native conversation panel")
     check(!ConversationMediaSurface.validPage(URL(string: "https://call.example.test/r/other")!, room: sampleRoomID),
           "native prejoin rejects another room")
     check(!ConversationMediaSurface.validPage(URL(string: "http://call.example.test/r/" + sampleRoomID)!, room: sampleRoomID),
@@ -289,7 +423,9 @@ do {
     check(!app.conversationCapture && !fixtureCamera.methods.contains("start"), "prejoin leaves the camera stopped")
     app.openConversationInvitation(invitation)
     check(fixtureCamera.incomingInvitations.count == 1, "reopening a pending prejoin does not redeem twice")
-    guard let lease = app.claimConversationCapture(stop: {}) else { preconditionFailure("stopped camera should allow a call lease") }
+    var granted: UUID?
+    app.requestConversationCapture(stop: {}) { granted = $0 }
+    guard let lease = granted else { preconditionFailure("stopped camera should allow a call lease") }
     check(app.conversationCapture && !app.canStart, "call capture excludes independent RTSP start")
     check(app.claimConversationCapture(stop: {}) == nil, "another call cannot take over the capture lease")
     app.releaseConversationCapture(UUID())
@@ -343,4 +479,14 @@ do {
     _ = app.quit()
     check(app.conversationPrejoin == nil && app.conversationSurface == nil, "quitting closes the prejoin view and discards admission")
 }
+var serverTestsFinished = false
+Task { @MainActor in
+    await testServerMonitor()
+    serverTestsFinished = true
+}
+let serverTestDeadline = Date().addingTimeInterval(10)
+while !serverTestsFinished && Date() < serverTestDeadline {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+}
+check(serverTestsFinished, "server monitor checks completed")
 print("PASS: \(checks) total native checks including sharing helper transport (capture off)")

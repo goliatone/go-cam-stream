@@ -59,4 +59,97 @@ func runInvitationTests(conversations: [String: Any], check: (Bool, String) -> V
           ConversationView.browserStatus(nil) == "Hosting in your browser",
           "a browser-hosted room shows the owner's room state")
     _ = model.quit()
+
+    let reconnectingHelper = FixtureSharingCamera()
+    let reconnecting = CameraModel(client: reconnectingHelper, permissions: FixturePermissions(), directory: directory)
+    reconnecting.launch()
+    defer { _ = reconnecting.quit() }
+    reconnectingHelper.heldConversationMethods = [.openLink]
+    reconnecting.openConversationInvitation("camstream://conversation/join?v=1#already-sent")
+    reconnectingHelper.onFailure?(.disconnected)
+    reconnectingHelper.onExit?()
+    let newInvitation = "camstream://conversation/join?v=1#during-outage"
+    reconnecting.openConversationInvitation(newInvitation)
+    var sleepAcknowledged = false
+    reconnecting.prepareForSleep { sleepAcknowledged = true }
+    reconnecting.wakeFromSleep()
+    check(sleepAcknowledged && reconnectingHelper.incomingInvitations.count == 1,
+          "sleep during an outage does not submit an invitation to the lost helper")
+    reconnectingHelper.launchFailure = .busy
+    reconnecting.retryHelper()
+    check(reconnectingHelper.incomingInvitations.count == 1 && !reconnecting.ready,
+          "the pending invitation stays queued across a failed retry")
+    reconnectingHelper.launchFailure = nil
+    reconnectingHelper.heldConversationMethods = []
+    reconnectingHelper.conversationReply = prejoin("guest")
+    reconnecting.retryHelper()
+    reconnecting.openConversationInvitation(newInvitation)
+    check(reconnectingHelper.incomingInvitations == ["camstream://conversation/join?v=1#already-sent", newInvitation] &&
+          reconnecting.conversationPrejoin?.admission.role == .guest && !reconnecting.conversationCapture,
+          "the new invitation survives sleep and failed reconnect and is submitted once with capture off")
+
+    let sleepingHelper = FixtureSharingCamera()
+    sleepingHelper.conversationReply = prejoin("guest")
+    let sleeping = CameraModel(client: sleepingHelper, permissions: FixturePermissions(), directory: directory)
+    sleeping.launch()
+    defer { _ = sleeping.quit() }
+    sleepingHelper.sharing.replies[.hostSleep] = ["result": [:]]
+    sleeping.prepareForSleep { }
+    sleeping.openConversationInvitation(newInvitation)
+    check(sleepingHelper.incomingInvitations.isEmpty, "sleep acknowledgement does not allow admission before wake")
+    sleeping.wakeFromSleep()
+    check(sleepingHelper.incomingInvitations == [newInvitation], "wake submits the queued invitation once when the helper is ready")
+
+    let wakingHelper = FixtureSharingCamera()
+    wakingHelper.conversationReply = prejoin("host")
+    wakingHelper.heldConversationMethods = [.end]
+    wakingHelper.sharing.hold = [.hostSleep]
+    let waking = CameraModel(client: wakingHelper, permissions: FixturePermissions(), directory: directory, openBrowser: { _ in true })
+    waking.launch()
+    defer { _ = waking.quit() }
+    waking.startConversationInBrowser()
+    check(waking.hostInBrowser, "a hosted call is open for the wake-during-cleanup fixture")
+    let sleepPause = "Sharing pauses while the Mac is going to sleep."
+    var acknowledgements = 0
+    waking.prepareForSleep { acknowledgements += 1 }
+    check(waking.sharing.shareBlockedReason == sleepPause && wakingHelper.pendingConversation[.end] != nil,
+          "sleep pauses Sharing while the previous call is still closing")
+    waking.wakeFromSleep()
+    waking.openConversationInvitation(newInvitation)
+    check(wakingHelper.incomingInvitations.isEmpty && acknowledgements == 0,
+          "an invitation opened during wake waits for old call cleanup")
+    wakingHelper.conversationReply = prejoin("guest")
+    wakingHelper.pendingConversation.removeValue(forKey: .end)?(["result": [:]])
+    let revokeDeadline = Date().addingTimeInterval(1)
+    while wakingHelper.sharing.pending.isEmpty && Date() < revokeDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(wakingHelper.sharing.methods.filter { $0 == .hostSleep }.count == 1 && acknowledgements == 0 &&
+          wakingHelper.incomingInvitations.isEmpty, "late cleanup still revokes Sharing before allowing a new call")
+    wakingHelper.sharing.deliver(["result": [:]])
+    check(acknowledgements == 1 && waking.sharing.shareBlockedReason != sleepPause && waking.conversationAvailable,
+          "late sleep cleanup leaves Sharing available after wake")
+    check(wakingHelper.incomingInvitations == [newInvitation] && waking.conversationPrejoin?.admission.role == .guest,
+          "the invitation opened during wake is redeemed after both cleanups without reopening it")
+    waking.openConversationInvitation(newInvitation)
+    check(wakingHelper.incomingInvitations == [newInvitation], "reopening the admitted link does not redeem it twice")
+
+    let repeatedHelper = FixtureSharingCamera()
+    repeatedHelper.sharing.hold = [.hostSleep]
+    let repeated = CameraModel(client: repeatedHelper, permissions: FixturePermissions(), directory: directory)
+    repeated.launch()
+    defer { _ = repeated.quit() }
+    var oldSleepAcknowledged = false, newSleepAcknowledged = false
+    repeated.prepareForSleep { oldSleepAcknowledged = true }
+    repeated.wakeFromSleep()
+    repeated.prepareForSleep { newSleepAcknowledged = true }
+    check(oldSleepAcknowledged && !newSleepAcknowledged && repeatedHelper.sharing.pending.count == 2,
+          "a new sleep transition replaces the previous acknowledgement")
+    repeatedHelper.sharing.deliver(["error": ["code": "transport"]])
+    check(repeated.ready && !newSleepAcknowledged && repeated.sharing.shareBlockedReason == sleepPause,
+          "a stale revoke reply cannot shut down the helper or acknowledge the new sleep")
+    repeatedHelper.sharing.deliver(["result": [:]])
+    repeated.wakeFromSleep()
+    check(newSleepAcknowledged && repeated.conversationAvailable && repeated.sharing.shareBlockedReason != sleepPause,
+          "the current sleep reply and wake restore Sharing and calls")
 }

@@ -15,8 +15,8 @@ func runConnectionTests(check: @escaping (Bool, String) -> Void) throws {
 
     var steps = model.connectionSteps
     check(steps.map(\.title) == ["Export the connection files",
-                                 "In the Camstream web app, choose Add Camera → Import Mac files",
-                                 "Choose Test connection, then Save Camera and Watch Camera",
+                                 "On your server, choose Add Camera → Camstream Mac app",
+                                 "Choose Continue, then Check connection, Save camera and Watch now",
                                  "Keep this camera running while you test and watch"],
           "Connection Details starts with the export, followed by the server steps")
     check(steps[0].done == false && steps[1].done == nil && steps[2].done == nil && steps[3].done == false,

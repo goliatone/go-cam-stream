@@ -1,17 +1,38 @@
 #!/usr/bin/python3
 """Camera-free NDJSON peer for native transport failure/EOF tests only."""
 import json
+import os
 from pathlib import Path
+import signal
 import sys
 import subprocess
+import time
 
 state = Path(sys.argv[-1])
 mode = state.name
+if mode == 'startup-busy':
+    print(json.dumps({'version': 1, 'event': 'session_error', 'error': {'code': 'busy'}}), flush=True)
+    sys.exit(71)
+if mode == 'startup-settings':
+    sys.exit(72)
+if mode == 'startup-runtime':
+    sys.exit(70)
 fixtures = json.loads((Path(__file__).parent.parent / 'fixtures/audio-protocol.json').read_text())
 ready = fixtures['ready'] if mode == 'audio-contract' else fixtures['legacy_ready']
 if mode == 'future-audio-contract':
     ready['result']['audio'] = 2
+if mode == 'owner-pipe':
+    ready['result']['sharing'] = 1
+if mode == 'closed-input':
+    os.close(0)
+    (state / 'closed-input-pid').write_text(str(os.getpid()))
 print(json.dumps(ready), flush=True)
+if mode in ('closed-input', 'backpressured'):
+    time.sleep(4)
+    sys.exit(0)
+if mode == 'hung':
+    # A suspended helper can neither process EOF nor handle SIGTERM.
+    os.kill(os.getpid(), signal.SIGSTOP)
 if mode == 'eof':
     sys.exit(0)
 if mode == 'exit-before-eof':

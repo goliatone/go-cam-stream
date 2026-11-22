@@ -18,15 +18,39 @@ final class CameraModel: ObservableObject {
     @Published var devices: [CameraDevice] = []
     @Published var ready = false
     @Published var working = false
-    @Published var section = 0 { didSet { syncPreview() } }
+    @Published private(set) var helperFailure: HelperFailure?
+    @Published private(set) var reconnectingHelper = false
+    /// The main window shows the camera console or the open call. Settings
+    /// live in their own window.
+    enum Screen { case camera, call }
+    @Published var screen = Screen.camera { didSet { syncPreview() } }
+    /// Opens the Settings window, at a pane or where it was left. The app sets it.
+    var showSettings: (SettingsPane?) -> Void = { _ in }
+    /// Settings → Calls is open, so the call connector status is polled.
+    var callSettingsVisible = false {
+        didSet { if callSettingsVisible, !oldValue { nextConnectorCheck = .distantPast; refreshCallConnector() } }
+    }
+    /// When the stream went live and when the call connected, for elapsed time.
+    private(set) var streamingSince: Date?
+    private(set) var callConnectedSince: Date?
+    private var applyRequested = false
+    private var applyWaiters: [(Bool) -> Void] = []
+    private var devicesStale = false
+    /// Start Camera and Create Link: share once the stream is live, then copy.
+    private var shareWhenLive = false
+    private var copyWhenShared = false
     let preview = PreviewController()
     // Sharing is a separate model on the same helper pipe. It follows capture
     // and helper state but never starts capture itself.
     let sharing: SharingModel
     private var sharingObserver: AnyCancellable?
     @Published private(set) var conversationCapture = false
-    private var closeConversationCapture: (() -> Void)?
-    private var conversationLease: UUID?
+    private struct CaptureLease {
+        let id = UUID()
+        let stop: () -> Void
+        let unlock: () -> Void
+    }
+    private var conversationLease: CaptureLease?
     private var captureReleaseWaiters: [() -> Void] = []
     private var confirmingRelease = false
     @Published private(set) var conversationPrejoin: ConversationPrejoin?
@@ -69,11 +93,24 @@ final class CameraModel: ObservableObject {
     private var connectorStatusPending = false
     private var browserCaptureLease: UUID?
     private var conversationCloseWaiters: [(Bool) -> Void] = []
+    private var closingAdmission: ((Bool) -> Void)?
+    private struct ConversationDeparture {
+        let roomID: String
+        let method: ConversationMethod
+
+        init(_ prejoin: ConversationPrejoin) {
+            roomID = prejoin.admission.room.roomID
+            method = prejoin.admission.role == .host ? .end : .leave
+        }
+    }
+    @Published private var failedDeparture: ConversationDeparture?
     private var pendingConversationURL: String?
     private var openedInvitation: SHA256.Digest?
     private var invitationRevision = 0
+    private var sleepRevision = 0
     private var sleepAcknowledgement: (() -> Void)?
     private var sleepTimeout: DispatchWorkItem?
+    private var hostSleeping = false
     private var windowVisible = false
     @Published var notice: String?
     /// Connection files were exported since the settings were last saved in
@@ -97,7 +134,8 @@ final class CameraModel: ObservableObject {
     private let openBrowser: (URL) -> Bool
     private var timer: Timer?
     private var quitting = false
-    private var exited = false
+    @Published private var exited = false
+    private var loadedConfiguration = false
     var didChange: (() -> Void)?
     var didExit: (() -> Void)?
     // Separate from the diagnostic CLI/proof, stable across app replacements.
@@ -110,20 +148,23 @@ final class CameraModel: ObservableObject {
         self.openBrowser = openBrowser
         sharing = SharingModel(helper: client as? SharingHelper)
         sharingObserver = sharing.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        sharing.didChange = { [weak self] in self?.didChange?() }
+        sharing.didChange = { [weak self] in self?.sharingChanged() }
     }
     var canEditSettings: Bool { ready && !working && !requestingPermission && !capture.active && !conversationCapture && !quitting }
+    /// Settings fields stay enabled while a change applies, so typing keeps focus.
+    var settingsEditable: Bool { ready && !requestingPermission && !capture.active && !conversationCapture && !quitting }
 
     /// Grants the call-device lease only after the helper confirmed that the
-    /// stream released capture, including after a stream failure.
+    /// stream released capture. Reserve it against other supervisors until
+    /// the call finishes with its devices.
     func claimConversationCapture(stop: @escaping () -> Void) -> UUID? {
-        guard canEditSettings, capture.releasedForCall else { return nil }
-        let lease = UUID()
+        guard canEditSettings, capture.releasedForCall,
+              let unlock = client.reserveCallCapture(in: directory) else { return nil }
+        let lease = CaptureLease(stop: stop, unlock: unlock)
         conversationLease = lease
-        closeConversationCapture = stop
         conversationCapture = true
         changed()
-        return lease
+        return lease.id
     }
 
     /// The explicit call-device action. Released capture is granted at once.
@@ -135,7 +176,7 @@ final class CameraModel: ObservableObject {
         let retry = { [weak self] in completion(self?.claimConversationCapture(stop: stop)) }
         if capture.phase == .stopping {
             captureReleaseWaiters.append(retry)
-        } else if capture.phase == .error, !capture.released {
+        } else if !capture.active, !capture.released {
             confirmCaptureRelease(then: retry)
         } else { completion(nil) }
     }
@@ -156,7 +197,9 @@ final class CameraModel: ObservableObject {
         client.request("stop") { [weak self] reply in
             guard let self else { return }
             self.confirmingRelease = false
-            if self.errorCode(reply) == nil, self.capture.generation == token { self.capture.confirmReleased() }
+            if self.capture.generation == token, self.confirmedStop(reply) {
+                self.capture.confirmReleased()
+            }
             self.changed()
             self.flushCaptureReleaseWaiters(force: true)
         }
@@ -170,26 +213,26 @@ final class CameraModel: ObservableObject {
     }
 
     func releaseConversationCapture(_ lease: UUID) {
-        guard conversationLease == lease else { return }
+        guard let current = conversationLease, current.id == lease else { return }
         conversationLease = nil
-        closeConversationCapture = nil
+        current.unlock()
         conversationCapture = false
         changed()
     }
 
     func openConversationInvitation(_ value: String) {
         guard !quitting, !value.isEmpty, value.utf8.count <= 8192 else { return }
-        section = 3
+        screen = .call
         let digest = SHA256.hash(data: Data(value.utf8))
         guard pendingConversationURL != value, openedInvitation != digest else { return }
-        guard conversationPrejoin == nil, !openingConversation, !closingConversation else { return }
+        guard conversationPrejoin == nil, !openingConversation else { return }
         pendingConversationURL = value
         redeemPendingConversation()
     }
 
     private func clearConversationPrejoin() {
+        callConnectedSince = nil
         invitationRevision += 1
-        pendingConversationURL = nil
         openedInvitation = nil
         conversationPrejoin = nil
         openingConversation = false
@@ -292,7 +335,8 @@ final class CameraModel: ObservableObject {
     }
 
     private func redeemPendingConversation() {
-        guard ready, let url = pendingConversationURL else { return }
+        guard canStartConversation,
+              let url = pendingConversationURL else { return }
         pendingConversationURL = nil
         presentConversation(.openLink, invitation: url)
     }
@@ -303,15 +347,16 @@ final class CameraModel: ObservableObject {
     func openSetupGuide() { _ = openBrowser(Self.setupGuide) }
     func openCallInstallGuide() { _ = openBrowser(Self.installGuide) }
     var conversationAvailable: Bool {
-        ready && !quitting && sleepAcknowledgement == nil && (client as? ConversationHelper)?.conversationVersion == 1
+        ready && !quitting && !hostSleeping && sleepAcknowledgement == nil && (client as? ConversationHelper)?.conversationVersion == 1
     }
     /// Only the host holds an invitation to share.
     var canCopyConversation: Bool {
         conversationRouteReachable && conversationPrejoin?.admission.role == .host && conversationPrejoin?.invitationURL != nil
     }
     var canStartConversation: Bool {
-        conversationAvailable && !openingConversation && !closingConversation && conversationPrejoin == nil && !quitting
+        conversationAvailable && !openingConversation && !closingConversation && failedDeparture == nil && conversationPrejoin == nil
     }
+    var canRetryConversationClose: Bool { conversationAvailable && !closingConversation && failedDeparture != nil }
 
     private enum HostStart { case muted, prejoin, browser }
     private var lastHostStart: (method: ConversationMethod, mode: HostStart) = (.create, .muted)
@@ -332,7 +377,7 @@ final class CameraModel: ObservableObject {
             conversationNotice = ConversationNotice(text: "This Camstream Camera build cannot open conversations.", problem: true)
             return
         }
-        guard !openingConversation, !closingConversation, conversationPrejoin == nil else { return }
+        guard canStartConversation else { return }
         let role: ConversationRole = method == .openLink ? .guest : .host
         if role == .host { lastHostStart = (method, hostStart) }
         openingConversation = true
@@ -345,14 +390,14 @@ final class CameraModel: ObservableObject {
             guard let self else { return }
             let prejoin: ConversationPrejoin? = self.decode(reply["result"])
             guard !self.quitting, self.invitationRevision == revision else {
-                if let prejoin { self.releaseAdmission(prejoin) { _ in } }
+                if let prejoin { self.releaseAdmission(ConversationDeparture(prejoin)) { _ in } }
                 return
             }
             self.openingConversation = false
             self.conversationProgress = nil
             guard let prejoin, prejoin.admission.role == role,
                   ConversationMediaSurface.validPage(prejoin.pageURL, room: prejoin.admission.room.roomID) else {
-                if let prejoin { self.releaseAdmission(prejoin) { _ in } }
+                if let prejoin { self.releaseAdmission(ConversationDeparture(prejoin)) { _ in } }
                 let fault: ConversationFault? = self.decode(reply["error"])
                 self.conversationFault = fault
                 self.conversationNotice = ConversationNotice(
@@ -400,13 +445,16 @@ final class CameraModel: ObservableObject {
                 return
             }
             guard let lease else {
-                self.conversationNotice = ConversationNotice(text: "Stop Camera before opening the host controls in your browser.",
-                                                             problem: true, role: .host)
+                let text = self.capture.active
+                    ? "Stop Camera before opening the host controls in your browser."
+                    : "The camera may still be in use. Wait for it to stop, then try opening the host controls again."
+                self.conversationNotice = ConversationNotice(text: text, problem: true, role: .host)
                 return
             }
             if self.openBrowser(browserURL) {
                 self.browserCaptureLease = lease
                 self.hostInBrowser = true
+                self.conversationNotice = nil
             } else {
                 self.releaseConversationCapture(lease)
                 self.conversationNotice = ConversationNotice(text: "The default browser could not be opened. Join here or try again.",
@@ -416,18 +464,27 @@ final class CameraModel: ObservableObject {
     }
 
     func closeConversation() {
+        pendingConversationURL = nil
+        closeActiveConversation()
+    }
+
+    private func closeActiveConversation() {
         // Problems and notes about the conversation being closed no longer apply.
         if conversationSurface != nil || conversationPrejoin != nil { conversationNotice = nil }
         closeConversation { _ in }
     }
 
-    private func releaseAdmission(_ prejoin: ConversationPrejoin, completion: @escaping (Bool) -> Void) {
+    func retryConversationClose() {
+        guard canRetryConversationClose else { return }
+        closeActiveConversation()
+    }
+
+    private func releaseAdmission(_ departure: ConversationDeparture, completion: @escaping (Bool) -> Void) {
         guard ready, let helper = client as? ConversationHelper, helper.conversationVersion == 1 else {
             completion(false)
             return
         }
-        helper.requestConversation(prejoin.admission.role == .host ? .end : .leave,
-                                   roomID: prejoin.admission.room.roomID, invitation: nil) {
+        helper.requestConversation(departure.method, roomID: departure.roomID, invitation: nil) {
             completion($0["error"] == nil)
         }
     }
@@ -437,9 +494,7 @@ final class CameraModel: ObservableObject {
         guard !closingConversation else { return }
         closingConversation = true
         let surface = conversationSurface
-        let prejoin = conversationPrejoin
-        let browserLease = browserCaptureLease
-        browserCaptureLease = nil
+        let departure = conversationPrejoin.map(ConversationDeparture.init) ?? failedDeparture
         conversationSurface = nil
         clearConversationPrejoin()
 
@@ -448,21 +503,42 @@ final class CameraModel: ObservableObject {
         if let surface {
             group.enter()
             surface.close { group.leave() }
-        } else if browserLease == nil { closeConversationCapture?() }
-        if let prejoin {
+        } else if browserCaptureLease == nil { conversationLease?.stop() }
+        if let departure {
             group.enter()
-            releaseAdmission(prejoin) { success in released = success; group.leave() }
+            closingAdmission = { [weak self] success in
+                released = success
+                if let self {
+                    self.failedDeparture = !success && self.ready && !self.quitting ? departure : nil
+                }
+                group.leave()
+            }
+            releaseAdmission(departure) { [weak self] success in self?.finishClosingAdmission(success) }
         }
         let finish = { [weak self] in
             guard let self else { return }
-            if let browserLease { self.releaseConversationCapture(browserLease) }
+            if released && self.ready { self.releaseBrowserCapture() }
             self.closingConversation = false
             let waiters = self.conversationCloseWaiters
             self.conversationCloseWaiters.removeAll()
             waiters.forEach { $0(released) }
+            self.changed()
+            self.redeemPendingConversation()
         }
         if group.wait(timeout: .now()) == .success { finish() }
         else { group.notify(queue: .main, execute: finish) }
+    }
+
+    private func finishClosingAdmission(_ success: Bool) {
+        let completion = closingAdmission
+        closingAdmission = nil
+        completion?(success)
+    }
+
+    private func releaseBrowserCapture() {
+        guard let lease = browserCaptureLease else { return }
+        browserCaptureLease = nil
+        releaseConversationCapture(lease)
     }
 
     private func refreshBrowserHost() {
@@ -480,8 +556,7 @@ final class CameraModel: ObservableObject {
                 self.changed()
             }
             if current?.state == .ended || current?.state == .expired || self.errorCode(reply) == "invitation_invalid" {
-                if let lease = self.browserCaptureLease { self.releaseConversationCapture(lease) }
-                self.browserCaptureLease = nil
+                self.releaseBrowserCapture()
                 self.clearConversationPrejoin()
                 self.conversationNotice = ConversationNotice(text: current?.state == .expired ? "The conversation expired." : "Conversation closed.")
             }
@@ -507,7 +582,7 @@ final class CameraModel: ObservableObject {
     }
 
     private func refreshCallConnector() {
-        guard ready, section == 3, client.idle, !connectorStatusPending, !reconnectingCallConnector,
+        guard ready, callSettingsVisible, client.idle, !connectorStatusPending, !reconnectingCallConnector,
               Date() >= nextConnectorCheck, let helper = client as? ConversationHelper,
               helper.callConnectorVersion == 1 else { return }
         connectorStatusPending = true
@@ -572,19 +647,22 @@ final class CameraModel: ObservableObject {
         return value
     }
     var dirty: Bool { saved != config }
-    /// The next step when Start Camera is unavailable, or nil when it can run.
     /// The helper state that blocks every camera and call action.
     var helperBlockedReason: String? {
         guard !ready else { return nil }
-        return exited ? "The camera helper stopped. Quit and reopen Camstream Camera." : "Waiting for the camera helper…"
+        if reconnectingHelper { return "Reconnecting the camera service…" }
+        if helperFailure != nil { return "The camera service is unavailable." }
+        return "Starting the camera service…"
     }
+    var canRetryHelper: Bool { helperFailure != nil && exited && !quitting && sleepAcknowledgement == nil }
     /// Why Start Conversation and Open Invitation are unavailable.
     var conversationBlockedReason: String? {
         if canStartConversation || quitting { return nil }
         if let helperBlockedReason { return helperBlockedReason }
-        if !conversationsSupported { return "This Camstream Camera helper can't host or join conversations." }
+        if !conversationsSupported { return "This version of the camera service can't host or join conversations." }
         if openingConversation { return "Wait for the conversation to open." }
         if closingConversation { return "Wait for the previous conversation to close." }
+        if failedDeparture != nil { return "Finish closing the previous conversation first." }
         if conversationPrejoin != nil { return "End the current conversation first." }
         return nil
     }
@@ -623,29 +701,45 @@ final class CameraModel: ObservableObject {
         guard permission == "authorized" else { return cameraMessage(code) }
         switch code {
         case "capture_failed": return "The camera stopped. Close other apps using the webcam, then try again."
-        case "device_unavailable": return "No available webcam was found. Reconnect the camera, then refresh the camera list."
-        case "configuration_failed": return "Settings could not be saved. Refresh the camera list and try again."
+        case "device_unavailable": return "No available webcam was found. Reconnect the camera or choose another one, then try again."
+        case "configuration_failed": return "Settings could not be applied. Check the selected webcam, then try again."
         default: return cameraMessage(code)
         }
     }
     var canStart: Bool { canEditSettings && permission == "authorized" && saved != nil && !dirty && validation == nil }
+    /// Start Camera in the window and menus. Valid changes not yet applied
+    /// apply first, so they don't block it.
+    var canStartCamera: Bool { canEditSettings && permission == "authorized" && validation == nil }
+    var startCameraBlockedReason: String? {
+        if canStartCamera || capture.active || quitting { return nil }
+        return startBlockedReason
+    }
     var canStop: Bool { ready && (capture.phase == .starting || capture.phase == .streaming) }
     var canSave: Bool { canEditSettings && permission == "authorized" && validation == nil && dirty }
     var canExport: Bool { ready && !working && !requestingPermission && !quitting && capture.phase != .starting && capture.phase != .stopping && saved != nil && !dirty && (!config.audioEnabled || audioSupported) }
-    var validation: String? {
-        if draft.path.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", options: .regularExpression) == nil {
-            return "Use 1–64 letters, numbers, dashes or underscores for the camera name."
-        }
-        if !(1024...65535).contains(Int(portText) ?? 0) { return "Choose a port from 1024 to 65535." }
-        if draft.listen == "0.0.0.0" {
-            let host = draft.host
-            if host.range(of: "^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$", options: .regularExpression) == nil || host.contains("..") || ["localhost", "127.0.0.1", "0.0.0.0"].contains(host) {
-                return "Enter this Mac’s private IP address or hostname, without rtsp:// or a port."
-            }
-        }
-        return microphoneValidation
+    var validation: String? { nameValidation ?? portValidation ?? hostValidation ?? microphoneValidation }
+    var nameValidation: String? {
+        guard draft.path.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", options: .regularExpression) == nil else { return nil }
+        return "Use 1–64 letters, numbers, dashes or underscores for the camera name."
+    }
+    var portValidation: String? { (1024...65535).contains(Int(portText) ?? 0) ? nil : "Choose a port from 1024 to 65535." }
+    var hostValidation: String? {
+        guard draft.listen == "0.0.0.0" else { return nil }
+        let host = draft.host
+        guard host.range(of: "^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$", options: .regularExpression) == nil || host.contains("..") ||
+              ["localhost", "127.0.0.1", "0.0.0.0"].contains(host) else { return nil }
+        return "Enter this Mac’s private IP address or hostname, without rtsp:// or a port."
+    }
+    /// The Settings pane that fixes `validation`.
+    var validationPane: SettingsPane? {
+        if nameValidation != nil { return .camera }
+        if portValidation != nil || hostValidation != nil { return .network }
+        return microphoneValidation != nil ? .camera : nil
     }
     var title: String {
+        if helperFailure != nil { return "Camera service unavailable" }
+        if reconnectingHelper { return "Reconnecting camera service…" }
+        if !ready && !exited && !quitting { return "Starting camera service…" }
         switch capture.phase {
         case .stopped: return "Camera stopped"
         case .starting: return "Starting camera…"
@@ -660,8 +754,8 @@ final class CameraModel: ObservableObject {
         if !audioSupported { return cameraMessage("audio_runtime_unsupported") }
         if microphonePermission != "authorized" { return microphonePermissionText }
         if let error = microphoneDiscoveryError { return error }
-        if !microphonesLoaded { return "Refresh the microphone list before saving or starting." }
-        if !MicrophoneDevice.validID(config.audioDeviceID) { return "Choose a microphone before saving." }
+        if !microphonesLoaded { return "Waiting for the list of microphones…" }
+        if !MicrophoneDevice.validID(config.audioDeviceID) { return "Choose a microphone." }
         if !microphones.contains(where: { $0.matches(config.audioDeviceID) }) { return cameraMessage("audio_device_unavailable") }
         return nil
     }
@@ -696,7 +790,8 @@ final class CameraModel: ObservableObject {
         }
         refreshPermission()
         client.onReady = { [weak self] in
-            guard let self = self else { return }
+            guard let self, !self.quitting else { return }
+            self.reconnectingHelper = false
             self.audioSupported = self.client.audioVersion == 1
             self.ready = true; self.working = true
             self.sharing.connect()
@@ -704,9 +799,16 @@ final class CameraModel: ObservableObject {
             self.client.request("config") { [weak self] reply in
                 guard let self = self else { return }
                 self.working = false
+                let preserveDraft = self.loadedConfiguration && self.dirty
                 if let value: CameraConfig = self.decode(reply["result"]) {
-                    self.saved = value; self.draft = value; self.portText = String(value.port)
-                } else if self.errorCode(reply) != "not_configured" { self.showError(reply) }
+                    if self.saved != value { self.exportCurrent = false }
+                    self.saved = value
+                    if !preserveDraft { self.draft = value; self.portText = String(value.port) }
+                    self.loadedConfiguration = true
+                } else if self.errorCode(reply) == "not_configured" {
+                    self.saved = nil; self.exportCurrent = false
+                    self.loadedConfiguration = true
+                } else { self.showError(reply) }
                 if self.permission == "authorized" { self.refreshDevices() } else { self.refreshMicrophones() }
                 self.changed()
             }
@@ -722,28 +824,45 @@ final class CameraModel: ObservableObject {
             } else { self.showError(reply) }
             self.changed()
         }
-        client.onFailure = { [weak self] in
-            guard let self = self, !self.quitting else { return }
-            self.sharing.disconnect()
-            self.ready = false; self.working = false
-            self.closeConversation()
-            if self.capture.problem == nil { self.capture.failed(self.problemText("transport")) }
-            self.capture.ownershipLost()
-            self.abandonCaptureRelease()
-            self.changed()
-        }
+        client.onFailure = { [weak self] failure in self?.loseHelper(failure) }
         client.onExit = { [weak self] in
             guard let self = self else { return }
-            self.sharing.disconnect()
             self.ready = false; self.exited = true
-            self.closeConversation()
-            self.capture.ownershipLost()
-            self.abandonCaptureRelease()
+            self.releaseBrowserCapture()
             self.acknowledgeSleep()
             self.changed(); self.didExit?()
         }
         client.launch(executable: helper, directory: directory)
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    func retryHelper() {
+        guard canRetryHelper else { return }
+        exited = false
+        reconnectingHelper = true
+        helperFailure = nil
+        notice = nil
+        refreshPermission()
+        client.launch(executable: helper, directory: directory)
+    }
+
+    private func loseHelper(_ failure: HelperFailure) {
+        guard !quitting else { return }
+        helperFailure = failure
+        reconnectingHelper = false
+        ready = false; working = false
+        audioSupported = false
+        devices = []; microphones = []; microphonesLoaded = false; microphoneDiscoveryError = nil
+        callConnectorStatus = .external; reconnectingCallConnector = false; connectorStatusPending = false
+        nextConnectorCheck = .distantPast
+        if capture.active { capture.stopped() }
+        capture.ownershipLost()
+        sharing.disconnect()
+        failedDeparture = nil
+        finishClosingAdmission(false)
+        closeActiveConversation()
+        abandonCaptureRelease()
+        changed()
     }
 
     func refreshPermission() {
@@ -812,8 +931,20 @@ final class CameraModel: ObservableObject {
     func openPrivacy() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") { NSWorkspace.shared.open(url) }
     }
+    /// A camera or microphone was connected or removed. The lists refresh
+    /// now, or once settings can change again: never while the camera is live.
+    func devicesChanged() {
+        devicesStale = true
+        refreshStaleDevices()
+    }
+    private func refreshStaleDevices() {
+        guard devicesStale, canEditSettings else { return }
+        devicesStale = false
+        if permission == "authorized" { refreshDevices() } else { refreshMicrophones() }
+    }
     func refreshDevices() {
         guard canEditSettings, permission == "authorized" else { return }
+        devicesStale = false
         working = true; changed()
         client.request("devices") { [weak self] reply in
             guard let self = self else { return }
@@ -826,25 +957,113 @@ final class CameraModel: ObservableObject {
     }
     func save() {
         guard canSave else { return }
-        working = true; notice = nil; changed()
-        client.request("configure", config: config) { [weak self] reply in
+        configure(quiet: false) { _ in }
+    }
+    /// Applies valid changes without a notice, as Settings does when a value
+    /// changes. A request made while the helper is busy waits for it; one
+    /// that is invalid or locked completes as not applied and stays a draft.
+    func applySettings(then done: @escaping (Bool) -> Void = { _ in }) {
+        guard dirty else { done(saved != nil); return }
+        applyWaiters.append(done)
+        applyRequested = true
+        flushApply()
+    }
+    private func flushApply() {
+        guard applyRequested, !working else { return }
+        applyRequested = false
+        let waiters = applyWaiters
+        applyWaiters.removeAll()
+        guard dirty, canSave else {
+            let applied = !dirty && saved != nil
+            waiters.forEach { $0(applied) }
+            return
+        }
+        configure(quiet: true) { applied in waiters.forEach { $0(applied) } }
+    }
+    private func configure(quiet: Bool, then done: @escaping (Bool) -> Void) {
+        let sent = config
+        working = true
+        if !quiet { notice = nil }
+        changed()
+        client.request("configure", config: sent) { [weak self] reply in
             guard let self = self else { return }
             self.working = false
-            if let value: CameraConfig = self.decode(reply["result"]) {
-                self.saved = value; self.draft = value; self.portText = String(value.port); self.exportCurrent = false
-                self.capture.stopped(); self.notice = "Settings saved. Choose Start Camera when you’re ready."
+            let value: CameraConfig? = self.decode(reply["result"])
+            if let value {
+                self.saved = value
+                // An edit made while this change was in flight stays as the draft.
+                if self.config == sent { self.draft = value; self.portText = String(value.port) }
+                self.exportCurrent = false
+                self.capture.stopped()
+                if !quiet { self.notice = "Settings saved. Choose Start Camera when you’re ready." }
             } else { self.showError(reply) }
+            done(value != nil)
             self.changed()
         }
     }
+    /// Start Camera in the window and menus: valid changes apply first, so
+    /// there is no separate Save step.
+    func startCamera() {
+        guard !capture.active else { return }
+        guard dirty, canSave else { start(); return }
+        applySettings { [weak self] applied in
+            guard let self else { return }
+            if applied { self.start() } else { self.cancelShareChain() }
+        }
+    }
+    /// Create Link from the Share link card. With the camera off this is the
+    /// labelled Start Camera and Create Link action; sharing never starts the
+    /// camera by itself. The new link is copied once it exists.
+    var canCreateShareLink: Bool {
+        if capture.phase == .streaming { return sharing.canShare }
+        return canStartCamera && !capture.active && sharing.ingressReady && sharing.canEditOptions
+    }
+
+    func createShareLink() {
+        guard canCreateShareLink else { return }
+        if capture.phase == .streaming {
+            copyWhenShared = true
+            sharing.shareCamera()
+        } else {
+            shareWhenLive = true; copyWhenShared = true
+            startCamera()
+        }
+    }
+    private func cancelShareChain() { shareWhenLive = false; copyWhenShared = false }
+    /// Moves Start Camera and Create Link along as the stream and link change.
+    private func followShareChain() {
+        if shareWhenLive {
+            switch capture.phase {
+            case .streaming:
+                shareWhenLive = false
+                if sharing.canShare { sharing.shareCamera() } else { copyWhenShared = false }
+            case .error, .stopping: cancelShareChain()
+            case .starting, .stopped: break
+            }
+        }
+        guard copyWhenShared, !shareWhenLive else { return }
+        switch sharing.phase {
+        case .active where sharing.canCopyLink:
+            copyWhenShared = false
+            sharing.copyLink()
+        case .pending, .active: break
+        default: copyWhenShared = false
+        }
+    }
+    private func sharingChanged() {
+        followShareChain()
+        didChange?()
+    }
     func start() {
         refreshPermission()
-        guard canStart else { section = 0; changed(); return }
+        guard canStart else { cancelShareChain(); screen = .camera; changed(); return }
         notice = nil
         let token = capture.start(audioEnabled: config.audioEnabled); changed()
         client.request("start") { [weak self] reply in
             guard let self = self, self.capture.generation == token else { return }
             if let code = self.errorCode(reply) {
+                // The camera service has no settings: the next Start Camera applies them.
+                if code == "not_configured" { self.saved = nil; self.exportCurrent = false }
                 // A refused Start ran nothing. Busy can mean this session still
                 // owns a run, so it leaves cleanup to be confirmed.
                 self.capture.failed(self.problemText(code), released: code != "busy")
@@ -858,8 +1077,8 @@ final class CameraModel: ObservableObject {
         let token = capture.generation
         client.request("stop") { [weak self] reply in
             guard let self = self, self.capture.generation == token else { return }
-            if let code = self.errorCode(reply) { self.capture.failed(self.problemText(code), released: false) }
-            else { self.capture.stopped() }
+            if self.confirmedStop(reply) { self.capture.stopped() }
+            else { self.capture.failed(self.problemText(self.errorCode(reply) ?? "status_unavailable"), released: false) }
             self.changed()
         }
     }
@@ -874,7 +1093,7 @@ final class CameraModel: ObservableObject {
                config == self.directory.appendingPathComponent("camstream-camera.yaml").path,
                env == self.directory.appendingPathComponent("camstream-camera.env").path {
                 self.exportCurrent = true
-                self.notice = "Connection files exported privately. The .env file contains your password; share it only with your Camstream server."
+                self.notice = "Connection files exported privately. The .env file contains your password; share it only with your server."
             } else {
                 // Export failure must not replace live capture state or detach preview.
                 self.notice = cameraMessage(self.errorCode(reply) ?? "export_failed")
@@ -899,19 +1118,29 @@ final class CameraModel: ObservableObject {
         return exited
     }
     func prepareForSleep(acknowledge: @escaping () -> Void) {
+        hostSleeping = true
         acknowledgeSleep()
+        sleepRevision += 1
+        let revision = sleepRevision
         sleepAcknowledgement = acknowledge
-        let timeout = DispatchWorkItem { [weak self] in self?.closeHelperForSleep() }
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.sleepRevision == revision, self.sleepAcknowledgement != nil else { return }
+            self.closeHelperForSleep()
+        }
         sleepTimeout = timeout
         // Close the owner pipe if the request stalls. The helper's exit then
         // acknowledges sleep after its owned sharing media has been reaped.
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
         let pendingAdmission = openingConversation
+        sharing.pauseForSleep()
         closeConversation { [weak self] released in
-            guard let self, self.sleepAcknowledgement != nil else { return }
+            guard let self, self.sleepRevision == revision, self.sleepAcknowledgement != nil else { return }
+            // Disconnecting Sharing can precede the helper's actual exit.
+            // Its onExit callback owns the acknowledgement during shutdown.
+            guard !self.waitingForHelperExit else { return }
             guard released, !pendingAdmission else { self.closeHelperForSleep(); return }
-            self.sharing.suspend { [weak self] revoked in
-                guard let self, self.sleepAcknowledgement != nil else { return }
+            self.sharing.revokeForSleep { [weak self] revoked in
+                guard let self, self.sleepRevision == revision, self.sleepAcknowledgement != nil else { return }
                 if revoked { self.acknowledgeSleep() }
                 else { self.closeHelperForSleep() }
             }
@@ -919,14 +1148,19 @@ final class CameraModel: ObservableObject {
     }
 
     func wakeFromSleep() {
-        sharing.resume()
+        hostSleeping = false
+        if sleepAcknowledgement == nil { sharing.resume() }
+        redeemPendingConversation()
     }
 
     private func closeHelperForSleep() {
-        sharing.disconnect()
-        ready = false
+        if exited { acknowledgeSleep(); return }
+        guard !waitingForHelperExit else { return }
+        loseHelper(.sleepInterrupted)
         client.shutdown()
     }
+
+    private var waitingForHelperExit: Bool { helperFailure != nil && !exited }
 
     private func acknowledgeSleep() {
         sleepTimeout?.cancel()
@@ -934,6 +1168,8 @@ final class CameraModel: ObservableObject {
         let acknowledge = sleepAcknowledgement
         sleepAcknowledgement = nil
         acknowledge?()
+        if acknowledge != nil, !hostSleeping { sharing.resume() }
+        redeemPendingConversation()
     }
 
     func tick() {
@@ -948,6 +1184,7 @@ final class CameraModel: ObservableObject {
         let oldPermission = permission
         refreshPermission()
         if oldPermission != permission, permission == "authorized" { refreshDevices() }
+        refreshStaleDevices()
         if config.audioEnabled, !microphonesLoaded, microphoneDiscoveryError == nil { refreshMicrophones() }
         if capture.active, capture.phase != .stopping, capture.audioEnabled, microphonePermission != "authorized" {
             stopForFailure(microphonePermissionText); return
@@ -975,7 +1212,9 @@ final class CameraModel: ObservableObject {
         client.request("stop") { [weak self] reply in
             guard let self = self, self.capture.generation == token else { return }
             // Only a matched Stop acknowledgement confirms cleanup.
-            self.capture.failed(message, released: self.errorCode(reply) == nil); self.changed()
+            self.capture.failed(message, released: false)
+            if self.confirmedStop(reply) { self.capture.confirmReleased() }
+            self.changed()
         }
     }
     private func abandonCaptureRelease() {
@@ -983,6 +1222,9 @@ final class CameraModel: ObservableObject {
         flushCaptureReleaseWaiters(force: true)
     }
     private func errorCode(_ reply: [String: Any]) -> String? { (reply["error"] as? [String: Any])?["code"] as? String }
+    private func confirmedStop(_ reply: [String: Any]) -> Bool {
+        errorCode(reply) == nil && (reply["result"] as? [String: Any])?["state"] as? String == "stopped"
+    }
     private func showError(_ reply: [String: Any]) { capture.failed(problemText(errorCode(reply) ?? "transport")) }
     private func decode<T: Decodable>(_ value: Any?) -> T? {
         guard let value = value, JSONSerialization.isValidJSONObject(value),
@@ -991,13 +1233,24 @@ final class CameraModel: ObservableObject {
     }
     func setWindowVisible(_ visible: Bool) { windowVisible = visible; syncPreview() }
     private func syncPreview() {
-        preview.update(wanted: !quitting && windowVisible && section == 0 && capture.phase == .streaming,
+        preview.update(wanted: !quitting && windowVisible && screen == .camera && capture.phase == .streaming,
                        ready: ready && !quitting, supported: client.previewVersion == 1, captureGeneration: capture.generation)
     }
     private func changed() {
         syncPreview()
-        sharing.observe(captureLive: capture.phase == .streaming, captureStopped: capture.phase == .stopped || capture.phase == .error)
+        let live = capture.phase == .streaming
+        if live != (streamingSince != nil) { streamingSince = live ? Date() : nil }
+        let connected = conversationActivity?.phase == .connected
+        if connected != (callConnectedSince != nil) { callConnectedSince = connected ? Date() : nil }
+        sharing.observe(captureLive: live, captureStopped: capture.phase == .stopped || capture.phase == .error)
         flushCaptureReleaseWaiters()
+        flushApply()
+        followShareChain()
         didChange?()
+    }
+    /// Clears a call notice the console shows. The call view shows it too.
+    func dismissConversationNotice() {
+        conversationNotice = nil
+        changed()
     }
 }

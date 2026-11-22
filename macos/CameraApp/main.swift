@@ -1,12 +1,16 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static let guide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md")!
     private let model = CameraModel()
+    private let server = ServerMonitor()
     private var window: NSWindow!
     private var status: NSStatusItem!
     private var menus: AppMenus!
+    private var settings: SettingsWindowController!
+    private var devices: DeviceWatcher?
     private var hostPower: HostPowerMonitor?
     private var quitting = false
 
@@ -18,20 +22,33 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.terminate(nil)
             return
         }
+        settings = SettingsWindowController(model: model, server: server) { [weak self] in
+            self?.model.screen = .call
+            self?.showWindow()
+        }
+        settings.visibilityChanged = { [weak self] in self?.updateWindowVisibility() }
+        model.showSettings = { [weak self] pane in self?.settings.show(pane) }
         menus = AppMenus(model: model)
-        menus.showSection = { [weak self] section in self?.model.section = section; self?.showWindow() }
+        menus.show = { [weak self] screen in self?.model.screen = screen; self?.showWindow() }
+        menus.openSettings = { [weak self] pane in self?.settings.show(pane) }
+        menus.showWindow = { [weak self] in self?.showWindow() }
         menus.confirmEnd = { [weak self] in self?.confirmEnd(closingWindow: false) }
         menus.openHelp = { NSWorkspace.shared.open(CameraApp.guide) }
         NSApp.mainMenu = menus.main
         NSApp.windowsMenu = menus.windowMenu
         NSApp.helpMenu = menus.helpMenu
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        // The SwiftUI toolbar (status pill, Settings) bridges into this window.
+        let content = NSHostingController(rootView: CameraView(model: model, server: server))
+        content.sceneBridgingOptions = [.toolbars]
+        content.sizingOptions = [.minSize]
+        window = NSWindow(contentViewController: content)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.toolbarStyle = .unified
         window.title = "Camstream Camera"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.minSize = NSSize(width: 640, height: 520)
-        window.contentView = NSHostingView(rootView: CameraView(model: model))
+        window.setContentSize(NSSize(width: 1000, height: 700))
         window.center()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.isVisible = true
@@ -44,6 +61,7 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.prepareForSleep(acknowledge: acknowledge)
         }, onWake: { [model] in model.wakeFromSleep() })
         model.sharing.observesHostPower = hostPower != nil
+        devices = DeviceWatcher { [model] in model.devicesChanged() }
         model.launch()
         updateMenu()
         showWindow()
@@ -58,10 +76,17 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private func showWindow() {
         window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true); updatePreviewVisibility()
+        NSApp.activate(ignoringOtherApps: true); updateWindowVisibility()
     }
-    private func updatePreviewVisibility() {
-        model.setWindowVisible(window != nil && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
+    private func updateWindowVisibility() {
+        setWindowVisible(window != nil && window.isVisible && !window.isMiniaturized && !NSApp.isHidden
+                         && window.occlusionState.contains(.visible))
+    }
+    /// The preview follows the main window. The server status also polls
+    /// while Settings is open, where Server shows it.
+    private func setWindowVisible(_ visible: Bool) {
+        model.setWindowVisible(visible)
+        server.setVisible((visible || (settings?.isShowing == true && !NSApp.isHidden)) && !quitting)
     }
 
     /// Asks before a conversation ends or the guest leaves. Keep Call and
@@ -94,16 +119,16 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
     func windowWillClose(_ notification: Notification) {
-        model.setWindowVisible(false)
+        setWindowVisible(false)
         // Ordinary closes keep the stream and share. A conversation reaches
         // here only after confirmation, or while one is still opening.
         model.closeConversation()
     }
-    func windowDidMiniaturize(_ notification: Notification) { model.setWindowVisible(false) }
-    func windowDidDeminiaturize(_ notification: Notification) { updatePreviewVisibility() }
-    func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }
-    func applicationDidHide(_ notification: Notification) { model.setWindowVisible(false) }
-    func applicationDidUnhide(_ notification: Notification) { updatePreviewVisibility() }
+    func windowDidMiniaturize(_ notification: Notification) { setWindowVisible(false) }
+    func windowDidDeminiaturize(_ notification: Notification) { updateWindowVisibility() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { updateWindowVisibility() }
+    func applicationDidHide(_ notification: Notification) { setWindowVisible(false) }
+    func applicationDidUnhide(_ notification: Notification) { updateWindowVisibility() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let invitation = urls.first(where: { $0.scheme == "camstream" }) else { return }
@@ -115,12 +140,13 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard window != nil else { return .terminateNow }
         quitting = true
+        server.setVisible(false)
         return model.quit() ? .terminateNow : .terminateLater
     }
 }
 
 let app = NSApplication.shared
-let delegate = CameraApp()
+let delegate = MainActor.assumeIsolated { CameraApp() }
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()

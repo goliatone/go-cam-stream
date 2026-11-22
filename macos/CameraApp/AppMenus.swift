@@ -7,7 +7,11 @@ final class AppMenus: NSObject, NSMenuDelegate {
     let status = NSMenu()
     let windowMenu = NSMenu(title: "Window")
     let helpMenu = NSMenu(title: "Help")
-    var showSection: (Int) -> Void = { _ in }
+    /// Shows the main window at the camera console or the call.
+    var show: (CameraModel.Screen) -> Void = { _ in }
+    /// Opens Settings at a pane, or where it was left.
+    var openSettings: (SettingsPane?) -> Void = { _ in }
+    var showWindow: () -> Void = {}
     var confirmEnd: () -> Void = {}
     var openHelp: () -> Void = {}
 
@@ -23,7 +27,7 @@ final class AppMenus: NSObject, NSMenuDelegate {
     private var statusEndCall: NSMenuItem!
     private var statusCopyInvitation: NSMenuItem!
 
-    static let sections = ["Setup & Settings", "Connection Details", "Sharing", "Conversations"]
+    static let screens: [(title: String, screen: CameraModel.Screen)] = [("Camera", .camera), ("Call", .call)]
 
     init(model: CameraModel) {
         self.model = model
@@ -79,16 +83,14 @@ final class AppMenus: NSObject, NSMenuDelegate {
         }
 
         let view = submenu("View")
-        for (index, title) in Self.sections.enumerated() {
-            let section = item(title, #selector(showSectionItem(_:)), String(index + 1))
-            section.tag = index
-            view.addItem(section)
+        for (index, entry) in Self.screens.enumerated() {
+            view.addItem(item(entry.title, #selector(showScreenItem(_:)), String(index + 1), tag: index))
         }
 
         let camera = submenu("Camera")
         let toggle = item("Start Camera", #selector(toggleCapture), "s")
         toggle.keyEquivalentModifierMask = [.command, .shift]
-        for entry in [toggle, item("Save Settings", #selector(saveSettings), "s"), .separator(),
+        for entry in [toggle, .separator(),
                       item("Export Connection Files", #selector(exportFiles)), item("Show Files in Finder", #selector(revealFiles))] {
             camera.addItem(entry)
         }
@@ -120,8 +122,7 @@ final class AppMenus: NSObject, NSMenuDelegate {
         let entries: [NSMenuItem] = [
             streamLine, shareLine, callLine, .separator(),
             statusToggle, copyLinkItem, stopSharingItem, statusStartCall, statusShowCall, statusCopyInvitation, statusEndCall, .separator(),
-            item("Sharing…", #selector(showSectionItem(_:)), tag: 2), item("Connection Details…", #selector(showSectionItem(_:)), tag: 1),
-            item("Settings…", #selector(showSettings)), .separator(),
+            item("Show Camstream Camera", #selector(showMainWindow)), item("Settings…", #selector(showSettings)), .separator(),
             NSMenuItem(title: "Quit Camstream Camera", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]
         entries.forEach(status.addItem)
@@ -157,19 +158,23 @@ final class AppMenus: NSObject, NSMenuDelegate {
         NSApp.orderFrontStandardAboutPanel(options: options)
     }
 
-    @objc private func showSettings() { showSection(0) }
-    @objc private func showSectionItem(_ sender: NSMenuItem) { showSection(sender.tag) }
-    @objc private func toggleCapture() { if model.capture.active { model.stop() } else { model.start() } }
-    @objc private func saveSettings() { model.save() }
-    @objc private func exportFiles() { model.export() }
+    @objc private func showSettings() { openSettings(nil) }
+    @objc private func showScreenItem(_ sender: NSMenuItem) { show(Self.screens[sender.tag].screen) }
+    @objc private func showMainWindow() { showWindow() }
+    @objc private func toggleCapture() { if model.capture.active { model.stop() } else { model.startCamera() } }
+    /// The export result and checklist show in Settings → Server.
+    @objc private func exportFiles() {
+        openSettings(.server)
+        model.export()
+    }
     @objc private func revealFiles() { model.revealExports() }
     @objc private func copyShareLink() { model.sharing.copyLink() }
     @objc private func stopSharing() { model.sharing.stopSharing() }
     @objc private func startConversation() {
-        showSection(3)
+        show(.call)
         model.startConversation()
     }
-    @objc private func showConversation() { showSection(3) }
+    @objc private func showConversation() { show(.call) }
     @objc private func copyInvitation() { model.copyConversationInvitation() }
     @objc private func endConversation() { confirmEnd() }
     @objc private func help() { openHelp() }
@@ -180,8 +185,7 @@ extension AppMenus: NSMenuItemValidation {
         switch item.action {
         case #selector(toggleCapture):
             item.title = model.capture.active ? "Stop Camera" : "Start Camera"
-            return model.capture.active ? model.canStop : model.canStart
-        case #selector(saveSettings): return model.canSave
+            return model.capture.active ? model.canStop : model.canStartCamera
         case #selector(exportFiles): return model.canExport
         case #selector(revealFiles): return !model.exported.isEmpty
         case #selector(copyShareLink): return model.sharing.canCopyLink

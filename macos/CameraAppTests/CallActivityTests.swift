@@ -130,7 +130,9 @@ func runCallActivityTests(examples: [String: Any], check: (Bool, String) -> Void
     check(model.reportConversationState(report, from: surface) &&
           model.conversationActivity == ConversationActivity(role: .host, phase: .waiting, camera: false, microphone: false),
           "a page cannot claim active inputs without the native lease")
-    guard let lease = model.claimConversationCapture(stop: {}) else { check(false, "released capture grants a lease"); return }
+    var granted: UUID?
+    model.requestConversationCapture(stop: {}) { granted = $0 }
+    guard let lease = granted else { check(false, "released capture grants a lease"); return }
     check(model.conversationActivity == ConversationActivity(role: .host, phase: .waiting, camera: true, microphone: true,
                                                               cameraLabel: "FaceTime HD Camera", microphoneLabel: "MacBook Microphone"),
           "a leased page reports its live inputs and device names")
@@ -163,6 +165,6 @@ func runCallActivityTests(examples: [String: Any], check: (Bool, String) -> Void
     model.tick()
     check(model.conversationActivity == ConversationActivity(role: .host, phase: .connected, camera: nil, microphone: nil, hostedInBrowser: true),
           "browser hosting follows the owner's room phase without claiming local inputs")
-    helper.onFailure?()
+    helper.onFailure?(.disconnected)
     check(model.conversationActivity == nil && !model.hostInBrowser, "helper loss clears call activity")
 }

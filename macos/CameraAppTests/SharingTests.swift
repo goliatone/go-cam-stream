@@ -325,6 +325,25 @@ func runSharingTests(repo: URL, check: @escaping (Bool, String) -> Void) throws 
               "stopped, pending, active, degraded, stopping, revoked and expired have distinct status text")
     }
 
+    do {
+        let camera = FixtureSharingCamera()
+        camera.sharing.replies[.setup] = ["result": modes["core"]!]
+        camera.sharing.replies[.status] = ["result": stoppedView]
+        let app = CameraModel(client: camera, permissions: FixturePermissions())
+        app.launch()
+        defer { _ = app.quit() }
+        app.sharing.form = fixtureForm
+        check(app.sharing.setupDirty, "sharing setup has unsaved edits before owner loss")
+        camera.onFailure?(.disconnected)
+        camera.onExit?()
+        camera.sharing.replies[.setup] = ["result": modes["managed_public_private"]!]
+        app.retryHelper()
+        check(app.sharing.setup?.ingressModes.map(\.mode) == managedSetup.ingressModes.map(\.mode) && app.sharing.setupDirty &&
+              app.sharing.form.publicBaseURL == fixtureForm.publicBaseURL && app.sharing.form.apiToken == fixtureForm.apiToken,
+              "reconnect refreshes saved sharing settings while retaining the draft and write-only input")
+        check(!camera.sharing.methods.contains(.configure), "sharing reconnect never saves the draft")
+    }
+
     // The app model wires sharing to explicit capture and helper ownership.
     do {
         let camera = FixtureSharingCamera()
@@ -338,9 +357,8 @@ func runSharingTests(repo: URL, check: @escaping (Bool, String) -> Void) throws 
         app.sharing.timeZone = TimeZone(identifier: "UTC")!
         app.launch()
         defer { _ = app.quit() }
-        app.section = 2
         check(app.sharing.supported && app.sharing.ingressReady && !camera.methods.contains("start") && !app.sharing.canShare,
-              "opening Sharing never starts capture")
+              "sharing setup never starts capture")
         app.sharing.shareCamera()
         check(!camera.methods.contains("sharing_create"), "Share is unavailable until Start Camera")
         app.start()
@@ -371,7 +389,7 @@ func runSharingTests(repo: URL, check: @escaping (Bool, String) -> Void) throws 
         app.wakeFromSleep()
         check(app.sharing.canShare && !app.sharing.hasShare, "wake enables explicit Share Again without restoring a link")
         app.sharing.shareCamera()
-        camera.onFailure?()
+        camera.onFailure?(.disconnected)
         check(app.sharing.phase == .ended(.interrupted) && !app.sharing.connected, "helper loss ends sharing")
     }
 
@@ -406,7 +424,7 @@ func runSharingTransportTests(fixture: URL, check: @escaping (Bool, String) -> V
         var copied: [String] = [], failures = 0, exits = 0
         sharing.writeLink = { copied.append($0) }
         client.onReady = { sharing.connect() }
-        client.onFailure = { failures += 1; sharing.disconnect() }
+        client.onFailure = { _ in failures += 1; sharing.disconnect() }
         client.onExit = { exits += 1; sharing.disconnect() }
         client.launch(executable: script, directory: directory)
         func wait(_ done: () -> Bool) -> Bool {

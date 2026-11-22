@@ -97,11 +97,12 @@ struct CaptureState {
     private(set) var audioEnabled = false
     private(set) var audioState = "disabled"
     private(set) var audioPackets = 0
-    /// The helper confirmed that this app session owns no running capture:
-    /// launch, a matched Stop acknowledgement, a capture_stopped event for the
-    /// current run, a successful configure or a Start the helper refused before
-    /// running. A failure without that evidence leaves ownership unresolved.
-    private(set) var released = true
+    /// A Stop or Configure acknowledgement confirms release. Once ownership
+    /// is known, the current helper can also report that its run has ended.
+    private(set) var released = false
+    // At launch and after helper loss, an earlier supervisor may still own
+    // capture. Only a lock-backed reply resolves that uncertainty.
+    private var needsReleaseCheck = true
     var active: Bool { [.starting, .streaming, .stopping].contains(phase) }
     /// Call devices may be claimed only after confirmed cleanup. The stream
     /// error stays visible for recovery on the camera screen.
@@ -128,9 +129,9 @@ struct CaptureState {
         audioState = audioEnabled ? "stopping" : "disabled"
         problem = nil
     }
-    mutating func stopped() {
+    mutating func stopped(confirmedRelease: Bool = true) {
         phase = .stopped; frames = 0; problem = nil; audioPackets = 0; audioState = audioEnabled ? "stopped" : "disabled"
-        released = true
+        if confirmedRelease { confirmReleased() } else { released = false }
     }
     mutating func status(_ state: String, frames: Int, audio: MicrophoneStatus? = nil) {
         guard phase == .starting || phase == .streaming else { return }
@@ -150,41 +151,45 @@ struct CaptureState {
         audioPackets = 0
         frames = 0
         problem = message
-        if let confirmed { released = confirmed }
+        if let confirmed { released = confirmed && !needsReleaseCheck }
     }
     /// Only a run the app still considers starting or streaming can end here,
     /// so a stale event cannot release ownership during or after Stop.
     mutating func captureEnded(_ error: String?) {
         guard phase == .starting || phase == .streaming else { return }
         if let error = error { failed(error, released: true) }
-        else { stopped() }
+        else { stopped(confirmedRelease: !needsReleaseCheck) }
     }
     /// A matched Stop acknowledgement after an unresolved failure confirms
     /// cleanup without hiding the original error.
     mutating func confirmReleased() {
         guard phase == .error || phase == .stopped else { return }
+        needsReleaseCheck = false
         released = true
     }
-    /// Helper loss leaves ownership unknown until the process is reaped.
-    mutating func ownershipLost() { released = false }
+    /// Helper loss leaves ownership unknown until the capture lock is checked.
+    mutating func ownershipLost() {
+        needsReleaseCheck = true
+        released = false
+    }
 }
 
 func cameraMessage(_ code: String) -> String {
     switch code {
-    case "audio_selection_invalid": return "Choose an available microphone, or turn off Enable microphone."
-    case "audio_device_unavailable": return "The selected microphone is unavailable. Reconnect it and refresh, or choose another microphone and save before starting."
-    case "audio_discovery_failed": return "Microphones could not be listed. Check microphone access, then refresh the list."
-    case "audio_runtime_unsupported": return "Microphone audio is unavailable with this helper or runtime. Use a complete current Camstream Camera app, or disable microphone audio."
+    case "audio_selection_invalid": return "Choose an available microphone, or turn off Include microphone audio."
+    case "audio_device_unavailable": return "The selected microphone is unavailable. Reconnect it, or choose another microphone in Camera settings."
+    case "audio_discovery_failed": return "Microphones could not be listed. Check microphone access, then open Camera settings again to list them."
+    case "audio_runtime_unsupported": return "Microphone audio isn't available in this version of the camera service. Install a complete, current Camstream Camera, or turn off microphone audio."
     case "audio_startup_timeout": return "No microphone audio arrived within 20 seconds. Check microphone access and the selected device, then choose Start Camera again."
     case "audio_stalled": return "Microphone audio stopped. Check or reconnect the selected microphone, then choose Start Camera again."
     case "audio_observer_failed": return "Microphone audio could not be verified. Capture stopped; quit and reopen the complete Camstream Camera app before retrying."
     case "audio_capture_failed": return "Capture stopped. Check camera and microphone access and device availability, then choose Start Camera again."
     case "busy": return "This camera is already in use. Stop the other Camstream session, then quit and reopen Camstream Camera."
-    case "not_configured": return "Save your camera settings before starting."
-    case "configuration_failed": return "Settings could not be saved. Check camera permission, refresh the camera list, and try again."
-    case "device_unavailable": return "No available webcam was found. Check camera permission and reconnect the camera, then refresh."
+    case "not_configured": return "Camera settings weren’t applied. Choose Try Again to apply them and start."
+    case "configuration_failed": return "Settings could not be applied. Check camera permission and the selected webcam, then try again."
+    case "device_unavailable": return "No available webcam was found. Check camera permission and reconnect the camera, then try again."
     case "capture_failed": return "The camera stopped. Check camera permission and close other apps using the webcam, then try Start Camera again."
     case "export_failed": return "Connection files could not be exported. Check access to the app’s private folder and try again. Capture is unchanged."
-    default: return "The camera helper is unavailable. Quit and reopen Camstream Camera to retry."
+    default: return "The camera service couldn’t complete this action. Try again."
     }
 }

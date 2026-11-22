@@ -14,41 +14,62 @@ The task installs locked frontend dependencies and uses the checkout's `.version
 Each run creates a fresh bundle under `dist/macos/camstream-camera-VERSION/build.XXXXXX/`.
 Open the `Camstream Camera.app` path printed at the end, or pass a fresh `.app`
 path to `./taskfile mac:build` to choose the destination.
-To stream, allow camera access, select a webcam, choose a camera name (stream ID),
-and save settings. Saving never starts capture.
-For sound, turn on **Enable microphone**, choose **Allow Microphone** if needed,
-select a microphone, and save. Microphone audio is off by default; permission
-grant, selection, Save and reopening never start capture. Denial leaves video-only
-use available by disabling microphone audio. Choose **Start Camera** explicitly.
+The window is a console: the camera stage with **Start Camera** under it, a
+status pill in the toolbar, and cards for the server stream, the share link and
+calls. One-time setup lives in **Settings** (⌘, or the gear in the toolbar), in
+five panes: **Camera**, **Network**, **Server**, **Sharing** and **Calls**.
+To stream, allow camera access and choose **Start Camera**. To pick another
+webcam or camera name (stream ID), open **Settings → Camera**. Camera and network
+settings apply as soon as they are valid: when you pick a value, leave a field,
+switch panes or close Settings. There is no Save step, and applying never starts
+capture. For sound, turn on **Include microphone audio** in **Settings → Camera**,
+choose **Allow Microphone** if needed, and select a microphone. Microphone audio
+is off by default; permission grant, selection and reopening never start capture.
+Denial leaves video-only use available by turning microphone audio off. Choose
+**Start Camera** explicitly.
 
-**Save Settings** and **Start Camera** stay in a bar at the bottom of Setup.
-While Start is unavailable, the bar names the step that blocks it, for example
-**Allow camera access first.** or **Save your changes first.**, and VoiceOver
-reads the same reason as the button's hint. A stream problem appears at the top
-of Setup with the actions that apply: **Allow Camera**, **Open Camera Settings**,
-**Try Again** or **Refresh Cameras**. Permission advice appears only while access
-is not allowed. If the helper stops, the app offers only **Quit Camstream
-Camera**; reopen it to continue. The window narrows to 640 × 520 pt. Below about
-860 pt it uses one column, with settings first while stopped and the preview
-first while live.
+**Start Camera** applies any valid change that hasn't applied yet, then starts,
+so a returning user goes live in one click. While Start is unavailable, the line
+beside it names the step that blocks it, for example **Allow camera access
+first.** or an invalid port, with a link to the Settings pane that fixes it, and
+VoiceOver reads the same reason as the button's hint. A stream problem appears on
+the stage with the actions that apply: **Allow Camera**, **Open Camera
+Settings**, **Try Again** or **Choose Webcam…**. Permission advice appears only
+while access is not allowed. Webcams and microphones that are connected or
+removed show up in Settings without a refresh; while the camera is live the lists
+wait until it stops. Results and problems share one banner above the stage,
+problems first, and × dismisses it. If the helper stops, the app offers only
+**Quit Camstream Camera**; reopen it to continue. The window narrows to 640 ×
+520 pt. Below 860 pt the cards stack under the stage.
 
-The menu-bar icon, its menu, its tooltip and the window header share one status
-summary: the camera stream, any share link (public or tailnet, end time and
-viewers) and any open conversation (role, phase and local camera/mic when
-known). The icon is outlined while stopped, filled while live, crossed out after
-a stream error and a phone during a call; an active share link adds a link
-badge. The menu offers Start/Stop Camera, Copy Share Link and Stop Sharing while
-a link exists, Start Conversation, or Show Call and End/Leave Conversation…
-during a call, plus Sharing, Connection Details, Settings and Quit. The app
-menus include About, Hide (⌘H), Close Window (⌘W), Undo/Redo, the four sections
-(⌘1–⌘4), Start/Stop Camera (⇧⌘S), Save Settings (⌘S), connection-file export,
-the Call actions, Minimize (⌘M), Zoom and a Help link to this guide.
+The menu-bar icon, its menu, its tooltip and the toolbar status pill share one
+status summary: the camera stream, any share link (public or tailnet, end time
+and viewers) and any open conversation (role, phase and local camera/mic when
+known). The pill adds elapsed time while live or in a call, for example
+**Live · 12:04 · 2 viewers**, and its tooltip lists each activity. The icon is
+outlined while stopped, filled while live, crossed out after a stream error and a
+phone during a call; an active share link adds a link badge. The menu offers
+Start/Stop Camera, Copy Share Link and Stop Sharing while a link exists, Start
+Conversation, or Show Call and End/Leave Conversation… during a call, plus Show
+Camstream Camera, Settings… and Quit. The app menus include About, Settings…
+(⌘,), Hide (⌘H), Close Window (⌘W), Undo/Redo, the Camera and Call views (⌘1,
+⌘2), Start/Stop Camera (⇧⌘S), connection-file export, the Call actions, Minimize
+(⌘M), Zoom and a Help link to this guide.
 
 Closing the window leaves the menu-bar app, the camera stream and any share
 running. During a conversation it asks first: a host chooses **End
 Conversation** or **Keep Call**, a guest **Leave** or **Cancel**. Return and
 Escape keep the call. The Dock entry and app menus also provide access to the
 controls. Quit waits for helper-owned capture cleanup. Reopening starts stopped.
+
+If the camera service stops, use **Reconnect Camera Service** in the window.
+It becomes available after the previous service exits. The app gives an
+unresponsive helper time to clean up, then terminates it if needed. Reconnecting
+keeps applied settings, camera edits that haven't applied yet and unsaved Sharing
+edits. An invitation opened
+during the outage stays queued through sleep and resumes after reconnection.
+Start the camera or create a new share link when you are ready. If the app reports that its bundled service needs
+repair, follow the install guide linked in the message.
 
 If the camera icon is missing, check **System Settings → Menu Bar → Allow in the
 Menu Bar → Camstream Camera**. A crowded menu bar can also hide it behind a
@@ -57,24 +78,32 @@ the camera icon farther right, then restore the other item. The Dock entry and
 **Camstream Camera** app menu remain available while the icon is hidden.
 [Apple’s menu-bar rearrangement guide](https://support.apple.com/en-gb/guide/mac-help/mchlp1446/26/mac/26).
 
-**Only this Mac** binds loopback for local testing. For a server on another
+In **Settings → Network**, **Only this Mac** binds loopback for local testing. For a server on another
 computer, choose **Private network** and enter this Mac’s reachable private IP or
 hostname. The listener uses all IPv4 interfaces, with authenticated readers; use
 a trusted LAN/VPN and keep the port off the public internet. Settings are locked
 while capture is starting, live or stopping, and while a conversation uses the
-camera. Setup says why and which action unlocks them.
+camera. Each Settings pane says why at the top, with **Stop Camera** while the
+camera is on.
 
-Connection Details leads with a numbered server checklist. Step 1, **Export
+**Settings → Server** leads with a numbered server checklist. Step 1, **Export
 Connection Files**, creates mode-0600 YAML and environment files while stopped or
 live; it does not stop capture, change settings or rotate credentials. **Show
 Files in Finder** reveals existing private files, including after relaunch,
 without displaying the password in the app or clipboard. The remaining steps are
-**Add Camera → Import Mac files** with both files in the web app, then **Test
-connection → Save Camera → Watch Camera**, while the camera keeps running. The
-checklist marks only what the app can see: an export since the settings were last
-saved and a running camera. Below it, **Copy RTSP Address (needs the exported
-password)** copies the credential-free address; both access modes require reader
-credentials. YAML-only import requires entering the private .env credentials.
+**Add Camera → Camstream Mac app** with both files on your server, then
+**Continue → Check connection → Save camera → Watch now**, while the camera keeps
+running. The checklist marks only what the app can see: an export since the
+settings last changed and a running camera. Below it, **Copy Address** copies
+the credential-free RTSP address; both access modes require reader credentials.
+YAML-only import requires entering the private .env credentials.
+
+In **Settings → Server**, enter the server URL and choose **Check
+Now** or wait for the automatic check. The default is `http://127.0.0.1:8081/`
+for a local development server. For a private deployment, use its Tailscale Serve
+HTTPS URL. When the server responds, choose **Open in Browser** beside its status
+or on the **Server stream** card.
+Clear the URL to stop automatic checks.
 For startup YAML deployments, merge the camera/grant and supply environment values
 separately. Export does not automatically pair with or restart a server.
 
@@ -221,7 +250,7 @@ Mac app listener `127.0.0.1:18894`. The T06 harnesses use
 `https://camstream-t06.getctx.com` at `127.0.0.1:18893`. Each hostname must
 forward to its own loopback port with its own connector.
 
-The Conversations tab shows the dedicated Mac connector status when enrolled.
+**Settings → Calls** shows the dedicated Mac connector status when enrolled.
 **Start Conversation** starts that connector if necessary, then verifies the
 guest URL. **Reconnect** restarts the enrolled job and rechecks an open room's
 guest route. The job runs under the logged-in macOS user and stays available
@@ -268,10 +297,12 @@ In an open browser tab, read the loaded page's ID in the developer console with
 
 ### Camera sharing
 
-The **Sharing** view (app menu **Sharing**, menu-bar **Sharing…**) shows routine
-sharing first, then the one-time **Sharing settings**. Sharing requires a helper
-that advertises the sharing capability. With an older helper the view reports
-sharing as unavailable and sends no sharing request.
+Routine sharing is on the **Share link** card in the window; the one-time setup
+is in **Settings → Sharing**. Unlike camera settings, sharing settings apply only
+when you choose **Save Sharing Settings**, because the relay credentials are
+saved and tested as a set. Sharing requires a helper that advertises the sharing
+capability. With an older helper the card reports sharing as unavailable and
+sends no sharing request.
 
 Set up once:
 
@@ -281,31 +312,36 @@ Set up once:
    and proxy to the loopback proxy target, `127.0.0.1:8890` by default
    (**Advanced → Proxy target**).
 2. **Connection relay** defaults to Cloudflare TURN. Enter the **Key ID** and
-   **API token** from the TURN key in your Cloudflare dashboard, save, then
-   choose **Test Connection** until it reports **Relay ready**. Relay credentials are write-only: the app never shows a saved value,
+   **API token** from the TURN key in your Cloudflare dashboard, choose **Save
+   Sharing Settings**, then **Test Connection** until it reports **Relay ready**. Relay credentials are write-only: the app never shows a saved value,
    and a replacement needs both fields. **Advanced** offers self-hosted coturn
    (1–8 `turn:`/`turns:` URLs and the shared secret) or **No relay**.
 
 The helper validates saved settings strictly. Errors show local guidance and
 never helper text. Settings stay locked while a link exists.
 
-For routine use, choose **Start Camera**, then **Share Camera**. **Options** sets
-the link lifetime (15 minutes, 1 hour by default, or 8 hours) and viewers at a
-time (1–3, default 1). The card leads with who can open the link (**Shared
-publicly** or **Shared on your tailnet**) and its absolute end time, marks it as a
-**Public link** or **Tailnet link** apart from the private stream, and shows the
-viewers watching against the limit and the video state; anyone with the link can
-watch until that time. If viewers can't reach the guest page, the card says so
+For routine use, choose **Share…** on the Share link card. It sets the link
+lifetime (15 minutes, 1 hour by default, or 8 hours) and viewers at a time (1–3,
+default 1). With the camera off its button reads **Start Camera and Create
+Link**: the camera starts, the link is created once the stream is live, and the
+link is copied. With the camera live, **Create Link** creates and copies it at
+once. The card leads with who can open the link (**Shared publicly** or **Shared
+on your tailnet**) and its absolute end time, marks it as a **Public link** or
+**Tailnet link** apart from the private stream, and shows the viewers watching
+against the limit and, once someone opens the link, whether video is reaching
+them; anyone with the link can watch until that time. If viewers can't reach the guest page, the card says so
 and that Camstream checks again every few seconds; the helper re-checks the
 HTTPS address on its own, so there is no separate check action. **Copy Link** asks
 the helper for the link and writes it only to the clipboard; the app never shows
 or stores it. **Stop Sharing** ends the link and every viewer's video without
-confirmation and keeps the camera running. **Share Again** always creates a new
+confirmation and keeps the camera running. **Share Again…** always creates a new
 link. Stop Camera, Quit, host sleep, capture failure or helper loss ends sharing.
-After wake or relaunch, use Share Again for a fresh link. Opening Sharing or creating a link never
-starts capture. Sharing is video only, with one fixed quality profile and no
+After wake or relaunch, use Share Again… for a fresh link. Opening Sharing
+settings never starts capture; only **Start Camera and Create Link** does, as its
+label says. Sharing is video only, with one fixed quality profile and no
 microphone, PIN or approval controls. While a link is active the menu-bar menu
-shows its end time and viewer count with **Copy Share Link** and **Stop Sharing**.
+shows its end time and viewer count with **Copy Share Link** and **Stop Sharing**,
+and the toolbar status pill adds the viewer count.
 
 The sharing checks in the camera-free suite replay `data/api/sharing_examples.json`
 and `macos/fixtures/sharing-ingress-modes.json` through in-memory fixtures and
@@ -547,7 +583,7 @@ References: [GitHub macOS certificate setup](https://docs.github.com/en/actions/
 
 For a signed release, download its camera DMG, open it and drag **Camstream Camera**
 to **Applications**. Eject the disk and open the app from Applications. Allow camera
-access, save settings, then explicitly Start Camera. Offline copying of that same
+access, then explicitly choose Start Camera. Offline copying of that same
 stapled app/DMG needs no development tools or dependency downloads.
 
 Quit before updating. Replace the complete app with the new version, then reopen;
@@ -924,14 +960,14 @@ retain no images. They do not activate a webcam or certify the native UI.
 
 ### Using the live preview
 
-After saving settings and choosing **Start Camera**, Setup & Settings displays
+After you choose **Start Camera**, the camera stage displays
 an aspect-fit, unmirrored view of the published stream. No preview capture occurs
 before Start. In private-network mode, Start also makes the authenticated stream
 available to configured readers; this is not a preview-only mode.
 
-Closing, minimizing, fully covering the window, or switching to Connection Details
-pauses preview processing while streaming continues. Reopening the visible setup
-panel reconnects. Stop clears the preview; Quit stops all capture. If preview
+Closing, minimizing, fully covering the window, or switching to the Call view
+pauses preview processing while streaming continues. Returning to the visible
+camera stage reconnects. Stop clears the preview; Quit stops all capture. If preview
 fails, **Retry Preview** reconnects without restarting an otherwise healthy stream.
 A stale image is cleared after five seconds. Local preview does not establish
 that a remote Camstream server can reach this Mac.
@@ -947,10 +983,11 @@ pending. Earlier
 video-only artifacts do not establish optional-audio delivery.
 
 For video-only browser onboarding, keep capture running and export or reveal both
-connection files in Connection Details. In the native development viewer, choose
-Add Camera and import those files. Review the endpoint, test preview, save, then
-choose Watch Camera. YAML alone requires entering credentials. Exported access
-grants are ignored; the saved camera belongs to the signed-in creator.
+connection files in **Settings → Server**. In the native development viewer, choose
+Add Camera → Camstream Mac app and import those files. Review the endpoint, then
+choose Check connection, Save camera and Watch now. YAML alone requires entering
+credentials. Exported access grants are ignored; the saved camera belongs to the
+signed-in creator.
 
 `localhost` means the server's machine. Same-Mac development uses IPv4 loopback;
 a Linux/container/remote host needs a reachable companion address and its Private

@@ -110,7 +110,8 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
               model.endConfirmation == EndConfirmation(title: "Leave this conversation?", detail: "The host stays in the conversation.",
                                                        confirm: "Leave", cancel: "Cancel"),
               "a guest is asked before leaving, with Cancel as the safe choice")
-        let lease = model.claimConversationCapture(stop: {})
+        var lease: UUID?
+        model.requestConversationCapture(stop: {}) { lease = $0 }
         check(lease != nil && model.activity.call == "In call · Camera and mic status unavailable",
               "a leased call without a page report says its device state is unavailable")
         model.releaseConversationCapture(lease!)
@@ -132,9 +133,11 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
     do { // Standard menus, key equivalents and current validation.
         let (model, helper) = launched()
         let menus = AppMenus(model: model)
-        var shown: [Int] = []
+        var shown: [CameraModel.Screen] = []
+        var panes: [SettingsPane?] = []
         var ends = 0
-        menus.showSection = { shown.append($0) }
+        menus.show = { shown.append($0) }
+        menus.openSettings = { panes.append($0) }
         menus.confirmEnd = { ends += 1 }
         check(menus.main.items.map(\.title) == ["Camstream Camera", "File", "Edit", "View", "Camera", "Call", "Window", "Help"],
               "the app has standard Mac menus plus Camera and Call")
@@ -147,9 +150,8 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         let expected: [(String, String, NSEvent.ModifierFlags)] = [
             ("Settings…", ",", .command), ("Hide Camstream Camera", "h", .command), ("Hide Others", "h", [.command, .option]),
             ("Quit Camstream Camera", "q", .command), ("Close Window", "w", .command), ("Undo", "z", .command),
-            ("Redo", "z", [.command, .shift]), ("Setup & Settings", "1", .command), ("Connection Details", "2", .command),
-            ("Sharing", "3", .command), ("Conversations", "4", .command), ("Start Camera", "s", [.command, .shift]),
-            ("Save Settings", "s", .command), ("Minimize", "m", .command),
+            ("Redo", "z", [.command, .shift]), ("Camera", "1", .command), ("Call", "2", .command),
+            ("Start Camera", "s", [.command, .shift]), ("Minimize", "m", .command),
         ]
         for (title, key, modifiers) in expected {
             let item = find(title)
@@ -164,28 +166,31 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
             .map { "\($0.keyEquivalentModifierMask.rawValue)-\($0.keyEquivalent)" }
         check(Set(shortcuts).count == shortcuts.count, "no two commands share a key equivalent")
 
-        let start = find("Start Camera")!, save = find("Save Settings")!
-        check(menus.validateMenuItem(start) && !menus.validateMenuItem(save), "Start is available for saved settings; Save waits for a change")
+        let start = find("Start Camera")!
+        check(menus.validateMenuItem(start) && find("Save Settings") == nil, "Start is available, with no separate Save command")
+        model.draft.path = "edited camera"
+        check(!menus.validateMenuItem(start), "menu validation follows an invalid edit without a model notification")
         model.draft.path = "edited-camera"
-        check(menus.validateMenuItem(save) && !menus.validateMenuItem(start),
-              "menu validation follows unsaved edits without a model notification")
+        check(menus.validateMenuItem(start), "a valid edit that isn't applied yet keeps Start available; it applies first")
         model.draft.path = model.saved!.path
+        (find("Settings…")!.target as! NSObject).perform(find("Settings…")!.action, with: nil)
+        check(panes == [nil], "Settings… opens the Settings window where it was left")
         stream(model, helper)
         check(menus.validateMenuItem(start) && start.title == "Stop Camera", "the same command stops a live stream")
         (start.target as! NSObject).perform(start.action, with: start)
         check(model.capture.phase == .stopping || model.capture.phase == .stopped, "the menu command stops the stream")
-        for index in 0..<4 {
-            let item = find(AppMenus.sections[index])!
+        for entry in AppMenus.screens {
+            let item = find(entry.title)!
             (item.target as! NSObject).perform(item.action, with: item)
         }
-        check(shown == [0, 1, 2, 3], "View commands open each section")
+        check(shown == [.camera, .call], "View commands show the camera console and the call")
 
         let startCall = find("Start Conversation")!, showCall = find("Show Call")!, endCall = find("End Conversation…")!
         check(menus.validateMenuItem(startCall) && !menus.validateMenuItem(showCall) && !menus.validateMenuItem(endCall),
               "without a call, the Call menu offers Start Conversation")
         helper.conversationReply = prejoin("host")
         (startCall.target as! NSObject).perform(startCall.action, with: startCall)
-        check(model.conversationSurface != nil && shown.last == 3 && !menus.validateMenuItem(startCall) &&
+        check(model.conversationSurface != nil && shown.last == .call && !menus.validateMenuItem(startCall) &&
               menus.validateMenuItem(showCall) && menus.validateMenuItem(endCall) && endCall.title == "End Conversation…",
               "Start Conversation opens the call; Show Call and End become available")
         (endCall.target as! NSObject).perform(endCall.action, with: endCall)
@@ -207,5 +212,12 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         menus.update()
         check(menus.status.items.contains { !$0.isHidden && $0.title == "Start Conversation" } &&
               !menus.status.items.contains { !$0.isHidden && $0.title == "Show Call" }, "the status menu can start a call again")
+        let statusTitles = menus.status.items.map(\.title)
+        check(statusTitles.contains("Show Camstream Camera") && statusTitles.contains("Settings…") &&
+              !statusTitles.contains("Sharing…") && !statusTitles.contains("Connection Details…"),
+              "the status menu opens the window and Settings instead of tabs")
+        let export = find("Export Connection Files")!
+        (export.target as! NSObject).perform(export.action, with: export)
+        check(panes.last == .server, "Export Connection Files opens Settings → Server, where its result shows")
     }
 }

@@ -178,6 +178,7 @@ final class SharingModel: ObservableObject {
     func connect() {
         epoch += 1
         connected = helper != nil
+        helperLost = false
         supported = (helper?.sharingVersion ?? 0) >= 1
         guard connected, supported, let helper = helper else { changed(); return }
         helper.onSharingEvent = { [weak self] reply in self?.receive(reply) }
@@ -196,10 +197,13 @@ final class SharingModel: ObservableObject {
         changed()
     }
 
-    func suspend(completion: @escaping (Bool) -> Void) {
+    func pauseForSleep() {
         hostSleeping = true
         if hasShare || phase == .pending { end(.interrupted) }
         changed()
+    }
+
+    func revokeForSleep(completion: @escaping (Bool) -> Void) {
         guard connected, supported, let helper else { completion(true); return }
         // Even a pending create must be revoked. The owner pipe serializes this
         // request after the create, so the reply confirms authorization ended.
@@ -241,7 +245,7 @@ final class SharingModel: ObservableObject {
     }
     var ingressReady: Bool { setup?.ingressState == .ready }
     var canShare: Bool { shareBlockedReason == nil && !hasShare && phase != .pending }
-    var canEditOptions: Bool { connected && supported && !hasShare && phase != .pending }
+    var canEditOptions: Bool { connected && supported && !hostSleeping && !hasShare && phase != .pending }
     var canCopyLink: Bool { connected && !copying && share?.shareID != nil && (phase == .active || phase == .degraded) }
     var canStopSharing: Bool { connected && share?.shareID != nil && (phase == .active || phase == .degraded) }
     /// Copy Link and Stop Sharing replace the Share button while a link exists.
@@ -251,9 +255,9 @@ final class SharingModel: ObservableObject {
         return phase == .failed ? "Share Again" : "Share Camera"
     }
     var shareBlockedReason: String? {
-        if helperLost { return "The camera helper stopped. Quit and reopen Camstream Camera to share again." }
-        if !connected { return "Waiting for the camera helper." }
-        if !supported { return "Sharing isn't available with this camera helper. Use a complete current Camstream Camera app." }
+        if helperLost { return "Reconnect the camera service to share again." }
+        if !connected { return "Waiting for the camera service." }
+        if !supported { return "Sharing isn't available in this version of the camera service. Install a complete, current Camstream Camera to share." }
         if !observesHostPower { return "Restart Camstream Camera to enable sharing. The app couldn't monitor system sleep." }
         if hostSleeping { return "Sharing pauses while the Mac is going to sleep." }
         if !ingressReady { return "Set up the guest page in Sharing settings first." }
@@ -456,7 +460,7 @@ final class SharingModel: ObservableObject {
         helper.requestSharing(.setup, arguments: nil) { [weak self] reply in
             guard let self = self, self.epoch == epoch else { return }
             self.setupWorking = false
-            if let setup: NativeSharingSetup = Self.result(reply) { self.applySetup(setup, resetForm: true) }
+            if let setup: NativeSharingSetup = Self.result(reply) { self.applySetup(setup, resetForm: false) }
             else { self.setupProblem = Self.setupMessage(Self.errorCode(reply)) }
             self.changed()
         }
@@ -527,7 +531,7 @@ final class SharingModel: ObservableObject {
         }
     }
     var detail: String? {
-        if !connected, phase == .ended(.interrupted) { return "The camera helper stopped, so the link no longer works." }
+        if !connected, phase == .ended(.interrupted) { return "The camera service stopped, so the link no longer works." }
         guard connected, supported else { return shareBlockedReason }
         switch phase {
         case .idle: return shareBlockedReason
@@ -609,6 +613,12 @@ final class SharingModel: ObservableObject {
         return "\(who) can watch for \(Self.durationText(duration)), \(viewers) at a time. Forwarding the link forwards access; Stop Sharing ends it."
     }
     var showsHeaderStatus: Bool { [SharingPhase.pending, .active, .degraded, .stopping].contains(phase) && connected }
+    /// The console banner dismisses the last share problem or result.
+    func dismissMessage() {
+        guard problem != nil || notice != nil else { return }
+        problem = nil; notice = nil
+        changed()
+    }
 
     func timeText(_ date: Date) -> String {
         var calendar = Calendar(identifier: .gregorian)
@@ -646,14 +656,15 @@ final class SharingModel: ObservableObject {
         case "revoked", "invalid_invitation": return "This link no longer works. Share Again creates a new link."
         case "rate_limited": return "Wait a moment, then try again."
         case "media_unreachable": return "The camera video isn't reaching the sharing service. Try again."
-        case "sharing_unsupported": return "Sharing isn't available with this camera helper. Use a complete current Camstream Camera app."
+        case "sharing_unsupported": return "Sharing isn't available in this version of the camera service. Install a complete, current Camstream Camera to share."
         case "invalid_request", "permission_denied":
-            return "The camera helper refused this sharing action. Quit and reopen Camstream Camera if it continues."
+            return "The camera service refused this sharing action. Quit and reopen Camstream Camera if it continues."
         default: return cameraMessage("transport")
         }
     }
     static func setupMessage(_ code: String?) -> String {
         switch code {
+        case "sharing_settings_too_large": return "Sharing settings are too large. Shorten the addresses or remove relay URLs, then save again."
         case "invalid_request": return "Check the HTTPS address, guest listener and relay settings, then save again."
         case "share_already_active": return "Stop Sharing before changing sharing settings."
         case "relay_unavailable": return "The relay credentials couldn't be used. Enter them again, then save."

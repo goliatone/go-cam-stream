@@ -17,7 +17,7 @@ final class FixturePermissions: CameraPermissions {
 final class FixtureCameraHelper: CameraHelper {
     var onReady: (() -> Void)?
     var onEvent: (([String: Any]) -> Void)?
-    var onFailure: (() -> Void)?
+    var onFailure: ((HelperFailure) -> Void)?
     var onExit: (() -> Void)?
     var previewVersion = 1
     var audioVersion = 1
@@ -54,5 +54,6 @@ final class FixtureCameraHelper: CameraHelper {
         }
     }
     func deliver(_ reply: [String: Any]) { pending.removeFirst()(reply) }
+    func reserveCallCapture(in directory: URL) -> (() -> Void)? { {} }
     func shutdown() { pending = []; onExit?() }
 }
