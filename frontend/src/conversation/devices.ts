@@ -38,7 +38,7 @@ export function failureCopy(kind: InputKind, failure: InputFailure, native: bool
     case "unavailable": return { title: `${title} unavailable`, text: `The selected ${name} isn’t available. Choose another ${name} or try again.` };
     case "busy": return { title: `${title} is busy`, text: `Another app is using it. Close that app or choose another ${name}.` };
     case "capture_busy": return { title: `${title} unavailable`, text: "Stop the Camstream camera stream to use call devices." };
-    case "capture_unavailable": return { title: `${title} unavailable`, text: "Camstream couldn’t hand over this input. Check the Camera tab, then try again." };
+    case "capture_unavailable": return { title: `${title} unavailable`, text: "Camstream couldn’t hand over this input. Check the camera in the Camstream window, then try again." };
     case "lost": return { title: `${title} stopped`, text: `The ${name} disconnected or another app took it. Try again or choose another ${name}.` };
     default: return { title: `${title} didn’t start`, text: `Could not open the ${name}. Try again or choose another ${name}.` };
   }

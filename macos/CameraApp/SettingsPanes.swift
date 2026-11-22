@@ -5,7 +5,6 @@ import SwiftUI
 /// you press Return or leave the field.
 struct CameraSettingsPane: View {
     @ObservedObject var model: CameraModel
-    @FocusState private var nameFocused: Bool
 
     var body: some View {
         Form {
@@ -13,7 +12,7 @@ struct CameraSettingsPane: View {
             Section {
                 LabeledContent("Camera access") {
                     HStack(spacing: 8) {
-                        Text(accessText).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                        Text(Self.accessText(model.permission)).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                         if model.permission == "not_determined" {
                             Button("Allow Camera", action: model.requestPermission).disabled(!model.canEditSettings)
                         } else if model.permission != "authorized" {
@@ -27,37 +26,60 @@ struct CameraSettingsPane: View {
                 SettingsFootnote("Nothing is captured until you choose Start Camera.")
             }
             Section {
-                Picker("Webcam", selection: applying(\.device)) {
-                    Text("Built-in camera (automatic)").tag("auto")
-                    if model.draft.device != "auto", !model.devices.contains(where: { $0.name == model.draft.device }) {
-                        Text("\(model.draft.device) — unavailable").tag(model.draft.device)
-                    }
-                    ForEach(model.devices) { device in Text(device.name).tag(device.name) }
-                }
-                TextField("Camera name", text: $model.draft.path, prompt: Text("macbook"))
-                    .focused($nameFocused)
-                    .onSubmit { model.applySettings() }
-                if let problem = model.nameValidation { FieldProblem(problem) }
+                WebcamFields(model: model)
             } footer: {
-                SettingsFootnote("The camera name ends the RTSP address: letters, numbers, dashes or underscores.")
+                SettingsFootnote(WebcamFields.footnote)
             }
             .disabled(!model.settingsEditable)
-            microphone
+            MicrophoneSection(model: model)
         }
         .onAppear { model.devicesChanged() }
-        .onChange(of: nameFocused) { _, focused in if !focused { model.applySettings() } }
     }
 
-    private var accessText: String {
-        switch model.permission {
+    static func accessText(_ permission: String) -> String {
+        switch permission {
         case "authorized": return "Allowed"
         case "denied": return "Off in Privacy & Security"
         case "restricted": return "Restricted on this Mac"
         default: return "Not allowed yet"
         }
     }
+}
 
-    private var microphone: some View {
+/// The webcam and its camera name, in Settings and the welcome guide. The
+/// webcam applies as soon as you choose it; the name when you press Return
+/// or leave the field.
+struct WebcamFields: View {
+    @ObservedObject var model: CameraModel
+    @FocusState private var nameFocused: Bool
+
+    static let footnote = "The camera name ends the RTSP address: letters, numbers, dashes or underscores."
+
+    var body: some View {
+        Picker("Webcam", selection: Binding(get: { model.draft.device }, set: { device in
+            model.draft.device = device
+            model.applySettings()
+        })) {
+            Text("Built-in camera (automatic)").tag("auto")
+            if model.draft.device != "auto", !model.devices.contains(where: { $0.name == model.draft.device }) {
+                Text("\(model.draft.device) — unavailable").tag(model.draft.device)
+            }
+            ForEach(model.devices) { device in Text(device.name).tag(device.name) }
+        }
+        TextField("Camera name", text: $model.draft.path, prompt: Text("macbook"))
+            .focused($nameFocused)
+            .onSubmit { model.applySettings() }
+            .onChange(of: nameFocused) { _, focused in if !focused { model.applySettings() } }
+        if let problem = model.nameValidation { FieldProblem(problem) }
+    }
+}
+
+/// Include microphone audio, its access and the microphone, in Settings and
+/// the welcome guide.
+struct MicrophoneSection: View {
+    @ObservedObject var model: CameraModel
+
+    var body: some View {
         Section {
             Toggle("Include microphone audio", isOn: Binding(get: { model.draft.audioEnabled }, set: { enabled in
                 model.setMicrophoneEnabled(enabled)
@@ -111,14 +133,6 @@ struct CameraSettingsPane: View {
                 : "Streams are video only unless you include microphone audio.")
         }
         .disabled(!model.settingsEditable)
-    }
-
-    /// A choice that applies as soon as it's valid.
-    private func applying(_ keyPath: WritableKeyPath<CameraConfig, String>) -> Binding<String> {
-        Binding(get: { model.draft[keyPath: keyPath] }, set: { value in
-            model.draft[keyPath: keyPath] = value
-            model.applySettings()
-        })
     }
 }
 
@@ -275,15 +289,30 @@ private struct ConnectionStepRow<Actions: View>: View {
     }
 }
 
-/// Settings → Calls: the call connector, the setup guide and a local test.
-/// Call settings themselves are a file in the settings folder for now.
+/// Settings → Calls: what Start Call does, the call connector, the setup
+/// guide and a local test. Call settings themselves are a file in the
+/// settings folder for now.
 struct CallSettingsPane: View {
     @ObservedObject var model: CameraModel
-    let showCall: () -> Void
+    /// Brings the main window forward, where a call shows on the stage.
+    let showWindow: () -> Void
 
     var body: some View {
         Form {
             SettingsStatusSection(model: model)
+            Section {
+                Picker("Start Call", selection: $model.callStart) {
+                    Text("Start with camera and mic off").tag(CameraModel.CallStart.cameraOff)
+                    Text("Check camera and mic before starting").tag(CameraModel.CallStart.setup)
+                    Text("Host in your browser").tag(CameraModel.CallStart.browser)
+                }
+                .pickerStyle(.radioGroup)
+                .accessibilityIdentifier("call-start")
+            } header: {
+                Text("Starting calls")
+            } footer: {
+                SettingsFootnote(Self.startFootnote(model.callStart))
+            }
             Section {
                 HStack(alignment: .firstTextBaseline) {
                     if model.reconnectingCallConnector {
@@ -314,7 +343,7 @@ struct CallSettingsPane: View {
                 if model.supportsCallRecovery {
                     LabeledContent("Try a call") {
                         Button("Test on This Mac") {
-                            showCall()
+                            showWindow()
                             model.testConversationLocally()
                         }
                         .disabled(!model.canStartConversation)
@@ -328,6 +357,14 @@ struct CallSettingsPane: View {
                     }
                 }
             }
+        }
+    }
+
+    static func startFootnote(_ start: CameraModel.CallStart) -> String {
+        switch start {
+        case .cameraOff: return "Your camera and mic stay off until you turn them on in the call."
+        case .setup: return "The call opens on its camera and mic setup, and you join when you’re ready."
+        case .browser: return "The host controls open in your default browser, which then uses your camera and mic."
         }
     }
 }

@@ -20,12 +20,24 @@ final class CameraModel: ObservableObject {
     @Published var working = false
     @Published private(set) var helperFailure: HelperFailure?
     @Published private(set) var reconnectingHelper = false
-    /// The main window shows the camera console or the open call. Settings
-    /// live in their own window.
-    enum Screen { case camera, call }
-    @Published var screen = Screen.camera { didSet { syncPreview() } }
+    /// The first-run guide's step. The guide shows while the camera service
+    /// has no settings, until you finish or skip it.
+    enum WelcomeStep: Int, CaseIterable { case access, camera, microphone }
+    @Published private(set) var welcome: WelcomeStep?
+    private var welcomeDone = false
+    /// How Start Call opens a call. Chosen in Settings → Calls.
+    enum CallStart: String, CaseIterable { case cameraOff, setup, browser }
+    @Published var callStart: CallStart { didSet { defaults.set(callStart.rawValue, forKey: Self.callStartKey) } }
+    private static let callStartKey = "callStart"
+    private let defaults: UserDefaults
+    /// The Join sheet: the Call card and the Call menu open it.
+    @Published var showingJoin = false
     /// Opens the Settings window, at a pane or where it was left. The app sets it.
     var showSettings: (SettingsPane?) -> Void = { _ in }
+    /// Asks before a call ends or the stream stops for one, and runs the
+    /// action only once you confirm. The app shows a sheet on the main
+    /// window; until it sets this, nothing is confirmed.
+    var confirm: (Confirmation, @escaping () -> Void) -> Void = { _, _ in }
     /// Settings → Calls is open, so the call connector status is polled.
     var callSettingsVisible = false {
         didSet { if callSettingsVisible, !oldValue { nextConnectorCheck = .distantPast; refreshCallConnector() } }
@@ -53,7 +65,9 @@ final class CameraModel: ObservableObject {
     private var conversationLease: CaptureLease?
     private var captureReleaseWaiters: [() -> Void] = []
     private var confirmingRelease = false
-    @Published private(set) var conversationPrejoin: ConversationPrejoin?
+    // A call takes the stage while it opens, runs or ends, so the preview
+    // follows these.
+    @Published private(set) var conversationPrejoin: ConversationPrejoin? { didSet { syncPreview() } }
     @Published private(set) var conversationSurface: ConversationMediaSurface?
     /// The last call outcome: a problem with recovery, or a short notice.
     struct ConversationNotice: Equatable {
@@ -70,13 +84,13 @@ final class CameraModel: ObservableObject {
         NSPasteboard.general.setString(text, forType: .string)
     }
     var conversationMessage: String? { conversationNotice?.text }
-    @Published private(set) var openingConversation = false
+    @Published private(set) var openingConversation = false { didSet { syncPreview() } }
     @Published private(set) var conversationProgress: ConversationSetupStage?
     @Published private(set) var conversationRouteReachable = true
     @Published private(set) var checkingConversationRoute = false
     @Published private(set) var callConnectorStatus: CallConnectorStatus = .external
     @Published private(set) var reconnectingCallConnector = false
-    @Published private(set) var closingConversation = false
+    @Published private(set) var closingConversation = false { didSet { syncPreview() } }
     @Published private(set) var hostInBrowser = false
     /// Sanitized cause of the last failed start or open, when the helper reports one.
     @Published private var conversationFault: ConversationFault?
@@ -143,9 +157,11 @@ final class CameraModel: ObservableObject {
     init(client: CameraHelper = HelperClient(), permissions: CameraPermissions = SystemCameraPermissions(),
          directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/camstream-camera-app"),
          helper: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/camstream-camera"),
-         openBrowser: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
+         openBrowser: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }, defaults: UserDefaults = .standard) {
         self.client = client; self.permissions = permissions; self.directory = directory; self.helper = helper
         self.openBrowser = openBrowser
+        self.defaults = defaults
+        _callStart = Published(initialValue: defaults.string(forKey: Self.callStartKey).flatMap(CallStart.init) ?? .cameraOff)
         sharing = SharingModel(helper: client as? SharingHelper)
         sharingObserver = sharing.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         sharing.didChange = { [weak self] in self?.sharingChanged() }
@@ -222,7 +238,6 @@ final class CameraModel: ObservableObject {
 
     func openConversationInvitation(_ value: String) {
         guard !quitting, !value.isEmpty, value.utf8.count <= 8192 else { return }
-        screen = .call
         let digest = SHA256.hash(data: Data(value.utf8))
         guard pendingConversationURL != value, openedInvitation != digest else { return }
         guard conversationPrejoin == nil, !openingConversation else { return }
@@ -314,11 +329,11 @@ final class CameraModel: ObservableObject {
         case .callAssetsUnavailable:
             return "Install a complete, current Camstream Camera app, then reopen it."
         case .relayConfigurationInvalid:
-            return "Check the conversation relay settings and credentials, then try again."
+            return "Check the call relay settings and credentials, then try again."
         case .relayUnavailable:
             return "Check the relay provider and your network, then test again."
         case .connectorUnavailable:
-            return "Reconnect the call connector, then try starting the conversation again."
+            return "Reconnect the call connector, then start the call again."
         case .connectorConfigurationInvalid:
             return "Check the dedicated tunnel settings and token in the settings folder."
         case nil:
@@ -326,10 +341,10 @@ final class CameraModel: ObservableObject {
         }
         if role == .host { return "Try again, or check the call setup guide." }
         switch code {
-        case "room_full": return "This conversation already has a guest."
+        case "room_full": return "This call already has a guest."
         case "expired", "ended": return "Ask the host for a new invitation."
-        case "media_unreachable": return "The conversation server is unavailable. Try again."
-        case "incompatible_client": return "This Camstream Camera build can't open this conversation. Use a current app."
+        case "media_unreachable": return "The call server is unavailable. Try again."
+        case "incompatible_client": return "This Camstream Camera build can't open this call. Use a current app."
         default: return "This invitation couldn't be opened. Check the link and the trusted server settings, or ask the host for a new one."
         }
     }
@@ -372,9 +387,55 @@ final class CameraModel: ObservableObject {
         presentConversation(lastHostStart.method, invitation: nil, hostStart: lastHostStart.mode)
     }
 
+    /// Start Call on the Call card and in the menus, the way Settings → Calls
+    /// says. The camera streams or takes a call, not both, so a running
+    /// stream stops first, once you confirm.
+    func startCall() {
+        guard canStartConversation else { return }
+        let start = { [weak self] in
+            guard let self else { return }
+            switch self.callStart {
+            case .cameraOff: self.startConversation()
+            case .setup: self.prepareConversation()
+            case .browser: self.startConversationInBrowser()
+            }
+        }
+        guard canStop else { start(); return }
+        confirm(streamStopConfirmation) { [weak self] in
+            self?.stop()
+            start()
+        }
+    }
+
+    var streamStopConfirmation: Confirmation {
+        let losing = sharing.showsHeaderStatus ? "Your server and share link viewers lose" : "Your server loses"
+        return Confirmation(title: "Stop the stream and start a call?",
+                            detail: "Your camera can stream or be in a call, not both. \(losing) video until you start the camera again.",
+                            confirm: "Stop Stream", cancel: "Cancel")
+    }
+
+    /// Join Call in the Join sheet. Its button says when joining stops the
+    /// stream, so this doesn't ask again.
+    func joinCall(_ invitation: String) {
+        let value = invitation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canStartConversation, !value.isEmpty else { return }
+        if canStop { stop() }
+        openConversationInvitation(value)
+    }
+
+    /// End Call or Leave Call: asks first, then closes the call. A call that
+    /// is still opening is cancelled at once.
+    func endCall() {
+        guard let confirmation = endConfirmation else {
+            if openingConversation { closeConversation() }
+            return
+        }
+        confirm(confirmation) { [weak self] in self?.closeConversation() }
+    }
+
     private func presentConversation(_ method: ConversationMethod, invitation: String?, hostStart: HostStart = .prejoin) {
         guard conversationAvailable, let helper = client as? ConversationHelper else {
-            conversationNotice = ConversationNotice(text: "This Camstream Camera build cannot open conversations.", problem: true)
+            conversationNotice = ConversationNotice(text: "This Camstream Camera build can't open calls.", problem: true)
             return
         }
         guard canStartConversation else { return }
@@ -425,7 +486,7 @@ final class CameraModel: ObservableObject {
             guard let self, self.invitationRevision == revision else { return }
             self.closeConversation()
             self.conversationNotice = problem.map { ConversationNotice(text: $0, problem: true, role: prejoin.admission.role) }
-                ?? ConversationNotice(text: "Conversation closed.")
+                ?? ConversationNotice(text: "Call ended.")
         }
     }
 
@@ -558,7 +619,7 @@ final class CameraModel: ObservableObject {
             if current?.state == .ended || current?.state == .expired || self.errorCode(reply) == "invitation_invalid" {
                 self.releaseBrowserCapture()
                 self.clearConversationPrejoin()
-                self.conversationNotice = ConversationNotice(text: current?.state == .expired ? "The conversation expired." : "Conversation closed.")
+                self.conversationNotice = ConversationNotice(text: current?.state == .expired ? "The call expired." : "Call ended.")
             }
         }
     }
@@ -612,7 +673,7 @@ final class CameraModel: ObservableObject {
                 self.callConnectorStatus = status
                 if status == .connected, self.conversationSetup == .connectorUnavailable {
                     self.conversationFault = nil
-                    self.conversationNotice = ConversationNotice(text: "Call connector connected. Start the conversation again.")
+                    self.conversationNotice = ConversationNotice(text: "Call connector connected. Start the call again.")
                 }
                 self.checkConversationRoute()
             } else {
@@ -655,15 +716,15 @@ final class CameraModel: ObservableObject {
         return "Starting the camera service…"
     }
     var canRetryHelper: Bool { helperFailure != nil && exited && !quitting && sleepAcknowledgement == nil }
-    /// Why Start Conversation and Open Invitation are unavailable.
+    /// Why Start Call and Join are unavailable.
     var conversationBlockedReason: String? {
         if canStartConversation || quitting { return nil }
         if let helperBlockedReason { return helperBlockedReason }
-        if !conversationsSupported { return "This version of the camera service can't host or join conversations." }
-        if openingConversation { return "Wait for the conversation to open." }
-        if closingConversation { return "Wait for the previous conversation to close." }
-        if failedDeparture != nil { return "Finish closing the previous conversation first." }
-        if conversationPrejoin != nil { return "End the current conversation first." }
+        if !conversationsSupported { return "This version of the camera service can't host or join calls." }
+        if openingConversation { return "Wait for the call to open." }
+        if closingConversation { return "Wait for the previous call to end." }
+        if failedDeparture != nil { return "Finish closing the previous call first." }
+        if conversationPrejoin != nil { return "End the current call first." }
         return nil
     }
     var startBlockedReason: String? {
@@ -677,7 +738,7 @@ final class CameraModel: ObservableObject {
         case "restricted": return "Camera access is restricted on this Mac."
         default: return "Allow camera access first."
         }
-        if conversationCapture { return "End the conversation to use the camera for streaming." }
+        if conversationCapture { return "End the call to use the camera for streaming." }
         if let validation { return validation }
         if saved == nil { return "Save your settings first." }
         if dirty { return "Save your changes first." }
@@ -692,7 +753,7 @@ final class CameraModel: ObservableObject {
     }
     var settingsLockReason: String? {
         if capture.active { return "Settings are locked while the camera is on. Stop Camera to change them." }
-        if conversationCapture { return "Settings are locked while a conversation uses the camera. End the conversation to change them." }
+        if conversationCapture { return "Settings are locked while a call uses the camera. End the call to change them." }
         return nil
     }
     /// Stream failures name only causes that still apply. Camera permission
@@ -808,6 +869,10 @@ final class CameraModel: ObservableObject {
                 } else if self.errorCode(reply) == "not_configured" {
                     self.saved = nil; self.exportCurrent = false
                     self.loadedConfiguration = true
+                    // First run: the guide, from the first step not done yet.
+                    if !self.welcomeDone, self.welcome == nil {
+                        self.welcome = self.permission == "authorized" ? .camera : .access
+                    }
                 } else { self.showError(reply) }
                 if self.permission == "authorized" { self.refreshDevices() } else { self.refreshMicrophones() }
                 self.changed()
@@ -866,7 +931,10 @@ final class CameraModel: ObservableObject {
     }
 
     func refreshPermission() {
+        let previous = permission
         permission = permissions.status(.video)
+        // Access granted, here or in System Settings: the guide moves on.
+        if welcome == .access, previous != "authorized", permission == "authorized" { welcome = .camera }
         let next = permissions.status(.audio)
         if next != microphonePermission {
             microphoneRevision += 1; microphones = []; microphonesLoaded = false; microphoneDiscoveryError = nil
@@ -883,6 +951,40 @@ final class CameraModel: ObservableObject {
             if self.permission == "authorized" { self.refreshDevices() }
         }
     }
+
+    /// Continue in the welcome guide. The camera step applies its choices;
+    /// the microphone step finishes the guide.
+    func continueWelcome() {
+        switch welcome {
+        case .access?:
+            guard permission == "authorized" else { return }
+            welcome = .camera
+        case .camera?:
+            guard nameValidation == nil else { return }
+            applySettings()
+            welcome = .microphone
+        case .microphone?: finishWelcome()
+        case nil: break
+        }
+    }
+    func backInWelcome() {
+        guard let step = welcome, let previous = WelcomeStep(rawValue: step.rawValue - 1) else { return }
+        welcome = previous
+    }
+    /// Done: applies the settings, and the console waits at Start Camera.
+    func finishWelcome() {
+        guard welcome != nil, microphoneValidation == nil else { return }
+        welcome = nil
+        welcomeDone = true
+        applySettings()
+    }
+    /// Set Up Later: straight to the console. Choices that didn't apply stay
+    /// a draft, and Start Camera applies them.
+    func skipWelcome() {
+        welcome = nil
+        welcomeDone = true
+    }
+
     func setMicrophoneEnabled(_ enabled: Bool) {
         guard canEditSettings, !enabled || audioSupported else { return }
         draft.audioEnabled = enabled
@@ -1056,8 +1158,10 @@ final class CameraModel: ObservableObject {
     }
     func start() {
         refreshPermission()
-        guard canStart else { cancelShareChain(); screen = .camera; changed(); return }
+        guard canStart else { cancelShareChain(); changed(); return }
         notice = nil
+        // Starting the camera, from the menus too, ends the welcome guide.
+        if welcome != nil { welcome = nil; welcomeDone = true }
         let token = capture.start(audioEnabled: config.audioEnabled); changed()
         client.request("start") { [weak self] reply in
             guard let self = self, self.capture.generation == token else { return }
@@ -1233,7 +1337,8 @@ final class CameraModel: ObservableObject {
     }
     func setWindowVisible(_ visible: Bool) { windowVisible = visible; syncPreview() }
     private func syncPreview() {
-        preview.update(wanted: !quitting && windowVisible && screen == .camera && capture.phase == .streaming,
+        // A call on the stage hides the preview, so it pauses.
+        preview.update(wanted: !quitting && windowVisible && callStage == nil && capture.phase == .streaming,
                        ready: ready && !quitting, supported: client.previewVersion == 1, captureGeneration: capture.generation)
     }
     private func changed() {
@@ -1248,7 +1353,7 @@ final class CameraModel: ObservableObject {
         followShareChain()
         didChange?()
     }
-    /// Clears a call notice the console shows. The call view shows it too.
+    /// Clears the call notice the console banner shows.
     func dismissConversationNotice() {
         conversationNotice = nil
         changed()

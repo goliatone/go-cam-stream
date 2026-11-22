@@ -38,6 +38,8 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
     var idle: Bool { true }
     var methods: [String] = []
     var status: [String: Any] = ["state": "stopped"]
+    /// False for a first launch without saved settings.
+    var configured = true
     let sharing = FixtureSharingHelper()
     var sharingVersion: Int { sharing.sharingVersion }
     var onSharingEvent: (([String: Any]) -> Void)? {
@@ -51,7 +53,8 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
     func request(_ method: String, config: CameraConfig?, previewGeneration: String?, completion: @escaping ([String: Any]) -> Void) {
         methods.append(method)
         switch method {
-        case "config": completion(["result": try! CameraConfig().helperObject(audioSupported: false)])
+        case "config":
+            completion(configured ? ["result": try! CameraConfig().helperObject(audioSupported: false)] : ["error": ["code": "not_configured"]])
         case "devices": completion(["result": [["index": "0", "name": "Fixture Camera"]]])
         case "start": status = ["state": "starting"]; completion(["result": status])
         case "status": completion(["result": status])

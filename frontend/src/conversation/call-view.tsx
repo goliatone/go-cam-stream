@@ -42,13 +42,13 @@ export function invitationUntil(expiresAt: string) {
 export function EndConfirm({ anchor, root, peerPresent, close, end }: {
   anchor: HTMLElement; root: HTMLElement; peerPresent: boolean; close(returnFocus: boolean): void; end(): void;
 }) {
-  const title = peerPresent ? "End the conversation for both of you?" : "End this conversation?";
+  const title = peerPresent ? "End this call for both of you?" : "End this call?";
   return <Popover anchor={anchor} root={root} title={title} describedBy="end-detail" close={close} class="confirm">
     <strong class="pop-title">{title}</strong>
     <p id="end-detail">{peerPresent ? "Your guest leaves too, and the invitation stops working." : "The invitation stops working."}</p>
     <div class="pop-actions">
       <button id="end-keep" class="btn quiet sm" type="button" data-autofocus onClick={() => close(true)}>Keep call</button>
-      <button id="end-conversation" class="btn danger sm" type="button" onClick={end}>End conversation</button>
+      <button id="end-conversation" class="btn danger sm" type="button" onClick={end}>End call</button>
     </div>
   </Popover>;
 }
@@ -269,7 +269,7 @@ export function CallView({ model, actions, page }: { model: CallModel; actions: 
     }
   }
 
-  const exitName = role === "host" ? "End conversation" : "Leave";
+  const exitName = role === "host" ? "End call" : "Leave";
   const routing = speakerRouting(model.native);
   const outputs = model.devices.filter((device) => device.kind === "audiooutput");
   const menuEntries = (menu: InputKind | "more"): MenuEntry[] => {
@@ -446,7 +446,7 @@ export function CallView({ model, actions, page }: { model: CallModel; actions: 
       </div>
       <span class="rule" aria-hidden="true" />
       <button ref={exit} id="leave-call" type="button" class="end" aria-label={exitName} disabled={model.leaving}
-        data-tip={role === "host" ? "End for both of you" : "Leave the conversation"}
+        data-tip={role === "host" ? "End for both of you" : "Leave the call"}
         onClick={() => role === "host" ? setOverlay(overlay?.type === "end" ? null : { type: "end" }) : actions.leave()}>
         <Icon name="end" /><span>{role === "host" ? "End" : "Leave"}</span>
       </button>

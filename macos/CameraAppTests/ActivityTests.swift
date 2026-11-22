@@ -30,7 +30,7 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         check(model.activity == ActivitySummary(stream: "Camera stopped · Microphone off", share: nil, call: nil, icon: .idle, shared: false) &&
               model.activity.label == "Camstream Camera: Camera stopped · Microphone off" && model.activity.statusImage?.isTemplate == true,
               "an idle app reports one stopped stream line with the outlined icon")
-        check(model.endConfirmation == nil, "nothing asks for confirmation without a conversation")
+        check(model.endConfirmation == nil, "nothing asks for confirmation without a call")
         model.draft.device = "Studio Display Camera"
         model.saved = model.config
         stream(model, helper)
@@ -70,17 +70,21 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         guard let surface = model.conversationSurface else { check(false, "a host call opens"); return }
         check(model.activity.call == "Hosting call · Camera off · Mic off" && model.activity.icon == .call &&
               model.activity.lines.count == 2, "an open host call adds a call line beside the live stream")
-        check(model.endConfirmation == EndConfirmation(title: "End this conversation?", detail: "The invitation will stop working.",
-                                                       confirm: "End Conversation", cancel: "Keep Call"),
+        check(model.endConfirmation == Confirmation(title: "End this call?", detail: "The invitation will stop working.",
+                                                    confirm: "End Call", cancel: "Keep Call"),
               "a host without a guest is asked before the invitation stops working")
         let alert = model.endConfirmation!.alert()
-        check(alert.buttons.map(\.title) == ["Keep Call", "End Conversation"] && alert.buttons[0].keyEquivalent == "\r" &&
+        check(alert.buttons.map(\.title) == ["Keep Call", "End Call"] && alert.buttons[0].keyEquivalent == "\r" &&
               alert.buttons[1].keyEquivalent.isEmpty && alert.buttons[1].hasDestructiveAction && !alert.buttons[0].hasDestructiveAction &&
-              alert.messageText == "End this conversation?" && alert.alertStyle == .warning,
-              "Keep Call is the Return default and End is the destructive second choice")
-        check(!EndConfirmation.confirmed(.alertFirstButtonReturn) && !EndConfirmation.confirmed(.cancel) &&
-              !EndConfirmation.confirmed(.abort) && EndConfirmation.confirmed(.alertSecondButtonReturn),
+              alert.messageText == "End this call?" && alert.alertStyle == .warning,
+              "Keep Call is the Return default and End Call is the destructive second choice")
+        check(!Confirmation.confirmed(.alertFirstButtonReturn) && !Confirmation.confirmed(.cancel) &&
+              !Confirmation.confirmed(.abort) && Confirmation.confirmed(.alertSecondButtonReturn),
               "only the explicit End or Leave button ends the call")
+        let stopStream = model.streamStopConfirmation.alert()
+        check(stopStream.buttons.map(\.title) == ["Cancel", "Stop Stream"] && stopStream.buttons[0].keyEquivalent == "\r" &&
+              stopStream.buttons[1].hasDestructiveAction && stopStream.messageText == "Stop the stream and start a call?",
+              "stopping the stream for a call asks the same way, with Cancel as the default")
         _ = model.reportConversationState(ConversationCallState(role: .host, phase: .connected, camera: true, microphone: false,
                                                                 cameraLabel: "FaceTime HD Camera"), from: surface)
         check(model.activity.call == "Hosting call · Connected · Camera off · Mic off",
@@ -89,7 +93,7 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         guard let lease = model.claimConversationCapture(stop: {}) else { check(false, "a stopped stream frees the devices"); return }
         check(model.activity.call == "Hosting call · Connected · Camera on (FaceTime HD Camera) · Mic off",
               "a leased call names its live camera")
-        check(model.endConfirmation?.title == "End this conversation for both of you?" &&
+        check(model.endConfirmation?.title == "End this call for both of you?" &&
               model.endConfirmation?.detail == "Your guest will be disconnected.",
               "a host with a guest is asked before ending it for both")
         model.releaseConversationCapture(lease)
@@ -107,8 +111,8 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         helper.conversationReply = prejoin("guest")
         model.openConversationInvitation("camstream://conversation/join?v=1#fixture")
         check(model.activity.call == "In call · Camera off · Mic off" &&
-              model.endConfirmation == EndConfirmation(title: "Leave this conversation?", detail: "The host stays in the conversation.",
-                                                       confirm: "Leave", cancel: "Cancel"),
+              model.endConfirmation == Confirmation(title: "Leave this call?", detail: "The host stays in the call.",
+                                                    confirm: "Leave", cancel: "Cancel"),
               "a guest is asked before leaving, with Cancel as the safe choice")
         var lease: UUID?
         model.requestConversationCapture(stop: {}) { lease = $0 }
@@ -120,12 +124,12 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
 
         helper.conversationReply = prejoin("host")
         model.startConversationInBrowser()
-        check(model.activity.call == "Call hosted in browser" && model.endConfirmation?.title == "End this conversation?",
+        check(model.activity.call == "Call hosted in browser" && model.endConfirmation?.title == "End this call?",
               "a browser-hosted room is labeled without claiming local inputs")
         helper.conversationReply = ["result": conversations["connected"]!]
         model.tick()
         check(model.activity.call == "Call hosted in browser · Connected" &&
-              model.endConfirmation?.title == "End this conversation for both of you?",
+              model.endConfirmation?.title == "End this call for both of you?",
               "browser hosting follows the owner's room and guest")
         model.closeConversation()
     }
@@ -133,14 +137,14 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
     do { // Standard menus, key equivalents and current validation.
         let (model, helper) = launched()
         let menus = AppMenus(model: model)
-        var shown: [CameraModel.Screen] = []
+        var windows = 0
         var panes: [SettingsPane?] = []
-        var ends = 0
-        menus.show = { shown.append($0) }
+        var asked: [Confirmation] = []
+        menus.showWindow = { windows += 1 }
         menus.openSettings = { panes.append($0) }
-        menus.confirmEnd = { ends += 1 }
-        check(menus.main.items.map(\.title) == ["Camstream Camera", "File", "Edit", "View", "Camera", "Call", "Window", "Help"],
-              "the app has standard Mac menus plus Camera and Call")
+        model.confirm = { confirmation, _ in asked.append(confirmation) }
+        check(menus.main.items.map(\.title) == ["Camstream Camera", "File", "Edit", "Camera", "Call", "Window", "Help"],
+              "the app has standard Mac menus plus Camera and Call, and no View menu since calls show on the stage")
         func find(_ title: String) -> NSMenuItem? {
             for menu in menus.main.items.compactMap(\.submenu) {
                 if let item = menu.items.first(where: { $0.title == title }) { return item }
@@ -150,8 +154,7 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         let expected: [(String, String, NSEvent.ModifierFlags)] = [
             ("Settings…", ",", .command), ("Hide Camstream Camera", "h", .command), ("Hide Others", "h", [.command, .option]),
             ("Quit Camstream Camera", "q", .command), ("Close Window", "w", .command), ("Undo", "z", .command),
-            ("Redo", "z", [.command, .shift]), ("Camera", "1", .command), ("Call", "2", .command),
-            ("Start Camera", "s", [.command, .shift]), ("Minimize", "m", .command),
+            ("Redo", "z", [.command, .shift]), ("Start Camera", "s", [.command, .shift]), ("Minimize", "m", .command),
         ]
         for (title, key, modifiers) in expected {
             let item = find(title)
@@ -179,39 +182,42 @@ func runActivityTests(conversations: [String: Any], sharing: [String: Any], chec
         check(menus.validateMenuItem(start) && start.title == "Stop Camera", "the same command stops a live stream")
         (start.target as! NSObject).perform(start.action, with: start)
         check(model.capture.phase == .stopping || model.capture.phase == .stopped, "the menu command stops the stream")
-        for entry in AppMenus.screens {
-            let item = find(entry.title)!
-            (item.target as! NSObject).perform(item.action, with: item)
-        }
-        check(shown == [.camera, .call], "View commands show the camera console and the call")
-
-        let startCall = find("Start Conversation")!, showCall = find("Show Call")!, endCall = find("End Conversation…")!
-        check(menus.validateMenuItem(startCall) && !menus.validateMenuItem(showCall) && !menus.validateMenuItem(endCall),
-              "without a call, the Call menu offers Start Conversation")
+        let startCall = find("Start Call")!, joinCall = find("Join Call…")!, endCall = find("End Call…")!
+        check(find("Show Call") == nil && menus.validateMenuItem(startCall) && startCall.title == "Start Call" &&
+              menus.validateMenuItem(joinCall) && !menus.validateMenuItem(endCall),
+              "without a call, the Call menu offers Start Call and Join Call")
+        (joinCall.target as! NSObject).perform(joinCall.action, with: joinCall)
+        check(model.showingJoin && windows == 1, "Join Call opens the Join sheet on the main window")
+        model.showingJoin = false
         helper.conversationReply = prejoin("host")
         (startCall.target as! NSObject).perform(startCall.action, with: startCall)
-        check(model.conversationSurface != nil && shown.last == .call && !menus.validateMenuItem(startCall) &&
-              menus.validateMenuItem(showCall) && menus.validateMenuItem(endCall) && endCall.title == "End Conversation…",
-              "Start Conversation opens the call; Show Call and End become available")
+        check(model.conversationSurface != nil && model.stage == .call(.page) && windows == 2 &&
+              !menus.validateMenuItem(startCall) && !menus.validateMenuItem(joinCall) &&
+              menus.validateMenuItem(endCall) && endCall.title == "End Call…",
+              "Start Call opens the call on the main window's stage, and End Call becomes available")
         (endCall.target as! NSObject).perform(endCall.action, with: endCall)
-        check(ends == 1 && model.conversationSurface != nil, "End asks for confirmation instead of ending at once")
+        check(asked == [model.endConfirmation!] && model.conversationSurface != nil, "End Call asks for confirmation instead of ending at once")
 
         menus.update()
         let visible = menus.status.items.filter { !$0.isHidden && !$0.isSeparatorItem }.map(\.title)
         check(visible.prefix(2) == ["Camera stopped · Microphone off", "Hosting call · Camera off · Mic off"] &&
-              visible.contains("Show Call") && visible.contains("End Conversation…") && !visible.contains("Start Conversation") &&
-              !visible.contains("Copy Share Link"), "the status menu shows the call line and its actions")
+              visible.contains("End Call…") && !visible.contains("Start Call") && !visible.contains("Join Call…") &&
+              !visible.contains("Show Call") && !visible.contains("Copy Share Link"), "the status menu shows the call line and its actions")
         model.closeConversation()
         helper.conversationReply = prejoin("guest")
         model.openConversationInvitation("camstream://conversation/join?v=1#guest")
         menus.update()
-        check(menus.validateMenuItem(endCall) && endCall.title == "Leave Conversation…" &&
-              menus.status.items.contains { !$0.isHidden && $0.title == "Leave Conversation…" },
-              "guests see Leave Conversation in both menus")
+        check(menus.validateMenuItem(endCall) && endCall.title == "Leave Call…" &&
+              menus.status.items.contains { !$0.isHidden && $0.title == "Leave Call…" },
+              "guests see Leave Call in both menus")
         model.closeConversation()
+        stream(model, helper)
         menus.update()
-        check(menus.status.items.contains { !$0.isHidden && $0.title == "Start Conversation" } &&
-              !menus.status.items.contains { !$0.isHidden && $0.title == "Show Call" }, "the status menu can start a call again")
+        check(menus.status.items.contains { !$0.isHidden && $0.title == "Start Call…" } &&
+              menus.status.items.contains { !$0.isHidden && $0.title == "Join Call…" } &&
+              !menus.status.items.contains { !$0.isHidden && $0.title.hasPrefix("End Call") } &&
+              menus.validateMenuItem(startCall) && startCall.title == "Start Call…",
+              "the status menu can start a call again; while streaming, Start Call shows that it asks first")
         let statusTitles = menus.status.items.map(\.title)
         check(statusTitles.contains("Show Camstream Camera") && statusTitles.contains("Settings…") &&
               !statusTitles.contains("Sharing…") && !statusTitles.contains("Connection Details…"),

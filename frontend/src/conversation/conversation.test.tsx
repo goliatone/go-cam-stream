@@ -106,7 +106,7 @@ test("one browser Join keeps the camera when microphone permission fails and can
   expect(video.stop).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Leave" }));
   await waitFor(() => expect(fetcher.mock.calls.some(([path]) => path.endsWith("/leave"))).toBe(true));
-  await screen.findByRole("heading", { name: "You left the conversation" });
+  await screen.findByRole("heading", { name: "You left the call" });
   // Rejoin returns to prejoin with the inputs that were on and captures nothing until Join.
   fireEvent.click(screen.getByRole("button", { name: "Rejoin" }));
   await screen.findByRole("heading", { name: "Ready to join" });
@@ -403,7 +403,7 @@ test("a refused Mac device request explains whether a stream or unconfirmed clea
   render(<Conversation invitation={null} native={macHost(capture)} />);
   const controls = await screen.findByRole("group", { name: "Call controls" });
   fireEvent.click(await pressed(controls, "Camera", false));
-  expect((await screen.findByRole("dialog", { name: "Camera unavailable" })).textContent).toContain("Check the Camera tab");
+  expect((await screen.findByRole("dialog", { name: "Camera unavailable" })).textContent).toContain("Check the camera in the Camstream window");
   // With its explanation open, pressing the control again retries.
   fireEvent.click(await pressed(controls, "Camera", false));
   await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("Stop the Camstream camera stream"));

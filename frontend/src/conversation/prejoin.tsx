@@ -147,7 +147,7 @@ export function Prejoin({ model, actions, page }: { model: PrejoinModel; actions
         <div class="pj-join">
           <p class="pj-title" aria-hidden="true">{model.headline}</p>
           {model.notice ? <p class="pj-context warn" role="alert">{model.notice}</p> :
-            <p class="pj-context">One-to-one conversation{model.origin && <> · invitation from <strong>{model.origin}</strong></>}</p>}
+            <p class="pj-context">One-to-one call{model.origin && <> · invitation from <strong>{model.origin}</strong></>}</p>}
           {model.error && <p class="pj-error" role="alert">{model.error}</p>}
           <button id="join-call" class="btn primary xl" type="button" aria-disabled={busy} aria-describedby="join-summary"
             onClick={(event) => press(event, null, actions.join)}>
@@ -156,7 +156,7 @@ export function Prejoin({ model, actions, page }: { model: PrejoinModel; actions
           <p class="pj-summary" id="join-summary">{joinSummary(camera, mic)}</p>
           {model.exit && <button ref={exit} id="leave-call" class="btn quiet sm" type="button" disabled={model.leaving}
             onClick={() => model.role === "host" ? setConfirm((open) => !open) : actions.leave()}>
-            {model.role === "host" ? "End conversation" : "Leave"}
+            {model.role === "host" ? "End call" : "Leave"}
           </button>}
         </div>
       </div>

@@ -53,10 +53,10 @@ func runInvitationTests(conversations: [String: Any], check: (Bool, String) -> V
     check(statusItem("Copy Invitation")?.isHidden == true, "guests do not see Copy Invitation")
     model.closeConversation()
 
-    check(ConversationView.browserStatus(.waiting) == "Waiting for your guest" &&
-          ConversationView.browserStatus(.connected) == "Your guest is connected" &&
-          ConversationView.browserStatus(.reconnecting) == "Reconnecting to your guest" &&
-          ConversationView.browserStatus(nil) == "Hosting in your browser",
+    check(CameraModel.browserStatus(.waiting) == "Waiting for your guest" &&
+          CameraModel.browserStatus(.connected) == "Your guest is connected" &&
+          CameraModel.browserStatus(.reconnecting) == "Reconnecting to your guest" &&
+          CameraModel.browserStatus(nil) == "Hosting in your browser",
           "a browser-hosted room shows the owner's room state")
     _ = model.quit()
 

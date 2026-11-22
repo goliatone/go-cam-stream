@@ -10,7 +10,7 @@ extension SettingsPane {
         case .network: return 330
         case .server: return 600
         case .sharing: return 620
-        case .calls: return 360
+        case .calls: return 520
         }
     }
 }
@@ -25,7 +25,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var visibilityChanged: () -> Void = {}
     var isShowing: Bool { window?.isVisible == true && window?.isMiniaturized == false }
 
-    init(model: CameraModel, server: ServerMonitor, showCall: @escaping () -> Void) {
+    init(model: CameraModel, server: ServerMonitor, showWindow: @escaping () -> Void) {
         self.model = model
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsPane.width, height: SettingsPane.camera.height),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
@@ -35,7 +35,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabs.tabStyle = .toolbar
         tabs.transitionOptions = []
         for pane in SettingsPane.allCases {
-            let hosting = NSHostingController(rootView: SettingsPaneView(pane: pane, model: model, server: server, showCall: showCall))
+            let hosting = NSHostingController(rootView: SettingsPaneView(pane: pane, model: model, server: server, showWindow: showWindow))
             hosting.sizingOptions = []
             hosting.title = pane.title
             let item = NSTabViewItem(viewController: hosting)
@@ -122,7 +122,7 @@ struct SettingsPaneView: View {
     let pane: SettingsPane
     @ObservedObject var model: CameraModel
     @ObservedObject var server: ServerMonitor
-    var showCall: () -> Void = {}
+    var showWindow: () -> Void = {}
 
     var body: some View {
         Group {
@@ -131,7 +131,7 @@ struct SettingsPaneView: View {
             case .network: NetworkSettingsPane(model: model)
             case .server: ServerSettingsPane(model: model, server: server)
             case .sharing: SharingSettingsPane(sharing: model.sharing)
-            case .calls: CallSettingsPane(model: model, showCall: showCall)
+            case .calls: CallSettingsPane(model: model, showWindow: showWindow)
             }
         }
         .formStyle(.grouped)

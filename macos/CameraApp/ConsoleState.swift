@@ -26,7 +26,8 @@ enum SettingsPane: Int, CaseIterable {
 }
 
 /// What the stage draws: one state at a time. States with a fix carry the
-/// message and actions; the actions show under the stage.
+/// message and actions; the actions show under the stage. A call takes the
+/// stage from the camera while it opens, runs or ends.
 enum StageState: Equatable {
     case serviceStarting(String)
     case serviceDown(Feedback)
@@ -34,7 +35,7 @@ enum StageState: Equatable {
     case off(webcam: String, name: String)
     case starting, stopping, live
     case problem(Feedback)
-    case inCall
+    case call(CallStage)
 
     var feedback: Feedback? {
         switch self {
@@ -42,6 +43,20 @@ enum StageState: Equatable {
         default: return nil
         }
     }
+}
+
+/// The call on the stage.
+enum CallStage: Equatable {
+    /// Starting a call or opening an invitation, with what it waits for.
+    case opening(String)
+    /// The call page, with its own video and controls.
+    case page
+    /// Admitted, but the call isn't open here or in the browser yet.
+    case ready(host: Bool)
+    /// The host controls are open in the browser, with the room's state.
+    case browser(String)
+    /// Closing, or the camera is still leaving the call.
+    case ending
 }
 
 /// The toolbar's one status: state, elapsed time and any share link.
@@ -69,14 +84,19 @@ struct StatusPill: Equatable {
 }
 
 /// The console's one message slot. Camera and service problems draw on the
-/// stage instead, beside their fix.
+/// stage instead, beside their fix; call problems bring their fixes here.
 struct ConsoleBanner: Equatable {
     enum Source: Equatable { case camera, sharing, call }
     let source: Source
     let text: String
     let problem: Bool
-    /// The call view holds the full recovery for a call problem.
-    var showsCall = false
+    /// A problem's name, shown before its cause.
+    var title: String?
+    /// At most two fixes; the first is the banner's prominent button.
+    var actions: [Feedback.Action] = []
+    /// A condition that clears by itself, such as an unreachable guest link,
+    /// stays until it does.
+    var dismissible = true
 }
 
 extension CameraModel {
@@ -85,6 +105,7 @@ extension CameraModel {
             if let feedback = helperFeedback { return .serviceDown(feedback) }
             return .serviceStarting(helperBlockedReason ?? "Starting the camera service…")
         }
+        if let call = callStage { return .call(call) }
         switch capture.phase {
         case .streaming: return .live
         case .starting: return .starting
@@ -93,10 +114,34 @@ extension CameraModel {
             return .problem(cameraFeedback ?? Feedback(tone: .problem, title: "Camera needs attention",
                                                        message: capture.problem ?? cameraMessage("capture_failed"), actions: []))
         case .stopped:
-            if conversationCapture { return .inCall }
             if let feedback = cameraAccessFeedback { return .needsAccess(feedback) }
             let device = config.device
             return .off(webcam: device == "auto" || device.isEmpty ? "Built-in camera" : device, name: config.path)
+        }
+    }
+
+    /// The welcome guide's step while it shows. It needs the camera service,
+    /// and gives way to a call, such as an invitation opened on first run.
+    var welcomeShown: WelcomeStep? { ready && callStage == nil ? welcome : nil }
+
+    /// The call on the stage, or nil while the stage shows the camera.
+    var callStage: CallStage? {
+        if closingConversation { return .ending }
+        if openingConversation { return .opening(conversationProgress?.message ?? "Opening the invitation…") }
+        guard let prejoin = conversationPrejoin else { return conversationCapture ? .ending : nil }
+        if conversationSurface != nil { return .page }
+        if hostInBrowser { return .browser(Self.browserStatus(conversationActivity?.phase)) }
+        return .ready(host: prejoin.admission.role == .host)
+    }
+
+    /// A browser-hosted room's state, from the owner's status.
+    static func browserStatus(_ phase: ConversationActivity.Phase?) -> String {
+        switch phase {
+        case .waiting?: return "Waiting for your guest"
+        case .connecting?: return "Your guest is joining"
+        case .connected?: return "Your guest is connected"
+        case .reconnecting?: return "Reconnecting to your guest"
+        default: return "Hosting in your browser"
         }
     }
 
@@ -135,26 +180,39 @@ extension CameraModel {
         }
     }
 
-    /// Problems first, then the last result. The call screen shows its own
-    /// call messages.
+    /// Problems first, then the last result. A call problem brings its fixes,
+    /// since there is no separate call view to hold them.
     var banner: ConsoleBanner? {
         if let problem = sharing.problem { return ConsoleBanner(source: .sharing, text: problem, problem: true) }
-        let callNotice = screen == .camera ? conversationNotice : nil
-        if let callNotice, callNotice.problem {
-            return ConsoleBanner(source: .call, text: callNotice.text, problem: true, showsCall: true)
+        if let route = conversationRouteFeedback {
+            return ConsoleBanner(source: .call, text: route.message, problem: true, title: route.title,
+                                 actions: route.actions, dismissible: false)
+        }
+        if let callNotice = conversationNotice, callNotice.problem {
+            // While a call is open its problems show as they are; they don't end it.
+            if callStage == nil, let feedback = conversationFeedback, feedback.tone == .problem {
+                return ConsoleBanner(source: .call, text: feedback.message, problem: true, title: feedback.title,
+                                     actions: Array(feedback.actions.prefix(2)))
+            }
+            return ConsoleBanner(source: .call, text: callNotice.text, problem: true)
+        }
+        // The previous call couldn't close: its fix stays until it works.
+        if let feedback = conversationFeedback, feedback.tone == .problem {
+            return ConsoleBanner(source: .call, text: feedback.message, problem: true, title: feedback.title,
+                                 actions: Array(feedback.actions.prefix(2)), dismissible: false)
         }
         if let notice { return ConsoleBanner(source: .camera, text: notice, problem: false) }
         if let notice = sharing.notice { return ConsoleBanner(source: .sharing, text: notice, problem: false) }
-        if let callNotice { return ConsoleBanner(source: .call, text: callNotice.text, problem: false) }
+        if let callNotice = conversationNotice { return ConsoleBanner(source: .call, text: callNotice.text, problem: false) }
         return nil
     }
 
     func dismissBanner() {
-        switch banner?.source {
-        case .camera?: notice = nil
-        case .sharing?: sharing.dismissMessage()
-        case .call?: dismissConversationNotice()
-        case nil: break
+        guard let banner, banner.dismissible else { return }
+        switch banner.source {
+        case .camera: notice = nil
+        case .sharing: sharing.dismissMessage()
+        case .call: dismissConversationNotice()
         }
     }
 
@@ -162,7 +220,8 @@ extension CameraModel {
     var callCardLine: String {
         if let call = conversationActivity { return Self.callLine(call) }
         if ready, !conversationsSupported { return "Calls aren't available in this build." }
-        if openingConversation { return conversationProgress?.message ?? "Opening the call…" }
+        if openingConversation { return conversationProgress?.message ?? "Opening the invitation…" }
+        if closingConversation { return "Ending the call…" }
         return "No call. Start one, or join from an invitation."
     }
 }

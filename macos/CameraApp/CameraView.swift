@@ -1,42 +1,34 @@
 import SwiftUI
 
-/// The main window: the camera console, or the call while one is shown.
-/// Its toolbar holds the status pill and the Settings button.
+/// The main window: the welcome guide on first run, then the console, whose
+/// stage also shows a call. Its toolbar holds the status pill and the
+/// Settings button.
 struct CameraView: View {
     @ObservedObject var model: CameraModel
     @ObservedObject var server: ServerMonitor
 
     var body: some View {
         Group {
-            switch model.screen {
-            case .camera:
+            // Without the camera service the console's stage shows its state
+            // and fix; a call shows on the stage too.
+            if let step = model.welcomeShown {
+                WelcomeView(model: model, step: step)
+            } else {
                 ConsoleView(model: model, server: server)
-            case .call:
-                if model.ready {
-                    ConversationView(model: model)
-                } else {
-                    // Calls need the camera service, so the call view shows its
-                    // state and fix instead of disabled controls.
-                    ServiceStateView(feedback: model.helperFeedback, progress: model.helperBlockedReason ?? "",
-                                     perform: model.perform)
-                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(20)
         .frame(minWidth: 640, minHeight: 520)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                if model.screen == .call {
-                    Button { model.screen = .camera } label: { Label("Camera", systemImage: "chevron.backward") }
-                        .help("Back to the camera (⌘1)")
-                }
-            }
             ToolbarItem(placement: .principal) { StatusPillView(model: model) }
             ToolbarItem(placement: .primaryAction) {
                 Button { model.showSettings(nil) } label: { Label("Settings", systemImage: "gearshape") }
                     .help("Settings (⌘,)")
             }
+        }
+        .sheet(isPresented: $model.showingJoin) {
+            JoinCallView(model: model) { model.showingJoin = false }
         }
         .onChange(of: model.activity) { old, new in Self.announce(from: old, to: new) }
     }
@@ -50,7 +42,7 @@ struct CameraView: View {
     static func announcement(from old: ActivitySummary, to new: ActivitySummary) -> String? {
         var changes = new.lines.filter { !old.lines.contains($0) }
         if old.share != nil, new.share == nil { changes.append("Share link ended") }
-        if old.call != nil, new.call == nil { changes.append("Conversation ended") }
+        if old.call != nil, new.call == nil { changes.append("Call ended") }
         return changes.isEmpty ? nil : changes.joined(separator: ". ")
     }
 }

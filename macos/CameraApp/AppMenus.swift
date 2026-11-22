@@ -7,12 +7,10 @@ final class AppMenus: NSObject, NSMenuDelegate {
     let status = NSMenu()
     let windowMenu = NSMenu(title: "Window")
     let helpMenu = NSMenu(title: "Help")
-    /// Shows the main window at the camera console or the call.
-    var show: (CameraModel.Screen) -> Void = { _ in }
     /// Opens Settings at a pane, or where it was left.
     var openSettings: (SettingsPane?) -> Void = { _ in }
+    /// Brings the main window forward; a call shows on its stage.
     var showWindow: () -> Void = {}
-    var confirmEnd: () -> Void = {}
     var openHelp: () -> Void = {}
 
     private let model: CameraModel
@@ -23,11 +21,9 @@ final class AppMenus: NSObject, NSMenuDelegate {
     private var copyLinkItem: NSMenuItem!
     private var stopSharingItem: NSMenuItem!
     private var statusStartCall: NSMenuItem!
-    private var statusShowCall: NSMenuItem!
+    private var statusJoinCall: NSMenuItem!
     private var statusEndCall: NSMenuItem!
     private var statusCopyInvitation: NSMenuItem!
-
-    static let screens: [(title: String, screen: CameraModel.Screen)] = [("Camera", .camera), ("Call", .call)]
 
     init(model: CameraModel) {
         self.model = model
@@ -52,10 +48,10 @@ final class AppMenus: NSObject, NSMenuDelegate {
         stopSharingItem.isHidden = activity.share == nil
         let open = model.endConfirmation != nil
         statusStartCall.isHidden = open
-        statusShowCall.isHidden = !open
+        statusJoinCall.isHidden = open
         statusEndCall.isHidden = !open
         statusCopyInvitation.isHidden = !model.canCopyConversation
-        for item in [statusToggle!, statusEndCall!] { _ = validateMenuItem(item) }
+        for item in [statusToggle!, statusStartCall!, statusEndCall!] { _ = validateMenuItem(item) }
     }
 
     private func buildMain() {
@@ -82,11 +78,6 @@ final class AppMenus: NSObject, NSMenuDelegate {
             edit.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
         }
 
-        let view = submenu("View")
-        for (index, entry) in Self.screens.enumerated() {
-            view.addItem(item(entry.title, #selector(showScreenItem(_:)), String(index + 1), tag: index))
-        }
-
         let camera = submenu("Camera")
         let toggle = item("Start Camera", #selector(toggleCapture), "s")
         toggle.keyEquivalentModifierMask = [.command, .shift]
@@ -96,8 +87,8 @@ final class AppMenus: NSObject, NSMenuDelegate {
         }
 
         let call = submenu("Call")
-        for entry in [item("Start Conversation", #selector(startConversation)), item("Show Call", #selector(showConversation)),
-                      item("Copy Invitation", #selector(copyInvitation)), item("End Conversation…", #selector(endConversation))] {
+        for entry in [item("Start Call", #selector(startCall)), item("Join Call…", #selector(joinCall)), .separator(),
+                      item("Copy Invitation", #selector(copyInvitation)), item("End Call…", #selector(endCall))] {
             call.addItem(entry)
         }
 
@@ -115,13 +106,13 @@ final class AppMenus: NSObject, NSMenuDelegate {
         statusToggle = item("Start Camera", #selector(toggleCapture))
         copyLinkItem = item("Copy Share Link", #selector(copyShareLink))
         stopSharingItem = item("Stop Sharing", #selector(stopSharing))
-        statusStartCall = item("Start Conversation", #selector(startConversation))
-        statusShowCall = item("Show Call", #selector(showConversation))
-        statusEndCall = item("End Conversation…", #selector(endConversation))
+        statusStartCall = item("Start Call", #selector(startCall))
+        statusJoinCall = item("Join Call…", #selector(joinCall))
+        statusEndCall = item("End Call…", #selector(endCall))
         statusCopyInvitation = item("Copy Invitation", #selector(copyInvitation))
         let entries: [NSMenuItem] = [
             streamLine, shareLine, callLine, .separator(),
-            statusToggle, copyLinkItem, stopSharingItem, statusStartCall, statusShowCall, statusCopyInvitation, statusEndCall, .separator(),
+            statusToggle, copyLinkItem, stopSharingItem, statusStartCall, statusJoinCall, statusCopyInvitation, statusEndCall, .separator(),
             item("Show Camstream Camera", #selector(showMainWindow)), item("Settings…", #selector(showSettings)), .separator(),
             NSMenuItem(title: "Quit Camstream Camera", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]
@@ -159,7 +150,6 @@ final class AppMenus: NSObject, NSMenuDelegate {
     }
 
     @objc private func showSettings() { openSettings(nil) }
-    @objc private func showScreenItem(_ sender: NSMenuItem) { show(Self.screens[sender.tag].screen) }
     @objc private func showMainWindow() { showWindow() }
     @objc private func toggleCapture() { if model.capture.active { model.stop() } else { model.startCamera() } }
     /// The export result and checklist show in Settings → Server.
@@ -170,13 +160,18 @@ final class AppMenus: NSObject, NSMenuDelegate {
     @objc private func revealFiles() { model.revealExports() }
     @objc private func copyShareLink() { model.sharing.copyLink() }
     @objc private func stopSharing() { model.sharing.stopSharing() }
-    @objc private func startConversation() {
-        show(.call)
-        model.startConversation()
+    /// The call takes the main window's stage, so the window comes forward.
+    @objc private func startCall() {
+        showWindow()
+        model.startCall()
     }
-    @objc private func showConversation() { show(.call) }
+    @objc private func joinCall() {
+        showWindow()
+        model.showingJoin = true
+    }
     @objc private func copyInvitation() { model.copyConversationInvitation() }
-    @objc private func endConversation() { confirmEnd() }
+    /// Asks first, on the main window.
+    @objc private func endCall() { model.endCall() }
     @objc private func help() { openHelp() }
 }
 
@@ -190,11 +185,14 @@ extension AppMenus: NSMenuItemValidation {
         case #selector(revealFiles): return !model.exported.isEmpty
         case #selector(copyShareLink): return model.sharing.canCopyLink
         case #selector(stopSharing): return model.sharing.canStopSharing
-        case #selector(startConversation): return model.canStartConversation
-        case #selector(showConversation): return model.endConfirmation != nil
+        case #selector(startCall):
+            // While the camera streams, Start Call asks before stopping it.
+            item.title = model.canStop ? "Start Call…" : "Start Call"
+            return model.canStartConversation
+        case #selector(joinCall): return model.canStartConversation
         case #selector(copyInvitation): return model.canCopyConversation
-        case #selector(endConversation):
-            item.title = model.conversationActivity?.role == .guest ? "Leave Conversation…" : "End Conversation…"
+        case #selector(endCall):
+            item.title = model.conversationActivity?.role == .guest ? "Leave Call…" : "End Call…"
             return model.endConfirmation != nil
         default: return true
         }
