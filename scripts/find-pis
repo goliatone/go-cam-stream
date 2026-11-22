@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""List Raspberry Pi SSH advertisements on the local network."""
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import ipaddress
+import re
+import subprocess
+import sys
+
+
+def discover_output(command, seconds):
+    # Both browsers can keep running after reporting all current services.
+    with subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace"
+    ) as process:
+        try:
+            output, errors = process.communicate(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                output, _ = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                output, _ = process.communicate()
+        else:
+            if process.returncode:
+                raise RuntimeError(f"{command[0]}: {errors.strip() or 'discovery failed'}")
+    return output
+
+
+def pi_hostname(host, prefixes):
+    host = host.lower().rstrip(".")
+    if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.local", host):
+        if host.startswith(prefixes):
+            return host
+    return None
+
+
+def avahi_records(output, prefixes):
+    for line in output.splitlines():
+        # Resolved records are separate from browse events. The service
+        # instance name need not be the hostname of the Pi.
+        fields = line.split(";", 9)
+        if len(fields) >= 9 and fields[0] == "=":
+            host = pi_hostname(fields[6], prefixes)
+            if host:
+                yield host, fields[7], fields[8]
+
+
+def bonjour_records(output, prefixes):
+    for line in output.splitlines():
+        # dns-sd -Z emits SRV records after resolving each SSH service.
+        service = re.search(r"_ssh\._tcp\.?\s+SRV\s+\d+\s+\d+\s+(\d+)\s+(\S+)", line, re.I)
+        if service:
+            host = pi_hostname(service[2], prefixes)
+            if host:
+                yield host, service[1]
+
+
+def bonjour_addresses(host):
+    output = discover_output(["dns-sd", "-G", "v4", host + "."], 2)
+    return {
+        match[1]
+        for line in output.splitlines()
+        if (match := re.search(r"\bAdd\s+\S+\s+\d+\s+\S+\s+(\S+)\s+\d+\s*$", line))
+    }
+
+
+def candidates(seconds, prefixes, names):
+    if names:
+        # An mDNS hostname can resolve even when the Pi advertises no service.
+        for host in names:
+            if sys.platform == "darwin":
+                yield from ((host, address, 22) for address in bonjour_addresses(host))
+            elif sys.platform.startswith("linux"):
+                output = discover_output(["avahi-resolve-host-name", "-4", host], seconds)
+                for line in output.splitlines():
+                    fields = line.split()
+                    if len(fields) == 2:
+                        yield host, fields[1], 22
+            else:
+                raise RuntimeError("LAN discovery requires macOS or Linux with avahi-utils.")
+        return
+    if sys.platform == "darwin":
+        output = discover_output(["dns-sd", "-Z", "_ssh._tcp", "local."], seconds)
+        services = sorted(set(bonjour_records(output, prefixes)))
+        hosts = sorted({host for host, _ in services})
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            addresses = dict(zip(hosts, executor.map(bonjour_addresses, hosts)))
+        yield from (
+            (host, address, port) for host, port in services for address in addresses[host]
+        )
+    elif sys.platform.startswith("linux"):
+        output = discover_output(["avahi-browse", "-r", "-p", "-k", "_ssh._tcp"], seconds)
+        yield from avahi_records(output, prefixes)
+    else:
+        raise RuntimeError("LAN discovery requires macOS or Linux with avahi-utils.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seconds", type=int, default=4, choices=range(1, 31), metavar="1-30")
+    parser.add_argument(
+        "--prefix", action="append", help="Hostname prefix. Defaults to cam-pi- and raspberrypi."
+    )
+    parser.add_argument("--name", action="append", help="Resolve a known Pi hostname over mDNS")
+    args = parser.parse_args()
+    prefixes = tuple(prefix.lower() for prefix in (args.prefix or ["cam-pi-", "raspberrypi"]))
+    if any(not re.fullmatch(r"[a-z0-9-]+", prefix) for prefix in prefixes):
+        parser.error("hostname prefixes must contain only letters, digits, and hyphens")
+    names = []
+    for name in args.name or []:
+        host = pi_hostname(name.lower().rstrip(".").removesuffix(".local") + ".local", ("",))
+        if not host:
+            parser.error("invalid Pi hostname")
+        names.append(host)
+
+    hosts = set()
+    try:
+        for host, address, port in candidates(args.seconds, prefixes, names):
+            try:
+                ipv4 = ipaddress.IPv4Address(address)
+                ssh_port = int(port)
+            except ValueError:
+                continue
+            if not (ipv4.is_unspecified or ipv4.is_loopback or ipv4.is_multicast) and 0 < ssh_port < 65536:
+                hosts.add((host, ipv4, ssh_port))
+    except (OSError, RuntimeError) as error:
+        print(f"find-pis: {error}", file=sys.stderr)
+        return 2
+    if not hosts:
+        print("No Pis found. Try --name with the hostname from Imager, or check the router's DHCP leases.", file=sys.stderr)
+        return 1
+    print(f"{'HOSTNAME':<34} {'IP ADDRESS':<15} SSH PORT")
+    for host, address, port in sorted(hosts):
+        print(f"{host:<34} {str(address):<15} {port}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

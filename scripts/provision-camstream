@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Provision Camstream on one Raspberry Pi over SSH."""
+
+import argparse
+import hashlib
+import io
+import ipaddress
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+
+def regular_file(text):
+    path = Path(text)
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"expected a file: {path}")
+    return path
+
+
+def artifact_inputs(archive, checksum):
+    match = re.fullmatch(r"(camstream-[A-Za-z0-9][A-Za-z0-9._-]*-linux-arm64)\.tar\.gz", archive.name)
+    if not match:
+        raise ValueError("expected camstream-VERSION-linux-arm64.tar.gz")
+    checksum = checksum or archive.with_name(archive.name + ".sha256")
+    parts = checksum.read_text().strip().split()
+    if len(parts) != 2 or parts[1].lstrip("*") != archive.name or not re.fullmatch(r"[a-fA-F0-9]{64}", parts[0]):
+        raise ValueError("checksum must identify the selected archive")
+    digest = hashlib.sha256()
+    with archive.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != parts[0].lower():
+        raise ValueError("release archive checksum mismatch")
+    return match[1], digest.hexdigest()
+
+
+def provision(args, release, digest):
+    installer = Path(__file__).resolve().with_name("install-camstream-native.sh")
+    inputs = {
+        "install.sh": installer,
+        "release.tar.gz": args.archive,
+        "site.yaml": args.config,
+        "secrets.env": args.secrets_file,
+        "tailscale.key": args.tailscale_key_file,
+    }
+    # Keep staged credentials private both locally and on the target. Only the
+    # selected IP receives the bundle, with SSH's normal host-key verification.
+    with tempfile.TemporaryFile() as bundle:
+        with tarfile.open(fileobj=bundle, mode="w") as archive:
+            for name, path in inputs.items():
+                if path is not None:
+                    metadata = tarfile.TarInfo(name)
+                    metadata.mode = 0o600
+                    with path.open("rb") as source:
+                        metadata.size = path.stat().st_size
+                        archive.addfile(metadata, source)
+            checksum = f"{digest}  release.tar.gz\n".encode()
+            metadata = tarfile.TarInfo("release.sha256")
+            metadata.mode = 0o600
+            metadata.size = len(checksum)
+            archive.addfile(metadata, io.BytesIO(checksum))
+        bundle.seek(0)
+
+        remote = """set -eu
+umask 077
+stage=$(mktemp -d)
+trap 'rm -rf -- "$stage"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+sudo -n true || { echo "Provisioning requires sudo without a password prompt." >&2; exit 1; }
+tar -xf - -C "$stage"
+sudo -n bash "$stage/install.sh" "$stage" "$1" "$2"
+"""
+        command = shlex.join(["bash", "-c", remote, "camstream-provision", release, args.hostname or ""])
+        return subprocess.run(
+            ["ssh", "-T", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+             "-o", "ServerAliveCountMax=3", "-p", str(args.port), "--", f"{args.user}@{args.host}", command],
+            stdin=bundle,
+            check=False,
+        ).returncode
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", required=True, type=ipaddress.IPv4Address, help="Pi IPv4 from find-pis")
+    parser.add_argument("--user", required=True, help="SSH login configured in Raspberry Pi Imager")
+    parser.add_argument("--port", type=int, default=22, help="SSH port (default 22)")
+    parser.add_argument("--hostname", help="Expected hostname from discovery, including optional .local")
+    parser.add_argument("--archive", required=True, type=regular_file, help="Local ARM64 release tarball")
+    parser.add_argument("--checksum", type=regular_file, help="Defaults to the archive's .sha256 sidecar")
+    parser.add_argument("--config", required=True, type=regular_file, help="Site YAML based on deploy/config.example.yaml")
+    parser.add_argument("--secrets-file", type=regular_file, help="Private systemd EnvironmentFile")
+    parser.add_argument("--tailscale-key-file", type=regular_file, help="One-time auth key for a Pi that has yet to join")
+    args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", args.user) or not 0 < args.port < 65536:
+        parser.error("invalid SSH login or port")
+    if args.host.is_unspecified or args.host.is_loopback or args.host.is_multicast:
+        parser.error("host must be the Pi's unicast IPv4 address")
+    if args.hostname:
+        args.hostname = args.hostname.lower().rstrip(".").removesuffix(".local")
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", args.hostname):
+            parser.error("invalid expected hostname")
+
+    try:
+        release, digest = artifact_inputs(args.archive, args.checksum)
+        return provision(args, release, digest)
+    except (OSError, ValueError) as error:
+        print(f"provision-camstream: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
