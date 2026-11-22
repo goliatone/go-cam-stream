@@ -16,3 +16,5 @@ export const ExitFullscreenIcon = icon("exitfullscreen");
 export const PipIcon = icon("pip");
 export const PlusIcon = icon("plus");
 export const RefreshIcon = icon("refresh");
+export const MoreIcon = icon("more");
+export const SettingsIcon = icon("settings");

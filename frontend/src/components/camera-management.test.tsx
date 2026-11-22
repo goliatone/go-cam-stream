@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import CameraManagementDialog, { type ManagementActions, type ManagementView } from "./camera-management";
+import type { CameraSettingsContext } from "./settings-drawer";
 import { CameraRecovery } from "./camera-recovery";
 import { App } from "../app";
 import type { DraftReview, ManagementErrorCode, TestResult } from "../services/contracts";
@@ -191,42 +192,99 @@ it("Watch is explicit and source reconnect requires impact confirmation", async 
  expect(screen.getByRole("heading",{name:"Camera saved"})).toBeTruthy();
  expect(a.watch).not.toHaveBeenCalled();fireEvent.click(screen.getByRole("button",{name:"Watch now"}));expect(a.watch).toHaveBeenCalledWith("new");
  fireEvent.click(screen.getByRole("button",{name:"Add another"}));expect(a.reset).toHaveBeenCalledOnce();unmount();
- const confirm=vi.fn();render(<CameraRecovery busy={false} unresolved={false} disabled={false} onConfirm={confirm} onCheck={vi.fn()}/>);
- fireEvent.click(screen.getByRole("button",{name:"Reconnect Camera"}));await waitFor(()=>expect(screen.getByRole("dialog")).toBeTruthy());
+ const confirm=vi.fn(),check=vi.fn(),close=vi.fn();
+ const recovery=(unresolved:boolean)=><CameraRecovery name="Room 1" busy={false} unresolved={unresolved} disabled={false} onConfirm={confirm} onCheck={check} onClose={close}/>;
+ // It opens as it is shown and says what stops before anything happens.
+ const {rerender}=render(recovery(false));await waitFor(()=>expect(screen.getByRole("dialog",{name:"Reconnect Room 1?"})).toBeTruthy());
  expect(confirm).not.toHaveBeenCalled();expect(screen.getByText(/This stops all viewers/)).toBeTruthy();
- fireEvent.click(screen.getAllByRole("button",{name:"Reconnect Camera"})[1]!);expect(confirm).toHaveBeenCalledOnce();
+ fireEvent.click(screen.getByRole("button",{name:"Reconnect camera"}));expect(confirm).toHaveBeenCalledOnce();
+ // A reset whose outcome is unknown is checked, never started again.
+ rerender(recovery(true));fireEvent.click(screen.getByRole("button",{name:"Check again"}));
+ expect(check).toHaveBeenCalledOnce();expect(confirm).toHaveBeenCalledOnce();
+ fireEvent.click(screen.getByRole("button",{name:"Close"}));expect(close).toHaveBeenCalledOnce();
 });
-it("updates a saved camera's sign-in through the same steps", () => {
- const target={id:"room1",name:"Room 1"};const update={...tested,credential_update:true,name:"Room 1"};
- const {rerender}=render(<CameraManagementDialog view={{...view,credentialTarget:target}} actions={actions()}/>);
- expect(screen.getByRole("heading",{name:"Camera settings"})).toBeTruthy();expect(steps()).toEqual(["Sign-in (current)","Check","Save"]);
- expect(screen.queryByRole("switch")).toBeNull();expect(screen.getByLabelText("New password")).toBeTruthy();
- rerender(<CameraManagementDialog view={{...view,credentialTarget:target,phase:"review",draft:update,test:update.test}} actions={actions()}/>);
- expect(footer()).toEqual(["Save sign-in","Edit sign-in","Cancel"]);
- expect([...document.querySelectorAll(".management-review dt")].map(dt=>dt.textContent)).toEqual(["Sign-in"]);
- rerender(<CameraManagementDialog view={{...view,credentialTarget:target,phase:"review",draft:{...update,state:"ready"},error:"camera_busy"}} actions={actions()}/>);
- expect(screen.getByRole("alert").textContent).toBe("Stop playback of this camera, then try again.");
- rerender(<CameraManagementDialog view={{...view,phase:"saved",saved:{...saved,credentials_updated:true}}} actions={actions()}/>);
- expect(screen.getByRole("heading",{name:"Sign-in updated"})).toBeTruthy();expect(footer()).toEqual(["Watch now","Close"]);
+const room1={id:"room1",name:"Room 1",availability:"playing" as const,can_update_credentials:true,streams:[{id:"default",name:"Default",capabilities:{video:true,audio:true}},{id:"compact",name:"Compact",capabilities:{video:true,audio:false}}]};
+const target={id:"room1",name:"Room 1"};
+const update={...draft,candidate_id:"room1",name:"Room 1",credential_update:true};
+const watchers=()=>document.getElementById("settings-watchers")!.textContent;
+const checkAndSave=()=>screen.getByRole("button",{name:"Check and save"}) as HTMLButtonElement;
+it("opens a saved camera's settings in a drawer that says who must stop watching", async () => {
+ const user=userEvent.setup();const a={...actions(),checkAndSave:vi.fn()};const stop=vi.fn(),reconnect=vi.fn();
+ const drawer=(settings:CameraSettingsContext)=><CameraManagementDialog view={{...view,credentialTarget:target}} actions={a} settings={settings}/>;
+ const {rerender}=render(drawer({camera:room1,watching:true,stopWatching:stop}));
+ expect(screen.getByRole("dialog",{name:"Settings Room 1"}).classList.contains("drawer")).toBe(true);
+ expect(screen.queryByRole("switch")).toBeNull();expect(document.querySelector(".stepper")).toBeNull();
+ // Until the server counts, the drawer states the rule.
+ expect(watchers()).toBe("The sign-in can change only while no one is watching this camera, in any browser.");
+ // A count taken before this page connected still includes it.
+ rerender(drawer({camera:room1,viewers:0,watching:true,stopWatching:stop}));
+ expect(watchers()).toBe("You’re watching this camera here. Stop watching to change its sign-in.");expect(checkAndSave().disabled).toBe(true);
+ rerender(drawer({camera:room1,viewers:3,watching:true,stopWatching:stop}));
+ expect(watchers()).toBe("3 people are watching this camera, including you. Everyone must stop watching before its sign-in can change.");
+ expect(checkAndSave().getAttribute("aria-describedby")).toBe("settings-watchers");
+ fireEvent.click(screen.getByRole("button",{name:"Stop watching here"}));expect(stop).toHaveBeenCalledOnce();
+ // The button goes with the playback, so focus moves on to the form.
+ expect(document.activeElement).toBe(screen.getByLabelText("Username"));
+ rerender(drawer({camera:room1,viewers:1}));
+ expect(watchers()).toBe("1 person is watching this camera. Everyone must stop watching before its sign-in can change.");
+ expect(screen.queryByRole("button",{name:"Stop watching here"})).toBeNull();expect(checkAndSave().disabled).toBe(true);
+ rerender(drawer({camera:room1,viewers:0,reconnect}));
+ expect(watchers()).toBe("No one is watching this camera, so its sign-in can change now.");expect(checkAndSave().disabled).toBe(false);
+ // Connection and About describe the camera; Reconnect shows only when its source needs it.
+ expect([...document.querySelectorAll(".drawer-facts div")].map(d=>d.textContent)).toEqual(["StatusLive","StreamsDefault, Compact","MediaVideo + audio, Video only"]);
+ fireEvent.click(screen.getByRole("button",{name:"Reconnect"}));expect(reconnect).toHaveBeenCalledOnce();
+ // One press checks and saves what was typed, and clears the fields.
+ expect(screen.getByLabelText("New password").hasAttribute("required")).toBe(true);
+ await user.type(screen.getByLabelText("New password"),"PRIVATE-PASSWORD");await user.click(checkAndSave());
+ expect(a.checkAndSave).toHaveBeenCalledOnce();expect(a.checkAndSave).toHaveBeenCalledWith(expect.any(HTMLVideoElement),{username:"",password:"PRIVATE-PASSWORD"});
+ expect((screen.getByLabelText("New password") as HTMLInputElement).value).toBe("");
+ fireEvent.click(screen.getByRole("button",{name:"Close settings"}));expect(a.close).toHaveBeenCalledOnce();
+});
+it("shows the drawer's check, a refused change, an unknown outcome and the saved sign-in", () => {
+ const a={...actions(),checkAndSave:vi.fn(),abandon:vi.fn(),retrySave:vi.fn()};
+ const drawer=(v:ManagementView)=><CameraManagementDialog view={{...view,credentialTarget:target,...v}} actions={a} settings={{camera:room1,viewers:0}}/>;
+ const {rerender}=render(drawer({...view,phase:"testing",draft:{...update,state:"testing"},test:running}));
+ expect(checklist()).toEqual(["Reaching the camera: checking","Receiving video: waiting","Playing in this browser: waiting"]);
+ expect(screen.getByText("Checking the connection…")).toBeTruthy();expect(footer()).toEqual(["Checking…","Stop check"]);
+ expect((screen.getByRole("button",{name:"Checking…"}) as HTMLButtonElement).disabled).toBe(true);
+ rerender(drawer({...view,phase:"testing",draft:{...update,state:"testing"},test:{...running,stage:"browser_playback",source_media_observed:true}}));
+ expect(footer()).toEqual(["Checking…","Stop check","Play preview"]);
+ fireEvent.click(screen.getByRole("button",{name:"Stop check"}));expect(a.cancelTest).toHaveBeenCalledOnce();
+ // The server refuses while anyone watches; the password entered before can be checked again.
+ rerender(drawer({...view,phase:"review",draft:{...update,state:"ready"},error:"camera_busy"}));
+ expect(screen.getByRole("alert").textContent).toBe("Someone is watching this camera. Everyone must stop watching before its sign-in can change.");
+ const password=screen.getByLabelText("New password");expect(password.hasAttribute("required")).toBe(false);
+ expect(document.getElementById(password.getAttribute("aria-describedby")!)?.textContent).toBe("Leave blank to check the password you entered again.");
+ rerender(drawer({...view,phase:"recovering",draft:update,unresolved:true,error:"save_outcome_unknown",canRetrySave:true,canAbandon:true}));
+ expect(screen.queryByLabelText("New password")).toBeNull();expect(footer()).toEqual(["Check again","Try saving again","Discard changes"]);
+ rerender(drawer({...view,credentialTarget:undefined,phase:"saved",saved:{...saved,camera_id:"room1",credentials_updated:true}}));
+ expect(screen.getByRole("status").textContent).toBe("The camera now uses the new sign-in.");expect(footer()).toEqual(["Watch now","Close"]);
+ fireEvent.click(screen.getByRole("button",{name:"Watch now"}));expect(a.watch).toHaveBeenCalledWith("room1");
 });
 // Each button takes a role class from styles.css, so none falls back to the
 // browser's own look.
-const ROLE = /(?:^|\s)(?:(?:primary|secondary|ghost|danger|icon|control)-button|add-camera|overlay-cameras)(?:\s|$)/;
+const ROLE = /(?:^|\s)(?:(?:primary|secondary|ghost|danger|icon|control)-button|add-camera|overlay-cameras|menu-item)(?:\s|$)/;
 const unstyled = () => [...document.querySelectorAll("button")].filter(b => !ROLE.test(b.className)).map(b => b.textContent || b.getAttribute("aria-label"));
-it("draws every management, recovery and rail button in a role", async () => {
+it("draws every management, recovery, rail and menu button in a role", async () => {
  const user=userEvent.setup();
  const views:ManagementView[]=[view,{...view,phase:"review",draft},{...view,phase:"testing",draft:{...draft,state:"testing"},test:{...running,source_media_observed:true}},
   {...view,phase:"review",draft,test:failedTest("camera_unreachable")},{...view,phase:"review",draft:tested,test:tested.test},
   {...view,phase:"recovering",draft,unresolved:true,error:"save_outcome_unknown",canRetrySave:true,canAbandon:true},{...view,phase:"saved",saved},{...view,phase:"canceled"},
-  {...view,credentialTarget:{id:"room1",name:"Room 1"},error:"duplicate_camera",duplicateCamera:"room1"}];
- for(const v of views){const {unmount}=render(<CameraManagementDialog view={v} actions={{...actions(),openSettings:vi.fn(),abandon:vi.fn(),retrySave:vi.fn()}}/>);expect(unstyled(),v.phase).toEqual([]);unmount();}
+  {...view,phase:"review",draft,error:"duplicate_camera",duplicateCamera:"room1"},
+  {...view,credentialTarget:target},{...view,credentialTarget:target,phase:"testing",draft:{...update,state:"testing"},test:{...running,source_media_observed:true}},
+  {...view,credentialTarget:target,phase:"recovering",draft:update,unresolved:true,error:"save_outcome_unknown",canRetrySave:true,canAbandon:true},{...view,phase:"saved",saved:{...saved,credentials_updated:true}}];
+ const settings:CameraSettingsContext={camera:room1,viewers:2,watching:true,stopWatching:vi.fn(),reconnect:vi.fn()};
+ for(const v of views){const {unmount}=render(<CameraManagementDialog view={v} actions={{...actions(),openSettings:vi.fn(),abandon:vi.fn(),retrySave:vi.fn()}} settings={settings}/>);expect(unstyled(),v.phase).toEqual([]);unmount();}
  render(<CameraManagementDialog view={view} actions={actions()}/>);
  await user.click(screen.getByRole("radio",{name:"Camstream Mac app"}));expect(unstyled()).toEqual([]);cleanup();
  render(<App catalog={{cameras:[]}} onAddCamera={vi.fn()}/>);expect(unstyled()).toEqual([]);cleanup();
- const recovery=<CameraRecovery busy={false} unresolved={false} disabled={false} onConfirm={vi.fn()} onCheck={vi.fn()}/>;
- const cameras=[{id:"room1",name:"Room 1",availability:"idle" as const,can_update_credentials:true,streams:[{id:"default",name:"Default",capabilities:{video:true,audio:false}}]}];
- render(<App catalog={{cameras}} catalogStale refreshCatalog={vi.fn(async()=>{})} onAddCamera={vi.fn()} onCameraSettings={vi.fn()} recoveryControl={recovery}/>);
- fireEvent.click(screen.getByRole("button",{name:"Reconnect Camera"}));await waitFor(()=>expect(screen.getByRole("dialog",{name:"Reconnect this camera?"})).toBeTruthy());
+ const cameras=[{...room1,availability:"idle" as const,streams:[{id:"default",name:"Default",capabilities:{video:true,audio:false},can_reconnect:true,recovery_required:true}]}];
+ render(<App catalog={{cameras}} catalogStale refreshCatalog={vi.fn(async()=>{})} onAddCamera={vi.fn()} onCameraSettings={vi.fn()} onReconnect={vi.fn()}/>);
+ expect(within(screen.getByRole("region",{name:"Camera details"})).getAllByRole("button").map(b=>b.textContent)).toEqual(["Reconnect","Settings"]);
+ await user.click(screen.getByRole("button",{name:"Room 1 actions"}));
+ expect(screen.getAllByRole("menuitem").map(item=>item.textContent)).toEqual(["Settings","Reconnect","Copy link"]);
+ expect(unstyled()).toEqual([]);cleanup();
+ render(<CameraRecovery name="Room 1" busy={false} unresolved={false} disabled={false} onConfirm={vi.fn()} onCheck={vi.fn()} onClose={vi.fn()}/>);
  expect(unstyled()).toEqual([]);
 });
 it("closes from its icon and offers Cancel only with a draft and Close only at the end", () => {

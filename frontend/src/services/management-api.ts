@@ -108,6 +108,12 @@ export class ManagementClient implements ManagementAPI {
     if(!object(value)||!string(value.camera_id)||!object(value.catalog_revision)||!string(value.catalog_revision.runtime_epoch)||!number(value.catalog_revision.generation))return invalid();
     return value as unknown as SaveCameraResponse;
   }
+  /** People watching any of a camera's streams, or undefined when any count is unknown. */
+  async viewers(cameraID:string) {
+    const value=await this.#request(`/api/cameras/${encodeURIComponent(cameraID)}/status`);
+    const counts=object(value)&&Array.isArray(value.streams)?value.streams.map(item=>object(item)?item.viewers:undefined):[];
+    return counts.length&&counts.every(number)?(counts as number[]).reduce((sum,n)=>sum+n,0):undefined;
+  }
   async reconnect(ref:StreamRef,request:Mutation) {
     const value=await this.#request(`/api/cameras/${encodeURIComponent(ref.camera_id)}/streams/${encodeURIComponent(ref.stream_id)}/recovery`,"POST",request);
     if(!object(value)||!Array.isArray(value.affected)||!Array.isArray(value.closed_sessions))return invalid();

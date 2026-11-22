@@ -135,6 +135,15 @@ const failed: TestResult = {
   cleanup: "confirmed",
   error: { code: "source_unavailable", message: "", retryable: true },
 };
+const signIn = { id: "room1", name: "Room 1" };
+const signInDraft: DraftReview = {
+  ...draft,
+  candidate_id: "room1",
+  name: "Room 1",
+  endpoint: "",
+  credential_update: true,
+  warnings: [],
+};
 const managing = {
   viewer: undefined,
   manager: undefined,
@@ -159,9 +168,29 @@ const managing = {
       catalog_revision: { runtime_epoch: "preview", generation: 2 },
     },
   },
-  "camera-settings": {
-    phase: "editing",
-    credentialTarget: { id: "room1", name: "Room 1" },
+  "camera-settings": { phase: "editing", credentialTarget: signIn },
+  "settings-checking": {
+    phase: "testing",
+    credentialTarget: signIn,
+    draft: { ...signInDraft, state: "testing" },
+    test: running,
+  },
+  "settings-failed": {
+    phase: "review",
+    credentialTarget: signIn,
+    draft: signInDraft,
+    test: {
+      ...failed,
+      error: { code: "authentication_failed", message: "", retryable: true },
+    },
+  },
+  "settings-saved": {
+    phase: "saved",
+    saved: {
+      camera_id: "room1",
+      catalog_revision: { runtime_epoch: "preview", generation: 2 },
+      credentials_updated: true,
+    },
   },
   "checking-save": {
     phase: "recovering",
@@ -181,13 +210,16 @@ const managing = {
   reconnect: undefined,
 } satisfies Record<string, Omit<ManagementView, "storageReady"> | undefined>;
 type Managing = keyof typeof managing;
-/** A manager may change each listed camera's credentials. */
-const canManage = (list: CameraList, manager: boolean): CameraList =>
+/** A manager may change each listed camera's credentials; a failed source can be reset. */
+const canManage = (list: CameraList, manager: boolean, reset: boolean): CameraList =>
   manager
     ? {
         cameras: list.cameras.map((camera) => ({
           ...camera,
           can_update_credentials: true,
+          streams: camera.streams.map((stream) =>
+            reset ? { ...stream, can_reconnect: true, recovery_required: true } : stream,
+          ),
         })),
       }
     : list;
@@ -213,6 +245,7 @@ function Preview() {
   const [event, setEvent] = useState("No action yet");
   const [attempt, setAttempt] = useState(0);
   const [manage, setManage] = useState<Managing>("viewer");
+  const [recovering, setRecovering] = useState<StreamRef>();
   const dialog = managing[manage];
   const back = (what: string) => () => {
     setManage("manager");
@@ -231,6 +264,7 @@ function Preview() {
     close: back("Close"),
     watch: back("Watch"),
     submitCredentials: () => setEvent("Credentials callback; nothing is sent"),
+    checkAndSave: () => setEvent("Check and save callback; nothing is sent"),
     openSettings: () => setManage("camera-settings"),
     reset: () => setManage("add-camera"),
   };
@@ -303,6 +337,7 @@ function Preview() {
         : {}),
     presentation: {
       state,
+      ...(state === "playing" ? { transport: "udp" as const } : {}),
       paused: scenario === "paused",
       ...(scenario === "reconnecting" ? { recoverBy: since + 15000 } : {}),
       ...(scenario === "retrying" ? { retryAt: since + 3000 } : {}),
@@ -335,6 +370,25 @@ function Preview() {
       },
     },
   };
+  const cameras = canManage(
+    scenario === "empty"
+      ? { cameras: [] }
+      : scenario === "no-streams"
+        ? {
+            cameras: [
+              {
+                id: "unavailable",
+                name: "Unconfigured camera",
+                availability: "unknown",
+                streams: [],
+              },
+            ],
+          }
+        : catalog,
+    manage !== "viewer",
+    manage === "reconnect",
+  );
+  const watching = selection.camera_id === "room1" && state === "playing";
   return (
     <>
       <div class="preview-bar">
@@ -378,23 +432,7 @@ function Preview() {
         </span>
       </div>
       <App
-        catalog={canManage(
-          scenario === "empty"
-            ? { cameras: [] }
-            : scenario === "no-streams"
-              ? {
-                  cameras: [
-                    {
-                      id: "unavailable",
-                      name: "Unconfigured camera",
-                      availability: "unknown",
-                      streams: [],
-                    },
-                  ],
-                }
-              : catalog,
-          manage !== "viewer",
-        )}
+        catalog={cameras}
         loading={scenario === "loading"}
         {...(scenario === "denied"
           ? { error: samples.denied.error as ErrorBody }
@@ -405,6 +443,7 @@ function Preview() {
               onAddCamera: (mode) =>
                 setManage(mode === "import" ? "import-camera" : "add-camera"),
               onCameraSettings: () => setManage("camera-settings"),
+              onReconnect: setRecovering,
             })}
         {...(dialog
           ? {
@@ -412,6 +451,17 @@ function Preview() {
                 view: { storageReady: true, ...dialog },
                 actions: managementActions,
                 mode: manage === "import-camera" ? "import" : "manual",
+                // Room 1 has a second viewer while it plays here.
+                settings: {
+                  camera: cameras.cameras.find((camera) => camera.id === "room1"),
+                  viewers: watching ? 2 : 0,
+                  watching,
+                  state,
+                  stopWatching: () => {
+                    show("stopped");
+                    setEvent("Stop watching callback; no network request");
+                  },
+                },
               },
             }
           : {})}
@@ -422,19 +472,6 @@ function Preview() {
                 setEvent("Refresh callback; no request"),
             }
           : {})}
-        {...(manage === "reconnect"
-          ? {
-              recoveryControl: (
-                <CameraRecovery
-                  busy={false}
-                  unresolved={false}
-                  disabled={false}
-                  onConfirm={() => setEvent("Reconnect callback; preview only")}
-                  onCheck={() => setEvent("Check reconnect callback")}
-                />
-              ),
-            }
-          : {})}
         viewer={viewer}
         onSelect={(next) => {
           if (next) setSelection(next);
@@ -443,6 +480,17 @@ function Preview() {
           setEvent("Selection changed; presentation reset");
         }}
       />
+      {recovering && (
+        <CameraRecovery
+          name={cameras.cameras.find((camera) => camera.id === recovering.camera_id)?.name ?? "this camera"}
+          busy={false}
+          unresolved={false}
+          disabled={false}
+          onConfirm={() => setEvent("Reconnect callback; preview only")}
+          onCheck={() => setEvent("Check again callback; no request")}
+          onClose={() => setRecovering(undefined)}
+        />
+      )}
     </>
   );
 }

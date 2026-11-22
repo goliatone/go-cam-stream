@@ -31,3 +31,10 @@ it("calls the native fetch entry point without binding it to the client",async()
  const fetcher=vi.fn(function(this:unknown){expect(this).not.toBeInstanceOf(ManagementClient);return Promise.resolve(json({can_manage_cameras:true,recovery_scope:"scope",runtime_epoch:"epoch"}))});
  vi.stubGlobal("fetch",fetcher);try{expect((await new ManagementClient().capabilities()).can_manage_cameras).toBe(true)}finally{vi.unstubAllGlobals()}
 });
+it("adds up a camera's viewers, and has no count when a stream's is unknown",async()=>{
+ const fetcher=vi.fn().mockResolvedValueOnce(json({camera_id:"a/b",streams:[{stream_id:"default",state:"playing",viewers:2},{stream_id:"compact",state:"idle",viewers:1}]}))
+  .mockResolvedValueOnce(json({camera_id:"hall",streams:[{stream_id:"default",state:"unknown",viewers:null}]})).mockResolvedValueOnce(json({camera_id:"empty",streams:[]}));
+ const api=new ManagementClient(fetcher);expect(await api.viewers("a/b")).toBe(3);
+ expect(fetcher.mock.calls[0]![0]).toBe("/api/cameras/a%2Fb/status");expect(fetcher.mock.calls[0]![1].method).toBe("GET");
+ expect(await api.viewers("hall")).toBeUndefined();expect(await api.viewers("empty")).toBeUndefined();
+});

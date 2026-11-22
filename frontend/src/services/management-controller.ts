@@ -97,6 +97,16 @@ export class ManagementController {
       this.#mutating = false;
     }
   }
+  /**
+   * A sign-in change checks and saves in one step: the new sign-in, when given,
+   * then the connection check, then the save. Any failure stops there and stays
+   * on show; a draft that already holds the new sign-in is checked again as is.
+   */
+  async checkAndSave(video:HTMLVideoElement,credentials?:Credentials) {
+    if(credentials){await this.submitCredentials(credentials);if(this.view.error)return;}
+    if(this.view.draft?.state==="ready")await this.test(video);
+    if(this.view.draft?.state==="tested"&&!this.view.error)await this.save();
+  }
   async importFiles(yaml:File,env?:File) {
     if(this.view.busy||this.view.unresolved||this.#mutating)return;
     try{const m=this.#begin("import");this.#show({phase:"importing"});this.#rememberDraft(await this.api.import(m,yaml,env))}

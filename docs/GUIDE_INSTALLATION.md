@@ -7,6 +7,73 @@ VM results do not establish EC70 compatibility, Raspberry Pi capacity or product
 acceptance. EC70 and representative Pi hardware validation (T08/T10) remains
 deferred until the required devices and access are available.
 
+## Discover and provision a Raspberry Pi
+
+In Raspberry Pi Imager, select 64-bit Raspberry Pi OS Lite (Bookworm), set a
+unique `cam-pi-<site>` hostname, and enable SSH with your public key. Boot the
+Pi on the camera LAN. From a laptop on that LAN, run:
+
+```sh
+./scripts/find-pis
+```
+
+The command needs Python 3.9+ and uses Bonjour on macOS or `avahi-utils` on
+Linux. It lists IPv4 addresses and SSH ports advertised by `cam-pi-*` and
+`raspberrypi*` hosts. Use `--prefix` for other hostnames. If the Pi doesn't
+advertise `_ssh._tcp`, run `./scripts/find-pis --name cam-pi-workshop` to resolve
+the known hostname and use SSH port 22. The router's DHCP leases also work when
+multicast is unavailable. For automatic listing, publish an `_ssh._tcp` service
+through `/etc/avahi/services/` as part of the site's first-boot setup.
+
+Prepare the site's YAML from [the deployment example](../deploy/config.example.yaml).
+Set a unique installation ID, reachable camera endpoints, the exact Tailscale
+viewer logins and their grants. Obtain a trusted `linux-arm64` release archive
+and its companion `.sha256` file. Enable HTTPS and allow the intended viewers
+to reach this host on HTTPS 443 and TCP/UDP 35100–35103 in the tailnet policy.
+Use one short-lived, tagged auth key per new Pi. Keep the key and the systemd
+environment file in private local files.
+
+```sh
+./scripts/provision-camstream --host 192.168.1.42 --hostname cam-pi-workshop.local \
+  --user operator --archive /path/to/camstream-0.1.6-linux-arm64.tar.gz \
+  --config /path/to/workshop.yaml --secrets-file /path/to/workshop.env \
+  --tailscale-key-file /path/to/workshop-tailscale.key
+```
+
+Use the SSH username and hostname configured in Imager. The login needs
+non-interactive sudo. Use `--port` if discovery shows a port other than 22.
+The Pi must boot with systemd as PID 1. The script verifies the running system
+manager, derives the origin and media IP from Tailscale, and installs the
+release's `/etc/systemd/system/camstream.service` and its media firewall unit.
+It confirms the loaded unit will restart on failure, the firewall is a required
+startup dependency, and the boot link exists under `multi-user.target.wants`.
+It prints the dashboard URL after the service, readiness and private Serve
+configuration pass verification.
+If the Pi is already enrolled, omit `--tailscale-key-file`. If
+`--secrets-file` is omitted, the script reuses existing credentials or creates an
+empty environment file on a fresh install.
+
+Rerun the same command to apply site changes or install a newer version. An
+unchanged install keeps the running service, and previous version directories
+remain available for rollback. Open the printed URL as a granted viewer and
+play a real camera to verify the media path.
+
+### Verify supervision on the Pi
+
+```sh
+systemctl is-enabled camstream.service
+systemctl show camstream.service -p FragmentPath -p ActiveState -p Restart -p RestartUSec -p MainPID -p NRestarts
+curl --fail http://127.0.0.1:8080/readyz
+journalctl -u camstream.service -b --no-pager -n 30
+```
+
+Expect `enabled`, `ActiveState=active` and `Restart=on-failure`. The shipped unit
+waits three seconds between restart attempts and applies its configured start
+rate limit. During a maintenance window on the pilot Pi, record `MainPID` and
+`NRestarts`, run `sudo systemctl kill --kill-whom=main --signal=SIGKILL camstream.service`,
+then verify a new main PID, an increased restart count, and a successful readiness
+probe. Reboot the pilot and repeat the enabled, active and readiness checks.
+
 ## Artifact and host requirements
 
 The initial target is Linux arm64 on Debian 12 or a compatible glibc 2.36+ system,

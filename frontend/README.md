@@ -11,9 +11,9 @@ The page puts the video first. A 56 px top bar names the camera, and the camera
 rail collapses to icons, starting that way below 1024 px until someone opens or
 collapses it; the browser then keeps that choice in local storage. The 16:9 stage takes
 the largest size that fits the window, so desktop views do not scroll. On a phone
-in portrait the player stays pinned while the stream details and camera list
+in portrait the player stays pinned while the camera details and camera list
 scroll beneath it. On a touch screen in landscape it fills the screen, and its
-**Cameras** button opens a sheet with the camera list and the stream choice; a
+**Cameras** button opens a sheet with the camera list and the camera's details; a
 zoomed or short desktop window keeps the regular layout and scrolls instead.
 Controls sit over the video and fade after 3 seconds of playback; moving the
 pointer, a tap or keyboard focus brings them back. **Stop** ends this page's
@@ -26,9 +26,13 @@ When the connection drops, the last frame stays in view under a compact
 **Reconnecting** badge that counts down its 15-second recovery window. If it does
 not recover, the player says **Connection lost** and tries again on its own, up
 to twice, counting down each wait; **Try again** starts at once and **Stop** ends
-the wait. The stream
-details say how fresh the status is ("Updated 4 s ago") and warn when updates stop
-while the page is visible. Each failure names its error code, camera, stream and
+the wait. The badge over the video names the state; once media is connected it
+opens a panel with the WebRTC transport and the stream's media. Under the video,
+the camera details give the camera's name, its state and, once the server reports
+them, how many people watch and how fresh that is ("Updated 4 s ago"); they warn
+when updates stop while the page is visible. A camera with more than one stream
+offers the stream choice there, and **Reconnect** and **Settings** end the
+details where they apply. Each failure names its error code, camera, stream and
 time. Where the server reports a failure of this camera or stream and another
 camera can play, **Choose another camera** opens the camera list; a lost
 connection or a timeout offers **Try again** only, because this device's network
@@ -36,8 +40,13 @@ may be the cause. The selected camera row shows this page's own state. Other row
 show the server's status of that camera when it says something: **Live**,
 **Connecting**, **Reconnecting**, **Offline** or **Unavailable**. An offline or
 failed camera is dimmed but stays a link. An idle camera shows no status, because
-idle does not establish that it can play. In the collapsed rail, each camera's
-tooltip adds that status to its name.
+idle does not establish that it can play. Each camera's tile takes a colour from
+its place in the list and carries a dot with that status, which is all the
+collapsed rail shows; there each camera's tooltip adds the status to its name.
+Keys 1–9 open the first nine cameras, and a row under the pointer or keyboard
+focus shows its key. Each row's ⋯ menu offers **Copy link** and, where they
+apply, **Settings** and **Reconnect**; the arrow keys, Home and End move through
+it and Esc closes it.
 
 Each view has an address: `?camera=<id>&stream=<id>`, with the stream omitted for a
 camera's first stream. Opening it selects that view when the catalog lists it.
@@ -124,12 +133,12 @@ and the stream select's text at 16 px, below which iOS Safari zooms in. When a n
 colour pair appears, add it to that test; a new page token needs a dark value too.
 
 Every button takes a role class: `primary-button`, `secondary-button`,
-`ghost-button` or `danger-button` for text, `icon-button` for an icon on the page
-and `control-button` on the video. Each role is drawn for the page. Inside
+`ghost-button` or `danger-button` for text, `icon-button` for an icon on the page,
+`control-button` on the video and `menu-item` in a menu. Each role is drawn for the page. Inside
 `.video-stage`, primary and secondary take the stage's colours, and the style test
 checks that those rules win the cascade there in every state. Camera management's
 styles live in the same stylesheet, and its tests fail when a management,
-reconnect or rail button has no role.
+reconnect, rail or menu button has no role.
 
 ## Preview snapshots
 
@@ -245,7 +254,8 @@ state or code without an entry there. It never displays raw
 server messages, SDP, candidates, private source URLs or secret references; a
 failure's details line shows only its safe error code, the camera and stream
 names and the time it was first shown. The
-optional transport badge shows only the selected WebRTC protocol (`TCP`/`UDP`).
+badge's panel shows only the selected WebRTC protocol (`TCP`/`UDP`) and whether
+the stream has video and audio.
 
 [Controlled browser evidence](../.ctx/specs/camera-streaming/support/evidence/t12-playback.md)
 distinguishes tested behavior from pending target-browser/deployment gates.
@@ -287,21 +297,28 @@ reloads check the original operation. **Check again** resolves uncertainty;
 Unknown saves cannot be discarded or silently retried as new cameras. Unsaved
 drafts lost at server restart require re-entry; durable saves recover by receipt.
 
-**Reconnect Camera** appears for an authorized source fault and confirms its effect
-on other viewers of that source. It remains available with management disabled
-when reconnect grants remain. **Try again** only retries this page's session.
+**Reconnect** appears beside the camera details, and in the camera's ⋯ menu, for
+an authorized source fault. It first asks, naming the camera and the effect on
+other viewers of that source; **Reconnect camera** starts the reset. It remains
+available with management disabled when reconnect grants remain. **Try again**
+only retries this page's session.
 
-To replace a dashboard-added camera’s password, select it and open **Camera
-settings**. An authorized duplicate-address error offers the same action.
-Leave the username blank to reuse the saved one, or supply it for a camera
-that used anonymous access. Stop any playback of that camera, then choose
-**Continue**; after the check passes, choose **Save sign-in → Watch now**.
-The change is applied to the existing camera after a successful test. Cameras
-configured by the server use the [service’s private environment](../config/README.md#mixed-setup).
+To replace a dashboard-added camera’s password, choose its **Settings**, beside
+the camera details or in its ⋯ menu; an authorized duplicate-address error offers
+the same. Settings opens in a drawer beside the video, or fills the screen below
+768 px. The server refuses a sign-in change while anyone watches the camera, from
+any browser, so the Sign-in section says how many do and offers **Stop watching
+here** while this page plays it. Leave the username blank to reuse the saved one,
+or supply it for a camera that used anonymous access, then choose **Check and
+save**: it checks the connection with the new sign-in and applies it to the
+existing camera once the check passes. **Watch now** then plays the camera.
+Connection shows the camera's state, with **Reconnect** when its source needs it,
+and About lists its streams and media. Cameras configured by the server use the
+[service’s private environment](../config/README.md#mixed-setup).
 
-`npm run build` enforces gzip budgets from the manifest: 20,300 bytes for the
-initial JavaScript dependency closure, 13,650 for separately loaded management,
-and 6,400 for all CSS. Total JavaScript and SVG sizes are reported separately.
+`npm run build` enforces gzip budgets from the manifest: 21,400 bytes for the
+initial JavaScript dependency closure, 15,150 for separately loaded management,
+and 7,000 for all CSS. Total JavaScript and SVG sizes are reported separately.
 The management smoke drivers under `scripts/` require an explicitly isolated host,
 an unsaved RTSP source and a locally installed browser driver; they never start
 camera capture or store screenshots. Safari is also checked with its native

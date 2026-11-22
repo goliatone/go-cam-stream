@@ -92,9 +92,8 @@ describe("camera selection and scope", () => {
     );
     expect(document.querySelectorAll("video")).toHaveLength(1);
     expect(screen.getByText("This stream has no audio.")).toBeTruthy();
-    expect(
-      screen.getByLabelText("Stream").querySelectorAll("option"),
-    ).toHaveLength(1);
+    // A camera with one stream has no stream to choose.
+    expect(screen.queryByLabelText("Stream")).toBeNull();
   });
 
   it("resets video, mute and action feedback when switching streams or cameras", async () => {
@@ -240,10 +239,12 @@ describe("states and controls", () => {
   });
 
   it("distinguishes unknown observations from zero", () => {
-    const viewer = input();
+    const viewer = input("idle");
     const { rerender } = render(<App catalog={catalog} viewer={viewer} />);
-    expect(screen.getByText("Unknown")).toBeTruthy();
-    expect(screen.getByText("No update yet")).toBeTruthy();
+    const details = () =>
+      screen.getByRole("region", { name: "Camera details" }).textContent;
+    // Nothing is said about viewers or freshness until the server answers.
+    expect(details()).not.toMatch(/watching|update/i);
     viewer.status = {
       stream_id: "default",
       state: "idle",
@@ -252,8 +253,28 @@ describe("states and controls", () => {
     };
     viewer.statusAt = performance.now();
     rerender(<App catalog={catalog} viewer={{ ...viewer }} />);
-    expect(screen.getByText("0")).toBeTruthy();
+    expect(screen.getByText("No one watching")).toBeTruthy();
     expect(screen.getByText("Updated just now")).toBeTruthy();
+    // A count observed before this page connected still includes it.
+    const playing = input();
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={{ ...playing, status: viewer.status, statusAt: viewer.statusAt }}
+      />,
+    );
+    expect(screen.getByText("Only you watching")).toBeTruthy();
+    rerender(
+      <App
+        catalog={catalog}
+        viewer={{
+          ...playing,
+          status: { ...viewer.status, viewers: 3 },
+          statusAt: viewer.statusAt,
+        }}
+      />,
+    );
+    expect(screen.getByText("3 watching")).toBeTruthy();
     // An answer for another stream is not this stream's update.
     rerender(
       <App
@@ -264,7 +285,7 @@ describe("states and controls", () => {
         }}
       />,
     );
-    expect(screen.getByText("No update yet")).toBeTruthy();
+    expect(details()).not.toMatch(/watching|update/i);
   });
 
   it("explains unsupported controls and invokes only supported callbacks", async () => {
@@ -1439,5 +1460,197 @@ describe("camera list upkeep", () => {
         .closest(".catalog-message")
         ?.querySelector("h2")?.textContent,
     ).toBe("No cameras yet");
+  });
+});
+
+describe("camera actions", () => {
+  const [room1, room2] = catalog.cameras;
+  // Room 1's sign-in can change; Room 2's source needs a reset.
+  const managed: CameraList = {
+    cameras: [
+      { ...room1!, can_update_credentials: true },
+      {
+        ...room2!,
+        streams: room2!.streams.map((item) => ({
+          ...item,
+          can_reconnect: true,
+          recovery_required: true,
+        })),
+      },
+    ],
+  };
+  const more = (name: string) =>
+    screen.getByRole("button", { name: `${name} actions` });
+  const items = () =>
+    screen.getAllByRole("menuitem").map((item) => item.textContent);
+  const focused = () => document.activeElement?.textContent;
+
+  it("colours each tile by its place and hints the first nine keys", () => {
+    const cameras = Array.from({ length: 10 }, (_, i) => ({
+      id: `camera${i}`,
+      name: `Camera ${i}`,
+      availability: "idle" as const,
+      streams: [
+        {
+          id: "default",
+          name: "Default",
+          capabilities: { video: true, audio: false },
+        },
+      ],
+    }));
+    render(<App catalog={{ cameras }} />);
+    const links = screen.getAllByRole("link", { name: /^Camera \d/ });
+    expect(
+      links.map((link) => link.querySelector(".camera-tile")!.classList[1]),
+    ).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 0, 1].map((n) => `tile-${n}`));
+    expect(links.map((link) => link.getAttribute("aria-keyshortcuts"))).toEqual(
+      ["1", "2", "3", "4", "5", "6", "7", "8", "9", null],
+    );
+    // The hint is drawn, not read: the link already names its shortcut.
+    expect(links[0]!.querySelector(".camera-key")!.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
+    expect(links[9]!.querySelector(".camera-key")).toBeNull();
+  });
+
+  it("offers each camera's actions in a menu the keyboard drives", async () => {
+    const user = userEvent.setup();
+    const settings = vi.fn();
+    const reconnect = vi.fn();
+    const { rerender } = render(
+      <App catalog={managed} onCameraSettings={settings} onReconnect={reconnect} />,
+    );
+    await user.click(more("Room 1"));
+    expect(more("Room 1").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("menu", { name: "Room 1 actions" })).toBeTruthy();
+    expect(items()).toEqual(["Settings", "Copy link"]);
+    expect(focused()).toBe("Settings");
+    // The arrows wrap; Home and End go to either end.
+    await user.keyboard("{ArrowDown}");
+    expect(focused()).toBe("Copy link");
+    await user.keyboard("{ArrowDown}");
+    expect(focused()).toBe("Settings");
+    await user.keyboard("{ArrowUp}");
+    expect(focused()).toBe("Copy link");
+    await user.keyboard("{Home}");
+    expect(focused()).toBe("Settings");
+    await user.keyboard("{End}");
+    expect(focused()).toBe("Copy link");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(more("Room 1"));
+    expect(more("Room 1").getAttribute("aria-expanded")).toBe("false");
+    // Its button closes it again.
+    await user.click(more("Room 1"));
+    await user.click(more("Room 1"));
+    expect(screen.queryByRole("menu")).toBeNull();
+    // A choice closes the menu, then runs.
+    await user.click(more("Room 1"));
+    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
+    expect(settings).toHaveBeenCalledWith("room1");
+    expect(screen.queryByRole("menu")).toBeNull();
+    await user.click(more("Room 2"));
+    expect(items()).toEqual(["Reconnect", "Copy link"]);
+    await user.click(screen.getByRole("menuitem", { name: "Reconnect" }));
+    expect(reconnect).toHaveBeenCalledWith({
+      camera_id: "room2",
+      stream_id: "default",
+    });
+    // Tab and a press elsewhere close it too.
+    await user.click(more("Room 2"));
+    await user.tab();
+    expect(screen.queryByRole("menu")).toBeNull();
+    await user.click(more("Room 2"));
+    await user.click(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+    // Someone who cannot manage cameras can still copy a link.
+    rerender(<App catalog={managed} />);
+    await user.click(more("Room 1"));
+    expect(items()).toEqual(["Copy link"]);
+  });
+
+  it("copies a camera's link and says whether it worked", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      render(<App catalog={catalog} />);
+      const toast = () => document.querySelector(".toast")!;
+      const copy = async (name: string) => {
+        fireEvent.click(more(name));
+        fireEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
+        await act(async () => {
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
+      };
+      expect(toast().getAttribute("role")).toBe("status");
+      expect(toast().textContent).toBe("");
+      await copy("Room 2");
+      expect(writeText).toHaveBeenCalledWith(
+        new URL("?camera=room2", location.href).href,
+      );
+      expect(toast().textContent).toBe("Copied the link to Room 2.");
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(toast().textContent).toBe("");
+      writeText.mockRejectedValueOnce(new Error("denied"));
+      await copy("Room 1");
+      expect(toast().textContent).toBe(
+        "Couldn’t copy the link. Open the camera and copy the page address.",
+      );
+    } finally {
+      vi.useRealTimers();
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("ends the camera details with Reconnect and Settings", async () => {
+    const user = userEvent.setup();
+    const settings = vi.fn();
+    const reconnect = vi.fn();
+    // Only Room 1's default stream needs a reset.
+    const failing = {
+      ...managed.cameras[0]!,
+      streams: managed.cameras[0]!.streams.map((item) => ({
+        ...item,
+        can_reconnect: true,
+        recovery_required: item.id === "default",
+      })),
+    };
+    const props = { onCameraSettings: settings, onReconnect: reconnect };
+    const { rerender } = render(
+      <App catalog={{ cameras: [failing, room2!] }} {...props} />,
+    );
+    const details = () =>
+      within(screen.getByRole("region", { name: "Camera details" }));
+    const buttons = () =>
+      details()
+        .queryAllByRole("button")
+        .map((button) => button.textContent);
+    expect(buttons()).toEqual(["Reconnect", "Settings"]);
+    await user.click(details().getByRole("button", { name: "Reconnect" }));
+    expect(reconnect).toHaveBeenCalledWith({
+      camera_id: "room1",
+      stream_id: "default",
+    });
+    await user.click(details().getByRole("button", { name: "Settings" }));
+    expect(settings).toHaveBeenCalledWith("room1");
+    // The shown stream decides; a reset not yet confirmed keeps it on offer.
+    await user.selectOptions(details().getByLabelText("Stream"), "compact");
+    expect(buttons()).toEqual(["Settings"]);
+    rerender(
+      <App
+        catalog={{ cameras: [failing, room2!] }}
+        {...props}
+        recoveryPending={{ camera_id: "room1", stream_id: "compact" }}
+      />,
+    );
+    expect(buttons()).toEqual(["Reconnect", "Settings"]);
+    rerender(<App catalog={{ cameras: [failing, room2!] }} />);
+    expect(buttons()).toEqual([]);
   });
 });

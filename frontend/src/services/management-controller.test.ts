@@ -284,3 +284,22 @@ it("late status from a canceled preview cannot close or update its replacement",
  expect(second.close).not.toHaveBeenCalled();secondOffer({type:"offer",sdp:"v=0\r\n"});await next;
  expect(c.view.draft?.state).toBe("tested");expect(second.answer).toHaveBeenCalled();expect(f.api.complete).toHaveBeenCalledOnce();
 });
+it("checks and saves a new sign-in in one step, and stops at the first failure",async()=>{
+ const video=document.createElement("video");
+ const f=fixture(),c=f.build();await c.init();await c.openCredentials({id:"existing"});
+ await c.checkAndSave(video,{username:"",password:"replacement"});
+ expect(f.api.credentialDraft).toHaveBeenCalledOnce();expect(f.api.test).toHaveBeenCalledOnce();expect(f.api.save).toHaveBeenCalledOnce();
+ expect(c.view.saved).toBeTruthy();expect(c.view.error).toBeUndefined();await c.close();
+ const g=fixture(),d=g.build();await d.init();await d.openCredentials({id:"existing"});
+ // The server refuses the check while anyone watches; the change stays unsaved.
+ vi.mocked(g.api.test).mockImplementationOnce(async(_id,request)=>{
+  g.operations.set(request.operation_key,{operation_key:request.operation_key,kind:"test",state:"not_committed",runtime_epoch:"epoch",error:{code:"camera_busy",message:"busy",retryable:true}});
+  throw new ManagementFailure("camera_busy");
+ });
+ await d.checkAndSave(video,{username:"",password:"replacement"});
+ expect(d.view.error).toBe("camera_busy");expect(g.api.save).not.toHaveBeenCalled();
+ // Without new credentials, the change already made is checked again.
+ await d.checkAndSave(video);
+ expect(g.api.credentialDraft).toHaveBeenCalledOnce();expect(g.api.test).toHaveBeenCalledTimes(2);expect(g.api.save).toHaveBeenCalledOnce();
+ expect(d.view.saved).toBeTruthy();
+});

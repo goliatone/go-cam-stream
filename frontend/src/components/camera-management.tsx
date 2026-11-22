@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Credentials, DraftInput, DraftReview, ErrorCode, ManagementErrorCode, SaveCameraResponse, TestResult } from "../services/contracts";
-import { managementMessage, managementTestMessage } from "../services/management-copy";
+import type { Credentials, DraftInput, DraftReview, ManagementErrorCode, SaveCameraResponse, TestResult } from "../services/contracts";
+import { managementMessage } from "../services/management-copy";
 import { openDialog } from "../services/shortcuts";
+import { ConnectionCheck } from "./connection-check";
 import { CloseIcon } from "./icon";
-import { ErrorDetails } from "./status";
+import { SettingsDrawer, type CameraSettingsContext } from "./settings-drawer";
 
 export type ManagementPhase = "editing" | "importing" | "review" | "testing" | "saving" | "saved" | "recovering" | "canceled";
 export interface ManagementView {
@@ -35,13 +36,15 @@ export interface ManagementActions {
   retrySave?(): void;
   watch(cameraID: string): void;
   submitCredentials?(credentials: Credentials): void;
+  /** Checks and saves a sign-in change in one step. */
+  checkAndSave?(video: HTMLVideoElement, credentials?: Credentials): void;
   openSettings?(cameraID: string): void;
   /** Starts another camera once one is saved. */
   reset?(): void;
 }
 /** How a new camera is connected: by its RTSP address or the Mac app's files. */
 export type ManagementMode = "manual" | "import";
-export interface ManagementDialogProps { view: ManagementView; actions: ManagementActions; mode?: ManagementMode | undefined }
+export interface ManagementDialogProps { view: ManagementView; actions: ManagementActions; mode?: ManagementMode | undefined; settings?: CameraSettingsContext | undefined }
 const warnings = {
   server_relative_localhost: "Localhost is the server’s own machine. A remote or container server needs your Mac’s network address and Private network capture.",
   imported_grants_ignored: "Sharing settings in the file are not imported.",
@@ -49,14 +52,16 @@ const warnings = {
   creator_only_access: "",
   fixed_address: "This address stays fixed after saving. Reconnect does not follow the camera to a new address.",
 };
-const ROWS = ["Reaching the camera", "Receiving video", "Playing in this browser"];
-// Failures that stop the check before the camera is reached, and those in the
-// browser's own playback. Any other failure means no video arrived.
-const REACH: readonly string[] = ["authentication_failed", "camera_unreachable", "destination_denied", "address_unavailable", "identity_unverified", "duplicate_camera", "capacity_exceeded", "camera_busy", "signaling_failed"];
-const PLAY: readonly string[] = ["media_connection_failed", "playback_evidence_unavailable", "playback_evidence_insufficient"];
 export { managementMessage } from "../services/management-copy";
 
-export default function CameraManagementDialog({ view, actions, mode: initialMode = "manual" }: ManagementDialogProps) {
+/** A sign-in change opens the settings drawer; anything else, Add Camera. */
+export default function CameraManagement(props: ManagementDialogProps) {
+  const { view } = props;
+  return view.credentialTarget || view.draft?.credential_update || view.saved?.credentials_updated
+    ? <SettingsDrawer {...props} /> : <AddCameraDialog {...props} />;
+}
+
+function AddCameraDialog({ view, actions, mode: initialMode = "manual" }: ManagementDialogProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const form = useRef<HTMLFormElement>(null);
@@ -75,8 +80,6 @@ export default function CameraManagementDialog({ view, actions, mode: initialMod
   const blocked = Boolean(view.busy || view.unresolved || !view.storageReady);
   const activeTest = view.phase === "testing" || draft?.state === "cleanup_failed" || draft?.state === "cleaning";
   const error = !view.storageReady ? "recovery_storage_unavailable" : view.error;
-  const credentialUpdate = Boolean(view.credentialTarget || draft?.credential_update || view.saved?.credentials_updated);
-  const cameraName = draft?.name ?? view.credentialTarget?.name;
   // A change whose outcome is unknown replaces the steps. So does the lookup
   // after a refresh, before the draft is back.
   const stuck = Boolean(view.unresolved && !view.busy) || view.phase === "recovering" && !draft;
@@ -87,7 +90,7 @@ export default function CameraManagementDialog({ view, actions, mode: initialMod
   const address = endpoint.trim();
   const local = /^rtsps?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(address);
   const badAddress = touched && Boolean(address) && !/^rtsps?:\/\/[^\s/@]+(\/\S*)?$/i.test(address);
-  const keepHint = !credentialUpdate && draft?.credentials_present ? "management-keep-hint" : undefined;
+  const keepHint = draft?.credentials_present ? "management-keep-hint" : undefined;
   const busyText: Partial<Record<ManagementPhase, string>> = { importing: "Reading the files…", saving: "Saving…", recovering: view.checkingSave ? "Checking whether your camera was saved…" : "Checking your last change…" };
   const status = view.phase === "testing" ? "Checking the connection…"
     : view.busy ? busyText[view.phase] ?? "Updating…"
@@ -143,53 +146,44 @@ export default function CameraManagementDialog({ view, actions, mode: initialMod
     setFiles(next);
     setFileError(problem);
   };
-  // A row is done only once the server reports camera video, or the check
-  // passed; the row a failure points at is failed, and the rest stay waiting.
-  const code = view.test?.error?.code ?? "";
-  const media = view.test?.source_media_observed;
-  const failed = !code ? -1 : media || PLAY.includes(code) ? 2 : REACH.includes(code) ? 0 : 1;
-  const marks = ROWS.map((_, i) => view.test?.stage === "passed" || media && i < 2 ? "done" : i === failed ? "failed"
-    : failed < 0 && activeTest && i === (media ? 2 : 0) ? "checking" : "waiting");
   const notes = draft ? [...draft.authentication === "anonymous" ? ["If this camera needs sign-in, edit the details. The Camstream Mac app always requires it."] : [], ...draft.warnings.map(warning => warnings[warning]).filter(Boolean)] : [];
   const summary = draft && <section class="management-review" aria-label="Camera summary">
-    {!credentialUpdate && <h3>{draft.name}</h3>}
+    <h3>{draft.name}</h3>
     <dl>
-      {!credentialUpdate && <><dt>Address</dt><dd>{draft.endpoint}</dd></>}
+      <dt>Address</dt><dd>{draft.endpoint}</dd>
       {draft.dial_address && <><dt>Connects to</dt><dd>{draft.dial_address}</dd></>}
       <dt>Sign-in</dt><dd>{draft.authentication === "anonymous" ? "Not provided (anonymous access)" : draft.credentials_present ? "Username and password (hidden)" : "Required"}</dd>
-      {!credentialUpdate && <><dt>Video</dt><dd>Default stream, no audio</dd></>}
-      {!credentialUpdate && draft.warnings.includes("creator_only_access") && <><dt>Visible to</dt><dd>Only you</dd></>}
+      <dt>Video</dt><dd>Default stream, no audio</dd>
+      {draft.warnings.includes("creator_only_access") && <><dt>Visible to</dt><dd>Only you</dd></>}
     </dl>
     {notes.length > 0 && <ul>{notes.map(note => <li key={note}>{note}</li>)}</ul>}
   </section>;
   return <dialog ref={dialog} class="dialog management-dialog" aria-labelledby="management-title" onCancel={(event) => { event.preventDefault(); close(); }}>
     <div class="dialog-inner">
-      <div class="dialog-head"><h2 id="management-title">{view.saved ? (view.saved.credentials_updated ? "Sign-in updated" : "Camera saved") : error === "receipt_expired" ? "Camera save" : credentialUpdate ? "Camera settings" : "Add Camera"}</h2><button type="button" class="icon-button" aria-label={credentialUpdate ? "Close camera settings" : "Close Add Camera"} onClick={close}><CloseIcon /></button></div>
-      {credentialUpdate && cameraName && <p class="management-intro">{cameraName}</p>}
-      {open && <ol class="stepper" aria-label="Steps">{[credentialUpdate ? "Sign-in" : "Connect", "Check", "Save"].map((label, i) => <li key={label} class={i < step ? "done" : undefined} aria-current={i === step ? "step" : undefined}>{label}{i < step && <span class="sr-only"> (done)</span>}</li>)}</ol>}
+      <div class="dialog-head"><h2 id="management-title">{view.saved ? "Camera saved" : error === "receipt_expired" ? "Camera save" : "Add Camera"}</h2><button type="button" class="icon-button" aria-label="Close Add Camera" onClick={close}><CloseIcon /></button></div>
+      {open && <ol class="stepper" aria-label="Steps">{["Connect", "Check", "Save"].map((label, i) => <li key={label} class={i < step ? "done" : undefined} aria-current={i === step ? "step" : undefined}>{label}{i < step && <span class="sr-only"> (done)</span>}</li>)}</ol>}
       <div role="status" aria-live="polite">{status}</div>
-      {error && <p class="management-error" role="alert">{error === "camera_busy" && credentialUpdate ? "Stop playback of this camera, then try again." : managementMessage(error)}</p>}
+      {error && <p class="management-error" role="alert">{managementMessage(error)}</p>}
       {view.duplicateCamera && actions.openSettings && <button type="button" class="secondary-button" disabled={blocked} onClick={() => { clearSecrets(); actions.openSettings?.(view.duplicateCamera!); }}>Open camera settings</button>}
       {stuck && view.unresolved && !error && !view.busy && <p>Your last change isn’t confirmed yet. Check again before making another.</p>}
       {open && step === 0 && <>
-        {!draft && !credentialUpdate && <div class="segmented" role="radiogroup" aria-label="Camera type">{([["manual", "Network camera (RTSP)"], ["import", "Camstream Mac app"]] as const).map(([value, label]) => <label key={value} class="segment"><input type="radio" name="management-mode" checked={mode === value} disabled={blocked} onChange={() => { clearSecrets(); setFileError(""); setEndpoint(""); setTouched(false); setMode(value); }} /><span>{label}</span></label>)}</div>}
+        {!draft && <div class="segmented" role="radiogroup" aria-label="Camera type">{([["manual", "Network camera (RTSP)"], ["import", "Camstream Mac app"]] as const).map(([value, label]) => <label key={value} class="segment"><input type="radio" name="management-mode" checked={mode === value} disabled={blocked} onChange={() => { clearSecrets(); setFileError(""); setEndpoint(""); setTouched(false); setMode(value); }} /><span>{label}</span></label>)}</div>}
         <form id="management-form" ref={form} key={`${key}:${mode}`} onSubmit={(event) => {
           event.preventDefault(); if (blocked) return;
           const data = new FormData(event.currentTarget);
           const username = String(data.get("username") ?? ""), password = String(data.get("password") ?? "");
-          if (mode === "import" && !draft && !credentialUpdate) {
+          if (mode === "import" && !draft) {
             if (!files.yaml) { setFileError("Add the exported .yaml file."); return; }
             actions.importFiles(files.yaml, files.env);
           } else {
             autoCheck.current = key;
-            if (credentialUpdate) actions.submitCredentials?.({ username, password });
-            else actions.submit({ name: String(data.get("name") ?? ""), endpoint: String(data.get("endpoint") ?? ""), authentication: signIn ? "credentials" : "anonymous",
+            actions.submit({ name: String(data.get("name") ?? ""), endpoint: String(data.get("endpoint") ?? ""), authentication: signIn ? "credentials" : "anonymous",
               ...(signIn && (username || password) ? { credentials: { username, password } } : {}) });
           }
           clearSecrets(); setFileError("");
         }}>
           <fieldset disabled={blocked}>
-          {!credentialUpdate && (mode === "import" && !draft ? <>
+          {mode === "import" && !draft ? <>
             <div class={over ? "drop-zone over" : "drop-zone"} onDragOver={(event) => { event.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={(event) => { event.preventDefault(); setOver(false); take(event.dataTransfer?.files); }}>
               <p>Drop the exported .yaml and .env files here</p>
               <button type="button" class="secondary-button" aria-describedby={fileError ? "management-files-hint management-file-error" : "management-files-hint"} onClick={() => picker.current?.click()}>Choose files</button>
@@ -207,33 +201,24 @@ export default function CameraManagementDialog({ view, actions, mode: initialMod
             {local && <p id="management-local-hint" class="hint">{warnings.server_relative_localhost}</p>}
             <label class="switch"><input type="checkbox" role="switch" checked={signIn} aria-describedby={signIn ? undefined : "management-sign-in-hint"} onChange={(event) => { clearSecrets(); setSignIn(event.currentTarget.checked); }} />Requires sign-in</label>
             {!signIn && <p id="management-sign-in-hint" class="hint">Leave this on for the Camstream Mac app, which always requires sign-in.</p>}
-          </>)}
-          {(credentialUpdate || signIn && (mode === "manual" || draft)) && <>
-            <label>Username <input name="username" autoComplete="off" maxLength={1024} required={!credentialUpdate && !draft?.credentials_present} aria-describedby={credentialUpdate ? "management-username-hint" : keepHint} /></label>
-            {credentialUpdate && <p id="management-username-hint" class="hint">Leave blank to keep the saved username.</p>}
-            <label>{credentialUpdate ? "New password" : "Password"} <input name="password" type="password" autoComplete="new-password" maxLength={4096} required={credentialUpdate || !draft?.credentials_present} aria-describedby={keepHint ?? (credentialUpdate ? undefined : "management-password-hint")} /></label>
-            {keepHint ? <p id={keepHint} class="hint">Leave both blank to keep the ones already entered.</p> : !credentialUpdate && <p id="management-password-hint" class="hint">For the Camstream Mac app, both are in its private .env file.</p>}
+          </>}
+          {signIn && (mode === "manual" || draft) && <>
+            <label>Username <input name="username" autoComplete="off" maxLength={1024} required={!draft?.credentials_present} aria-describedby={keepHint} /></label>
+            <label>Password <input name="password" type="password" autoComplete="new-password" maxLength={4096} required={!draft?.credentials_present} aria-describedby={keepHint ?? "management-password-hint"} /></label>
+            {keepHint ? <p id={keepHint} class="hint">Leave both blank to keep the ones already entered.</p> : <p id="management-password-hint" class="hint">For the Camstream Mac app, both are in its private .env file.</p>}
           </>}
           </fieldset>
         </form>
       </>}
       {open && step > 0 && summary}
-      {open && step === 1 && <section class="management-preview" aria-label="Connection check">
-        <ol class="checklist">{ROWS.map((row, i) => <li key={row} data-mark={marks[i]}>{row}<span class="sr-only">: {marks[i]}</span></li>)}</ol>
-        <video ref={video} muted playsInline aria-label="Camera preview" />
-        {view.test?.error && <div class="management-error">
-          <p role="alert">{managementTestMessage(view.test)}</p>
-          <details class="disclosure"><summary>Details</summary><ErrorDetails code={view.test.error.code as ErrorCode} where={[ROWS[failed] ?? ""]} /></details>
-        </div>}
-        {view.test?.stage === "canceled" && !view.test.error && <p>The check stopped before it finished.</p>}
-      </section>}
-      {view.saved && <p>{view.saved.credentials_updated ? "The camera now uses the new sign-in." : "Your camera is in the camera list. The video you’re watching keeps playing until you switch."}</p>}
+      {open && step === 1 && <ConnectionCheck test={view.test} active={activeTest} video={video} />}
+      {view.saved && <p>Your camera is in the camera list. The video you’re watching keeps playing until you switch.</p>}
       {/* The close icon and Esc always close. Cancel shows only when there is a
           draft to discard, and Close only once nothing is left. */}
       <div class="dialog-actions">
         {view.saved ? <>
           <button class="primary-button" type="button" onClick={() => actions.watch(view.saved!.camera_id)}>Watch now</button>
-          {!credentialUpdate && actions.reset && <button type="button" class="secondary-button" onClick={actions.reset}>Add another</button>}
+          {actions.reset && <button type="button" class="secondary-button" onClick={actions.reset}>Add another</button>}
           <button type="button" class="secondary-button" onClick={close}>Close</button>
         </> : stuck ? <>
           {view.storageReady && !view.busy && <button type="button" class="secondary-button" onClick={actions.recover}>Check again</button>}
@@ -246,8 +231,8 @@ export default function CameraManagementDialog({ view, actions, mode: initialMod
             <button type="button" class="secondary-button" disabled={view.unresolved} onClick={actions.cancelTest}>Stop check</button>
             {view.test?.source_media_observed && <button type="button" class="secondary-button" onClick={() => { void video.current?.play().catch(() => {}); }}>Play preview</button>}
           </> : <button type="button" class="primary-button" disabled={blocked || draft?.state === "expired" || draft?.state === "canceled"} onClick={() => { if (video.current) actions.test(video.current); }}>{view.test ? "Check again" : "Check connection"}</button>)}
-          {step === 2 && <button type="button" class="primary-button" disabled={blocked || draft?.state !== "tested" || draft.test?.cleanup !== "confirmed"} onClick={actions.save}>{credentialUpdate ? "Save sign-in" : "Save camera"}</button>}
-          {step > 0 && <button type="button" class="secondary-button" disabled={blocked || activeTest || draft?.state === "saving"} onClick={() => setEditing(true)}>{credentialUpdate ? "Edit sign-in" : "Edit details"}</button>}
+          {step === 2 && <button type="button" class="primary-button" disabled={blocked || draft?.state !== "tested" || draft.test?.cleanup !== "confirmed"} onClick={actions.save}>Save camera</button>}
+          {step > 0 && <button type="button" class="secondary-button" disabled={blocked || activeTest || draft?.state === "saving"} onClick={() => setEditing(true)}>Edit details</button>}
           {draft && <button type="button" class="ghost-button" disabled={blocked} onClick={() => { clearSecrets(); actions.cancel(); }}>Cancel</button>}
         </>}
       </div>

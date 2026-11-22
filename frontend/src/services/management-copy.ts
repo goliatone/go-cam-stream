@@ -11,7 +11,7 @@ export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
   signaling_failed: "The preview couldn’t start. Check the address, the sign-in and the camera’s video format, then try again.",
   deadline_exceeded: "The check took too long. Check that the camera is running, its sign-in and the network, then try again.",
   access_denied: "You no longer have permission to manage this camera.",
-  recovery_storage_unavailable: "Allow site storage for this page, then open Add Camera or Camera settings again.",
+  recovery_storage_unavailable: "Allow site storage for this page, then open Add Camera or the camera’s Settings again.",
   draft_lost: "The server restarted. Enter or import the camera again.",
   draft_expired: "This setup expired. Enter or import the camera again.",
   test_expired: "Check this camera again before saving.",

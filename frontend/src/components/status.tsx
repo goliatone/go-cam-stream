@@ -60,6 +60,10 @@ export function describeView(view: {
   return { label: stateLabels[view.state], tone: stateTones[view.state] };
 }
 
+/** What a stream carries: "Video + audio", "Video only", "Audio only" or "No media". */
+export const mediaLabel = ({ video, audio }: { video: boolean; audio: boolean }) =>
+  video ? (audio ? "Video + audio" : "Video only") : audio ? "Audio only" : "No media";
+
 export function StatusBadge({ view }: { view: ViewState }) {
   return (
     <span class={`status-badge tone-${view.tone}`}>

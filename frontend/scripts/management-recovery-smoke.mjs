@@ -12,10 +12,10 @@ try{
  const caps=await other.evaluate(()=>fetch('/api/capabilities').then(r=>r.json()));if(caps.can_manage_cameras)throw Error('Management remained enabled');
  const catalog=await other.evaluate(()=>fetch('/api/cameras').then(r=>r.json()));const camera=catalog.cameras.find(c=>c.name==='Persistent onboarding');if(!camera)throw Error('Saved camera did not survive restart');
  const frame=await other.locator('main video').evaluate(v=>{window.smokeVideo=v;return v.getVideoPlaybackQuality().totalVideoFrames});
- patch('rtsp://127.0.0.1:34003/t05-missing-private');await page.goto(`${origin}/?camera=${camera.id}`);await page.getByRole('button',{name:'Reconnect Camera',exact:true}).waitFor({timeout:30000});
+ patch('rtsp://127.0.0.1:34003/t05-missing-private');await page.goto(`${origin}/?camera=${camera.id}`);const reconnect=page.getByRole('region',{name:'Camera details'}).getByRole('button',{name:'Reconnect',exact:true});await reconnect.waitFor({timeout:30000});
  if(await page.getByRole('button',{name:'Add Camera',exact:true}).count())throw Error('Management UI remained enabled');
  patch(restored);let drop=true;await page.route('**/recovery',async route=>{resets++;if(drop){drop=false;await route.fetch();await route.abort('failed')}else await route.continue()});
- await page.getByRole('button',{name:'Reconnect Camera',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Reconnect Camera',exact:true}).click();
+ await reconnect.click();await page.getByRole('dialog').getByRole('button',{name:'Reconnect camera',exact:true}).click();
  await page.waitForFunction(()=>{const v=document.querySelector('main video');return v&&v.videoWidth===640&&!v.paused&&v.getVideoPlaybackQuality().totalVideoFrames>=2},{},{timeout:30000});
  if(resets!==1)throw Error('Lost recovery reply repeated reset');
  if(!await other.locator('main video').evaluate((v,n)=>v===window.smokeVideo&&v.getVideoPlaybackQuality().totalVideoFrames>n,frame))throw Error('Unrelated source interrupted');

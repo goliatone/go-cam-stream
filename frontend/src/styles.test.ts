@@ -168,10 +168,9 @@ function pairs(theme: Tokens): Pair[] {
     ["Stale status beside the video", "--warn", token("--bg"), TEXT],
     ["Stale status on a phone", "--warn", token("--surface"), TEXT],
     ["Top bar icon on hover", "--text", token("--fill-strong"), GRAPHIC],
-    ["Camera icon", "--icon", token("--fill"), GRAPHIC],
-    // The only thing a failed camera shows in the collapsed rail.
-    ["Failed camera icon", "--icon-dim", token("--fill"), GRAPHIC],
-    ["Current camera icon", "--accent", token("--accent-tint"), GRAPHIC],
+    // The camera icon on each tile, the collapsed rail's only content.
+    ...[0, 1, 2, 3, 4, 5, 6, 7].map((n): Pair => [`Camera tile ${n}`, "--on-tile", token(`--tile-${n}`), GRAPHIC]),
+    ["Copied link notice", "--surface", token("--text"), TEXT],
     // Buttons and fields on the page
     ["Primary button", "--on-accent", token("--accent"), TEXT],
     ["Primary button on hover", "--on-accent", token("--accent-hover"), TEXT],

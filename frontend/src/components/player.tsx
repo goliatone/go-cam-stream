@@ -29,6 +29,7 @@ import {
 import {
   describeView,
   ErrorDetails,
+  mediaLabel,
   resumable,
   StatusBadge,
   useTick,
@@ -130,7 +131,7 @@ const HINT_MS = 4000;
 type Timer = ReturnType<typeof setTimeout>;
 
 const isControl = (target: EventTarget | null) =>
-  target instanceof Element && Boolean(target.closest("button, a, select"));
+  target instanceof Element && Boolean(target.closest("button, a, select, summary"));
 /** Keyboard focus, not a mouse click, rests on a control inside `node`. */
 function keyboardFocusIn(node: HTMLElement | null) {
   const active = document.activeElement;
@@ -494,15 +495,23 @@ export function Player({
           aria-label={`${stream.name} video`}
         />
         <div class="stage-top">
-          <div class="stage-badge">
-            <StatusBadge view={view} />
-            {transport && (
-              <span class="media-transport">
-                {" "}
-                · WebRTC {transport.toUpperCase()}
-              </span>
-            )}
-          </div>
+          {/* The badge names the state. Once media is connected it opens the
+              transport and media, which most viewers never need. */}
+          {transport ? (
+            <details class="stage-badge">
+              <summary title="Connection details">
+                <StatusBadge view={view} />
+                <span class="sr-only">, connection details</span>
+              </summary>
+              <p class="badge-details">
+                WebRTC {transport.toUpperCase()} · {mediaLabel(stream.capabilities)}
+              </p>
+            </details>
+          ) : (
+            <div class="stage-badge">
+              <StatusBadge view={view} />
+            </div>
+          )}
           {onCameras && (
             <button type="button" class="overlay-cameras" onClick={onCameras}>
               <CameraIcon />

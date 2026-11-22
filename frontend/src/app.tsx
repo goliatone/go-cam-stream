@@ -1,4 +1,3 @@
-import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
   CameraList,
@@ -10,7 +9,7 @@ import type {
 } from "./services/contracts";
 import { LazyManagement, LazyShortcuts } from "./components/lazy-management";
 import type { ManagementDialogProps, ManagementMode } from "./components/camera-management";
-import { CameraLinks } from "./components/camera-selector";
+import { CameraLinks, type CameraAction } from "./components/camera-selector";
 import appIcon from "./components/app-icon.svg?no-inline";
 import {
   CameraIcon,
@@ -18,6 +17,7 @@ import {
   KeyboardIcon,
   PlusIcon,
   RefreshIcon,
+  SettingsIcon,
   SidebarIcon,
 } from "./components/icon";
 import { Player, type PlayerPresentation } from "./components/player";
@@ -25,7 +25,9 @@ import {
   describeView,
   duration,
   ErrorDetails,
+  StatusBadge,
   useTick,
+  type ViewState,
 } from "./components/status";
 import { errorCopy, stateLabels } from "./services/copy";
 import { linkFor, resolveSelection } from "./services/links";
@@ -52,7 +54,10 @@ export interface AppProps {
   onAddCamera?: ((mode?: ManagementMode) => void) | undefined;
   onCameraSettings?: ((cameraID: string) => void) | undefined;
   watchSelection?: StreamRef | undefined;
-  recoveryControl?: ComponentChildren;
+  /** Asks to reset the source of a stream, after its own confirmation. */
+  onReconnect?: ((ref: StreamRef) => void) | undefined;
+  /** A reset whose outcome is not known yet keeps Reconnect on offer. */
+  recoveryPending?: StreamRef | undefined;
   management?: ManagementDialogProps | undefined;
   catalogStale?: boolean | undefined;
   /** Asks for the camera list again; it rejects when the list stays stale. */
@@ -85,7 +90,7 @@ export function App({
   initialSelection,
   onSelect,
   onReload,
-  onAddCamera, onCameraSettings, watchSelection, recoveryControl, management, catalogStale,
+  onAddCamera, onCameraSettings, watchSelection, onReconnect, recoveryPending, management, catalogStale,
   refreshCatalog,
 }: AppProps) {
   const [requested, setRequested] = useState(initialSelection);
@@ -93,6 +98,8 @@ export function App({
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheet = useRef<HTMLDialogElement>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const viewerRoot = useRef<HTMLElement>(null);
   // Resolve against the current filtered catalog on every render. Never retain a removed scope.
   const cameras = error || loading ? [] : catalog.cameras;
@@ -117,6 +124,8 @@ export function App({
   const others = cameras.some(
     (item) => item.id !== camera?.id && item.streams.length > 0,
   );
+  // This page holds one of the stream's viewer slots.
+  const mine = presentation.state === "playing" || presentation.state === "reconnecting";
 
   // Notify the integration owner of the effective selection, including initial
   // selection and catalog revocation. This callback performs no transport work here.
@@ -129,6 +138,7 @@ export function App({
   }, [camera?.name, word, view.tone, Boolean(error)]);
 
   useEffect(() => { if (watchSelection) setRequested(watchSelection); }, [watchSelection]);
+  useEffect(() => () => clearTimeout(noticeTimer.current), []);
 
   function select(next: StreamRef) {
     if (selected && sameStream(selected, next)) return;
@@ -168,6 +178,60 @@ export function App({
   }
   const chooseStream = (stream_id: string) =>
     camera && select({ camera_id: camera.id, stream_id });
+  // The stream whose source Reconnect resets: for the camera on screen, the
+  // stream it shows; for another, the first whose source needs it.
+  function needsReconnect(item: CameraSummary): StreamRef | undefined {
+    const found = (item.id === camera?.id && stream ? [stream] : item.streams).find(
+      (one) =>
+        one.can_reconnect &&
+        (one.recovery_required ||
+          (recoveryPending?.camera_id === item.id &&
+            recoveryPending.stream_id === one.id)),
+    );
+    return found && { camera_id: item.id, stream_id: found.id };
+  }
+  function tell(text: string) {
+    clearTimeout(noticeTimer.current);
+    setNotice(text);
+    noticeTimer.current = setTimeout(() => setNotice(""), 4000);
+  }
+  function copyLink(item: CameraSummary) {
+    const href = new URL(linkFor(item), location.href).href;
+    // Pages without a secure origin have no clipboard.
+    void (navigator.clipboard?.writeText(href) ?? Promise.reject()).then(
+      () => tell(`Copied the link to ${item.name}.`),
+      () => tell("Couldn’t copy the link. Open the camera and copy the page address."),
+    );
+  }
+  const menu = (item: CameraSummary): CameraAction[] => {
+    const ref = onReconnect && needsReconnect(item);
+    return [
+      ...(item.can_update_credentials && onCameraSettings
+        ? [["Settings", () => onCameraSettings(item.id)] as const]
+        : []),
+      ...(ref ? [["Reconnect", () => onReconnect(ref)] as const] : []),
+      ["Copy link", () => copyLink(item)],
+    ];
+  };
+  // Reconnect and Settings end the details in fixed slots, so nothing else
+  // moves as they come and go.
+  const reconnect = camera && onReconnect && needsReconnect(camera);
+  const actions = () => (
+    <div class="info-actions">
+      {reconnect && (
+        <button type="button" class="secondary-button" onClick={() => { hideCameras(); onReconnect(reconnect); }}>
+          <RefreshIcon />
+          Reconnect
+        </button>
+      )}
+      {camera?.can_update_credentials && onCameraSettings && (
+        <button type="button" class="secondary-button" onClick={() => { hideCameras(); onCameraSettings(camera.id); }}>
+          <SettingsIcon />
+          Settings
+        </button>
+      )}
+    </div>
+  );
 
   // Camera shortcuts: [ and ] step through playable cameras and 1–9 pick a
   // row. The player owns its own keys.
@@ -305,25 +369,25 @@ export function App({
         )}
       </main>
       {camera && stream ? (
-        <section class="stream-bar" aria-label="Stream details">
-          <div class="stream-bar-inner">
-            {recoveryControl}
-            {camera.can_update_credentials && onCameraSettings &&
-              <button type="button" class="secondary-button" onClick={() => onCameraSettings(camera.id)}>Camera settings</button>}
-            <StreamDetails
+        <section class="info-bar" aria-label="Camera details">
+          <div class="info-bar-inner">
+            <CameraDetails
               id="stream-select"
               camera={camera}
               stream={stream}
+              view={view}
+              mine={mine}
               status={status}
               statusAt={statusAt}
               observingSince={observingSince}
               onChange={chooseStream}
             />
+            {actions()}
           </div>
         </section>
       ) : loading ? (
-        <div class="stream-bar" aria-hidden="true">
-          <div class="stream-bar-inner">
+        <div class="info-bar" aria-hidden="true">
+          <div class="info-bar-inner">
             <span class="skeleton line-skeleton" />
           </div>
         </div>
@@ -351,6 +415,7 @@ export function App({
               view={view}
               onSelect={choose}
               titles={!railOpen}
+              actions={menu}
             />
           )}
           {onAddCamera && (
@@ -396,19 +461,18 @@ export function App({
               its details live here too. */}
           {sheetOpen && camera && stream && (
             <div class="sheet-stream">
-              <StreamDetails
+              <CameraDetails
                 id="sheet-stream-select"
                 camera={camera}
                 stream={stream}
+                view={view}
+                mine={mine}
                 status={status}
                 statusAt={statusAt}
                 observingSince={observingSince}
                 onChange={chooseStream}
               />
-              {camera.can_update_credentials && onCameraSettings && <button type="button" class="secondary-button" onClick={() => {
-                hideCameras();
-                onCameraSettings(camera.id);
-              }}>Camera settings</button>}
+              {actions()}
             </div>
           )}
           {sheetOpen && catalogStale && <StaleNotice refresh={refreshCatalog} />}
@@ -423,6 +487,7 @@ export function App({
         </div>
       </dialog>
       {helpOpen && <LazyShortcuts onClose={() => { setHelpOpen(false); dialogClosed(); }} />}
+      <p class="toast" role="status">{notice}</p>
     </div>
   );
 }
@@ -461,10 +526,14 @@ function StaleNotice({
   );
 }
 
-function StreamDetails({
+// The camera on screen: its name and status, its viewers once the server
+// reports them, how fresh that is, and the stream choice when there is one.
+function CameraDetails({
   id,
   camera,
   stream,
+  view,
+  mine,
   status,
   statusAt,
   observingSince,
@@ -473,52 +542,52 @@ function StreamDetails({
   id: string;
   camera: CameraSummary;
   stream: StreamSummary;
+  view: ViewState;
+  mine: boolean;
   status: StreamStatus | undefined;
   statusAt: number | undefined;
   observingSince: number | undefined;
   onChange: (stream_id: string) => void;
 }) {
-  const { audio, video } = stream.capabilities;
+  // A count observed before this page connected still includes it.
+  const viewers =
+    status?.viewers == null
+      ? undefined
+      : mine
+        ? Math.max(status.viewers, 1)
+        : status.viewers;
   return (
     <>
-      <div class="stream-select">
-        <label for={id}>Stream</label>
-        <select
-          id={id}
-          value={stream.id}
-          onChange={(event) => onChange(event.currentTarget.value)}
-        >
-          {camera.streams.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
+      <div class="camera-facts">
+        <strong>{camera.name}</strong>
+        {view.label !== stateLabels.unknown && <StatusBadge view={view} />}
+        {viewers !== undefined && (
+          <span>
+            {!viewers
+              ? "No one watching"
+              : mine && viewers === 1
+                ? "Only you watching"
+                : `${viewers} watching`}
+          </span>
+        )}
+        <Freshness at={statusAt} since={observingSince} />
       </div>
-      <dl class="stream-facts">
-        <div>
-          <dt>Media</dt>
-          <dd>
-            {video
-              ? audio
-                ? "Video + audio"
-                : "Video only"
-              : audio
-                ? "Audio only"
-                : "No media"}
-          </dd>
+      {camera.streams.length > 1 && (
+        <div class="stream-select">
+          <label for={id}>Stream</label>
+          <select
+            id={id}
+            value={stream.id}
+            onChange={(event) => onChange(event.currentTarget.value)}
+          >
+            {camera.streams.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
         </div>
-        <div>
-          <dt>Viewers</dt>
-          <dd>{status?.viewers == null ? "Unknown" : status.viewers}</dd>
-        </div>
-        <div>
-          <dt>Status</dt>
-          <dd>
-            <Freshness at={statusAt} since={observingSince} />
-          </dd>
-        </div>
-      </dl>
+      )}
     </>
   );
 }
@@ -540,6 +609,6 @@ function Freshness({
   const quiet = since === undefined ? 0 : now - Math.max(at ?? since, since);
   if (quiet >= STALE_MS)
     return <span class="stale">No update for {duration(age ?? quiet)}</span>;
-  if (age === undefined) return <>No update yet</>;
-  return <>Updated {age < 3000 ? "just now" : `${duration(age)} ago`}</>;
+  if (age === undefined) return null;
+  return <span>Updated {age < 3000 ? "just now" : `${duration(age)} ago`}</span>;
 }

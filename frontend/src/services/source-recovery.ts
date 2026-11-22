@@ -5,6 +5,8 @@ import { operationKey, RecoveryStorage, type RecoveryRecord } from "./management
 export class SourceRecovery {
   busy=false; unresolved=false; error:ManagementErrorCode|undefined;
   #record:RecoveryRecord|undefined;
+  /** The stream whose reset is still being confirmed. */
+  get ref():StreamRef|undefined{return this.#record?.ref}
   constructor(readonly api:ManagementAPI, readonly storage:RecoveryStorage, public caps:Capabilities, readonly changed:()=>void, readonly refreshed:()=>Promise<void>, readonly recovered:(ref:StreamRef)=>Promise<void>) {}
   async init() { try{this.#record=this.storage.read(this.caps);if(this.#record){this.unresolved=true;await this.check()}}catch(error){this.error=managementCode(error);this.changed()} }
   async confirm(ref:StreamRef) {

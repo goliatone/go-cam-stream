@@ -13,8 +13,9 @@ Homebrew nor Go. Keep the entire folder together. No microphone capture or recor
 ## Connect the native app to the web viewer
 
 Keep the camera live. Open **Connection Details → Export Connection Files →
-Show Files in Finder**, then select both files under **Add Camera → Import Mac
-files** in the web app. Choose **Test connection → Save Camera → Watch Camera**.
+Show Files in Finder**, then drop or choose both files under **Add Camera →
+Camstream Mac app** in the web app. Choose **Continue → Check connection →
+Save camera → Watch now**.
 
 For same-Mac Firefox playback, start the web development host with
 `./taskfile dev:serve 8087 --media-address YOUR_MAC_PRIVATE_IPV4`. Keep the

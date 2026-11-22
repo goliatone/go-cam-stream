@@ -150,14 +150,18 @@ describe("live media binding", () => {
     );
     expect(await screen.findByText("Updated just now")).toBeTruthy();
     expect(document.querySelector(".countdown")!.textContent).toBe("9 s");
-    expect(document.querySelector(".media-transport")!.textContent).toBe(
-      " · WebRTC UDP",
+    // The badge opens on the transport and media.
+    expect(document.querySelector(".badge-details")!.textContent).toBe(
+      "WebRTC UDP · Video + audio",
     );
-    // Without them, no countdown, no transport and no update yet.
+    // Without them, no countdown, no transport and no freshness.
     act(() => control.changed!(snapshot("reconnecting")));
-    expect(await screen.findByText("No update yet")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryByText("Updated just now")).toBeNull(),
+    );
     expect(document.querySelector(".countdown")).toBeNull();
-    expect(document.querySelector(".media-transport")).toBeNull();
+    expect(document.querySelector(".stage-badge summary")).toBeNull();
+    expect(screen.queryByText(/^(Updated|No update)/)).toBeNull();
     // Asking for status a whole window without an answer warns.
     act(() =>
       control.changed!({
