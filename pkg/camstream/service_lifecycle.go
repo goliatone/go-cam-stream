@@ -244,7 +244,8 @@ func (s *Service) observeSource(ctx context.Context, src *serviceSource) error {
 	if src.unknown {
 		src.state.State, src.state.Upstream, src.state.ActiveSessions = StateUnknown, PresenceUnknown, nil
 	}
-	if !src.unknown && len(src.live) == 0 && idleStream(state) && s.devices[src.device] == src.key {
+	// A live service releases a transient device only after retiring the probe.
+	if (src.transient == "" || s.stopping) && !src.unknown && len(src.live) == 0 && idleStream(state) && s.devices[src.device] == src.key {
 		delete(s.devices, src.device)
 	}
 	return err
@@ -306,7 +307,7 @@ func (s *Service) ResetSource(ctx context.Context, key SourceKey) ([]SessionID, 
 		s.releaseViewer(v, StateClosed, "")
 	}
 	src.fault, src.unknown, src.resetFailed = "", false, false
-	if s.devices[src.device] == src.key {
+	if src.transient == "" && s.devices[src.device] == src.key {
 		delete(s.devices, src.device)
 	}
 	s.mu.Unlock()

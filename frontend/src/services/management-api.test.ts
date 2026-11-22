@@ -19,7 +19,7 @@ it("sends bounded import files as multipart and safely encodes owner recovery id
  const fetcher=vi.fn().mockResolvedValueOnce(json({token:"csrf",header_name:CSRF_HEADER})).mockResolvedValueOnce(json(draft)).mockResolvedValueOnce(json({operation_key:"key",kind:"save",state:"not_found",runtime_epoch:"epoch"}));
  const api=new ManagementClient(fetcher);await api.import(mutation,new File(["yaml"],"camera.yaml"),new File(["password"],"camera.env"));
  expect(fetcher.mock.calls[1]![1].body).toBeInstanceOf(FormData);expect(fetcher.mock.calls[1]![1].headers["Content-Type"]).toBeUndefined();
- await api.operation("key/", "epoch", "candidate", true);expect(fetcher.mock.calls[2]![0]).toBe("/api/camera-operations/key%2F?runtime_epoch=epoch&candidate_id=candidate&kind=recovery");
+ await api.operation("key/", "epoch", "candidate", "recovery");expect(fetcher.mock.calls[2]![0]).toBe("/api/camera-operations/key%2F?runtime_epoch=epoch&candidate_id=candidate&kind=recovery");
  await expect(api.import(mutation,new File(["x".repeat(32769)],"large.yaml"))).rejects.toMatchObject({code:"import_invalid"});expect(fetcher).toHaveBeenCalledTimes(3);
 });
 it("rejects malformed CSRF configuration and never exposes server text",async()=>{

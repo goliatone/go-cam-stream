@@ -34,12 +34,7 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
       const caps=manager.capabilities;
       if(caps&&manager.view.storageReady){
         // Reset recovery has its own slot, so it never overwrites an unsaved draft.
-        const storage=manager.storage.storage;
-        const resetStorage=new RecoveryStorage({
-          getItem:key=>storage.getItem(key.replace(RECOVERY_STORAGE_KEY,RECOVERY_STORAGE_KEY+".reset")),
-          setItem:(key,value)=>storage.setItem(key.replace(RECOVERY_STORAGE_KEY,RECOVERY_STORAGE_KEY+".reset"),value),
-          removeItem:key=>storage.removeItem(key.replace(RECOVERY_STORAGE_KEY,RECOVERY_STORAGE_KEY+".reset")),
-        } as Storage);
+        const resetStorage=new RecoveryStorage(manager.storage.storage,RECOVERY_STORAGE_KEY+".reset");
         recovery.current=new SourceRecovery(manager.api,resetStorage,caps,()=>{if(active)update(n=>n+1)},async()=>{await latest.current.refresh()},async ref=>{
           const selected=latest.current.viewer.viewer?.selection;
           if(selected?.camera_id===ref.camera_id&&selected.stream_id===ref.stream_id)await latest.current.recovered();
@@ -47,7 +42,7 @@ export default function ManagementHost({viewer,refresh,recovered,onChange}:Manag
         await recovery.current.init();
         if(active)update(n=>n+1);
       }
-      if(active&&(manager.view.draft||manager.view.saved||manager.view.unresolved))setOpen(true);
+      if(active&&(manager.view.draft||manager.view.saved||manager.view.unresolved||manager.view.error==="receipt_expired"))setOpen(true);
     });
     const hidden=()=>{if(document.visibilityState==="hidden")void manager.cancelTest()};
     const pagehide=()=>{void manager.cancelTest()};

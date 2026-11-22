@@ -25,12 +25,16 @@
   --line: #dce3df;
   --line-strong: #cbd5d0;
   --accent: #176b51;
+  --accent-hover: #12583f;
   --accent-soft: #ecf5ee;
   --accent-tint: #d8eade;
+  --on-accent: #fff;
   --focus: #278d73;
   --icon: #49625a;
   --icon-dim: #71837f;
   --warn: #8a4b00;
+  --danger: #b3381c;
+  --danger-soft: #fbece8;
   --dot: #87979b;
   --dot-live: #248266;
   --dot-danger: #c0563a;
@@ -90,12 +94,16 @@
     --line: #273438;
     --line-strong: #3c4c51;
     --accent: #56bd95;
+    --accent-hover: #74d1ad;
     --accent-soft: #152e27;
     --accent-tint: #1d4135;
+    --on-accent: #0b1d17;
     --focus: #5ec9a1;
     --icon: #a3b7b1;
     --icon-dim: #7d908c;
     --warn: #e9a55b;
+    --danger: #f08a6c;
+    --danger-soft: #3a1f19;
     --stage-frame: 0 0 0 1px #273438;
   }
 }
@@ -466,44 +474,87 @@ main:-webkit-full-screen {
 .player-notice .countdown {
   color: var(--on-stage-muted);
 }
-.primary-button {
+/* Buttons. A class names the role and every button takes one. Each role is
+   drawn for the page; on the stage, primary and secondary take stage colours,
+   in rules that outrank the page ones in every state. */
+.primary-button,
+.secondary-button,
+.ghost-button,
+.danger-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-height: 44px;
   padding: 9px 17px;
-  border: 1px solid var(--primary-line);
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: var(--primary);
-  color: var(--on-primary);
   font-size: var(--fs-sm);
   font-weight: 600;
   text-decoration: none;
 }
-.primary-button:hover:not(:disabled) {
-  background: var(--primary-hover);
+.primary-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
 }
-.primary-button:disabled {
-  color: var(--on-disabled);
-  background: var(--stage-hover);
-  border-color: var(--disabled-line);
+.primary-button:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
 }
 .secondary-button {
-  min-height: 44px;
-  padding: 9px 17px;
-  border: 1px solid var(--stage-line-strong);
-  border-radius: 6px;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+.ghost-button {
+  background: transparent;
+  color: var(--text);
+}
+:is(.secondary-button, .ghost-button):hover:not(:disabled) {
+  background: var(--fill-strong);
+}
+.danger-button {
+  border-color: var(--danger);
+  background: var(--surface);
+  color: var(--danger);
+}
+.danger-button:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+:is(.primary-button, .secondary-button, .danger-button):disabled {
+  border-color: var(--line);
+  background: var(--fill);
+  color: var(--text-disabled);
+}
+.ghost-button:disabled {
+  color: var(--text-disabled);
+}
+.primary-button svg,
+.secondary-button svg {
+  flex: none;
+}
+.video-stage .primary-button {
+  border-color: var(--primary-line);
+  background: var(--primary);
+  color: var(--on-primary);
+}
+.video-stage .primary-button:hover:not(:disabled) {
+  border-color: var(--primary-line);
+  background: var(--primary-hover);
+}
+.video-stage .primary-button:disabled {
+  border-color: var(--disabled-line);
+  background: var(--stage-hover);
+  color: var(--on-disabled);
+}
+.video-stage .secondary-button {
+  border-color: var(--stage-line-strong);
   background: var(--glass-weak);
   color: var(--on-stage);
-  font-size: var(--fs-sm);
-  font-weight: 600;
 }
-.secondary-button:hover {
+.video-stage .secondary-button:hover:not(:disabled) {
   background: var(--stage-hover);
-}
-.primary-button svg {
-  flex: none;
 }
 .player-hint {
   position: absolute;
@@ -799,11 +850,55 @@ a.camera-choice:hover {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.rail-note {
-  margin-top: auto;
-  padding: 16px 8px 4px;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
+/* Add Camera ends the list as a row of its own, so the collapsed rail keeps
+   its tile in line with the camera icons. */
+.add-camera {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  margin-top: 2px;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  text-align: left;
+}
+.add-camera:hover {
+  background: var(--fill-soft);
+}
+.add-camera-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+}
+/* The last list stays in view while refreshes fail. */
+.rail-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--fill-soft);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.rail-notice p {
+  flex-basis: 100%;
+}
+.rail-notice svg {
+  color: var(--warn);
 }
 .status-badge {
   display: inline-flex;
@@ -832,10 +927,10 @@ a.camera-choice:hover {
 }
 /* Collapsed rail: icons only; names stay available to assistive technology. */
 @media (min-width: 768px) {
-  [data-rail="collapsed"] .rail .camera-choice {
+  [data-rail="collapsed"] .rail :is(.camera-choice, .add-camera, .rail-notice) {
     justify-content: center;
   }
-  [data-rail="collapsed"] .rail :is(.camera-label, .rail-heading h2) {
+  [data-rail="collapsed"] .rail :is(.camera-label, .rail-heading h2, .add-camera-label, .rail-notice p, .rail-notice span) {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -843,8 +938,18 @@ a.camera-choice:hover {
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  [data-rail="collapsed"] .rail :is(.rail-note, .count) {
+  [data-rail="collapsed"] .rail .count {
     display: none;
+  }
+  /* Only the refresh icon shows, with the list's state in its tooltip. */
+  [data-rail="collapsed"] .rail .rail-notice {
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+  [data-rail="collapsed"] .rail .rail-notice button {
+    width: 44px;
+    padding: 0;
   }
 }
 
@@ -993,6 +1098,191 @@ kbd {
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
 }
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dialog-actions:empty {
+  display: none;
+}
+/* An optional dialog that is still loading, or failed to, in the dialog's own
+   frame. It is not modal: it closes itself or gives way to the dialog. */
+.dialog-pending {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  height: fit-content;
+  margin: auto;
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px var(--shadow);
+}
+
+/* Camera management */
+.management-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(var(--vh) - 32px);
+  overflow: auto;
+}
+.management-dialog .dialog-inner {
+  gap: 16px;
+  padding: 12px 24px 24px;
+}
+/* An empty live region keeps its place in the accessibility tree, not in the
+   layout. */
+.management-dialog .dialog-inner > [role="status"]:empty {
+  position: absolute;
+}
+.management-dialog fieldset {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.management-dialog form label {
+  display: grid;
+  gap: 6px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.management-dialog form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  /* 16 px, so iOS Safari does not zoom into the field. */
+  font: inherit;
+  font-size: var(--fs-lg);
+  font-weight: 400;
+}
+.management-dialog form input[type="file"] {
+  font-size: var(--fs-sm);
+}
+.management-dialog select {
+  width: 100%;
+  max-width: none;
+  font-weight: 400;
+}
+.management-dialog form :is(input, select):disabled {
+  background: var(--fill);
+  color: var(--text-disabled);
+}
+/* A hint sits under its field, closer to it than to the next one. */
+.hint {
+  margin-top: -10px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.field-error {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--danger);
+}
+.management-dialog :is(.dialog-inner, fieldset, section) > button {
+  justify-self: start;
+}
+.management-intro {
+  margin-top: -12px;
+  color: var(--text-muted);
+}
+.management-error {
+  padding-left: 12px;
+  border-left: 3px solid var(--warn);
+}
+.management-review,
+.management-preview {
+  display: grid;
+  gap: 12px;
+}
+.management-review h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.management-review dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  font-size: var(--fs-md);
+}
+.management-review dt {
+  color: var(--text-muted);
+}
+.management-review dd {
+  overflow-wrap: anywhere;
+}
+.management-preview video {
+  display: block;
+  width: 100%;
+  min-height: 96px;
+  max-height: 240px;
+  border-radius: 8px;
+  background: var(--stage);
+}
+/* Choices drawn as one control. Each radio covers its segment, so the
+   selection and the focus ring fill it. */
+.segmented {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--fill);
+}
+.segment {
+  position: relative;
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.segment input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border-radius: 6px;
+  appearance: none;
+  cursor: inherit;
+}
+.segment input:checked {
+  background: var(--accent-tint);
+}
+.segment span {
+  position: relative;
+  pointer-events: none;
+}
+.segment:hover {
+  color: var(--text);
+}
+.segment input:checked + span {
+  color: var(--accent);
+}
+.segment input:disabled {
+  cursor: not-allowed;
+}
+.segment input:disabled:not(:checked) + span {
+  color: var(--text-disabled);
+}
 .skip-link {
   position: fixed;
   top: 10px;
@@ -1075,9 +1365,6 @@ kbd {
       calc(24px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
     border-right: 0;
     background: none;
-  }
-  .rail-note {
-    margin-top: 8px;
   }
   .app[data-norail] main {
     position: static;

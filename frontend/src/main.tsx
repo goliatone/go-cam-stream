@@ -4,7 +4,6 @@ import type { ManagementHostProps } from "./hooks/use-management";
 import { App, type AppProps } from "./app";
 import { useViewer, viewerAPI } from "./hooks/use-viewer";
 import "./styles.css";
-import "./components/camera-management.css";
 
 function LiveViewer() {
   const props=useViewer(viewerAPI);

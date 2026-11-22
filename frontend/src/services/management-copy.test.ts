@@ -17,5 +17,5 @@ it("does not infer authentication failure from an unavailable source", () => {
 
 it("keeps unknown and inherited keys behind the safe fallback", () => {
   for (const code of ["constructor", "__proto__", "raw backend secret"])
-    expect(managementMessage(code as ManagementErrorCode)).toBe("The camera operation did not complete. Check the camera and the operation status before trying again.");
+    expect(managementMessage(code as ManagementErrorCode)).toBe("Check the camera and operation status before trying again.");
 });

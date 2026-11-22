@@ -8,6 +8,9 @@ import type {
   StreamRef,
 } from "../services/contracts";
 import type { PlayerControls } from "../components/player";
+import type { ManagementActions, ManagementView } from "../components/camera-management";
+import { CameraRecovery } from "../components/camera-recovery";
+import type { DraftReview, TestResult } from "../services/contracts";
 import samples from "../../../data/api/examples.json";
 import "../styles.css";
 import "./preview.css";
@@ -94,6 +97,86 @@ const failures: Partial<Record<Scenario, ErrorBody>> = {
   capacity: { code: "capacity_exceeded", message: "", retryable: true },
 };
 
+// A manager's view: the entry points, each management dialog state and the
+// notices. No draft, test, save or refresh reaches a server.
+const draft: DraftReview = {
+  id: "draft",
+  candidate_id: "office",
+  revision: 1,
+  runtime_epoch: "preview",
+  expires_at: "2026-11-14T15:00:00Z",
+  name: "Office",
+  endpoint: "rtsp://localhost:18556/macbook",
+  authentication: "credentials",
+  credentials_present: true,
+  warnings: ["server_relative_localhost", "creator_only_access"],
+  state: "ready",
+};
+const running: TestResult = {
+  id: "test",
+  attempt_key: "attempt",
+  draft_revision: 1,
+  stage: "source_media",
+  expires_at: draft.expires_at,
+  source_media_observed: true,
+  browser_frames_reported: false,
+  cleanup: "pending",
+};
+const passed: TestResult = {
+  ...running,
+  stage: "passed",
+  browser_frames_reported: true,
+  cleanup: "confirmed",
+};
+const managing = {
+  viewer: undefined,
+  manager: undefined,
+  "add-camera": { phase: "editing" },
+  review: { phase: "review", draft },
+  testing: {
+    phase: "testing",
+    draft: { ...draft, state: "testing" },
+    test: running,
+  },
+  tested: {
+    phase: "review",
+    draft: { ...draft, state: "tested", test: passed },
+    test: passed,
+  },
+  saved: {
+    phase: "saved",
+    saved: {
+      camera_id: "office",
+      catalog_revision: { runtime_epoch: "preview", generation: 2 },
+    },
+  },
+  "camera-settings": {
+    phase: "editing",
+    credentialTarget: { id: "room1", name: "Room 1" },
+  },
+  unresolved: {
+    phase: "recovering",
+    draft,
+    unresolved: true,
+    error: "save_outcome_unknown",
+    canRetrySave: true,
+    canAbandon: true,
+  },
+  "stale-list": undefined,
+  reconnect: undefined,
+} satisfies Record<string, Omit<ManagementView, "storageReady"> | undefined>;
+type Managing = keyof typeof managing;
+/** A manager may change each listed camera's credentials. */
+const canManage = (list: CameraList, manager: boolean): CameraList =>
+  manager
+    ? {
+        cameras: list.cameras.map((camera) => ({
+          ...camera,
+          can_update_credentials: true,
+        })),
+      }
+    : list;
+
 /** Scenarios whose synthetic status keeps arriving every 2 s. */
 const observed: readonly Scenario[] = [
   "playing",
@@ -114,6 +197,27 @@ function Preview() {
   });
   const [event, setEvent] = useState("No action yet");
   const [attempt, setAttempt] = useState(0);
+  const [manage, setManage] = useState<Managing>("viewer");
+  const dialog = managing[manage];
+  const back = (what: string) => () => {
+    setManage("manager");
+    setEvent(`${what} callback; preview only`);
+  };
+  const managementActions: ManagementActions = {
+    submit: () => setEvent("Review callback; no draft is created"),
+    importFiles: () => setEvent("Import callback; no file is read"),
+    test: () => setEvent("Test callback; no media"),
+    cancelTest: () => setEvent("Cancel test callback; preview only"),
+    save: () => setEvent("Save callback; nothing is saved"),
+    recover: () => setEvent("Check status callback; no request"),
+    abandon: back("Abandon"),
+    retrySave: () => setEvent("Retry callback; nothing is saved"),
+    cancel: back("Cancel draft"),
+    close: back("Close"),
+    watch: back("Watch"),
+    submitCredentials: () => setEvent("Credentials callback; nothing is sent"),
+    openSettings: () => setManage("camera-settings"),
+  };
   function show(next: Scenario) {
     setScenario(next);
     setSince(performance.now());
@@ -234,6 +338,21 @@ function Preview() {
             </option>
           ))}
         </select>
+        <label for="managing">Managing</label>
+        <select
+          id="managing"
+          value={manage}
+          onChange={(e) => {
+            setManage(e.currentTarget.value as Managing);
+            setEvent("No action yet");
+          }}
+        >
+          {Object.keys(managing).map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
         <p>
           Synthetic inputs. No camera connection, media, or browser capability
           validation.
@@ -243,7 +362,7 @@ function Preview() {
         </span>
       </div>
       <App
-        catalog={
+        catalog={canManage(
           scenario === "empty"
             ? { cameras: [] }
             : scenario === "no-streams"
@@ -257,11 +376,46 @@ function Preview() {
                     },
                   ],
                 }
-              : catalog
-        }
+              : catalog,
+          manage !== "viewer",
+        )}
         loading={scenario === "loading"}
         {...(scenario === "denied"
           ? { error: samples.denied.error as ErrorBody }
+          : {})}
+        {...(manage === "viewer"
+          ? {}
+          : {
+              onAddCamera: () => setManage("add-camera"),
+              onCameraSettings: () => setManage("camera-settings"),
+            })}
+        {...(dialog
+          ? {
+              management: {
+                view: { storageReady: true, ...dialog },
+                actions: managementActions,
+              },
+            }
+          : {})}
+        {...(manage === "stale-list"
+          ? {
+              catalogStale: true,
+              refreshCatalog: async () =>
+                setEvent("Refresh callback; no request"),
+            }
+          : {})}
+        {...(manage === "reconnect"
+          ? {
+              recoveryControl: (
+                <CameraRecovery
+                  busy={false}
+                  unresolved={false}
+                  disabled={false}
+                  onConfirm={() => setEvent("Reconnect callback; preview only")}
+                  onCheck={() => setEvent("Check reconnect callback")}
+                />
+              ),
+            }
           : {})}
         viewer={viewer}
         onSelect={(next) => {

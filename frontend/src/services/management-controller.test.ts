@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { Capabilities, DraftReview, Mutation, OperationKind, OperationResult, TestResult } from "./contracts";
 import { ManagementFailure, type ManagementAPI } from "./management-api";
 import { ManagementController } from "./management-controller";
-import { RECOVERY_STORAGE_KEY, RecoveryStorage } from "./management-storage";
+import { CREDENTIAL_RECOVERY_KEY, RECOVERY_STORAGE_KEY, RecoveryStorage } from "./management-storage";
 
 const caps:Capabilities={can_manage_cameras:true,recovery_scope:"scope",runtime_epoch:"epoch"};
 const input={name:"PRIVATE-NAME",endpoint:"rtsp://localhost:18556/PRIVATE-PATH",authentication:"credentials" as const,credentials:{username:"PRIVATE-USER",password:"PRIVATE-PASSWORD"}};
@@ -86,7 +86,10 @@ it("opens the authorized duplicate camera and recovers a lost credential draft w
  expect(c.view.draft?.credential_update).toBe(true);
  expect(c.view.draft?.candidate_id).toBe("existing");
  expect(c.view.unresolved).toBe(false);
- expect(sessionStorage.getItem(RECOVERY_STORAGE_KEY)).not.toContain("replacement-secret");
+ expect(sessionStorage.getItem(RECOVERY_STORAGE_KEY)).toBeNull();
+ const persisted=sessionStorage.getItem(CREDENTIAL_RECOVERY_KEY);
+ expect(persisted).not.toBeNull();
+ expect(persisted).not.toContain("replacement-secret");
 });
 it("recovers a durable Save after reload even with a different epoch and no management permission",async()=>{
  const f=fixture(),c=f.build();await c.init();await c.submit(input);await c.test(document.createElement("video"));await c.save();
@@ -94,12 +97,98 @@ it("recovers a durable Save after reload even with a different epoch and no mana
  f.setCaps({...caps,runtime_epoch:"restarted",can_manage_cameras:false});
  const reloaded=f.build();await reloaded.init();expect(reloaded.view.saved?.camera_id).toBe("candidate");expect(f.api.save).toHaveBeenCalledOnce();expect(reloaded.capabilities?.runtime_epoch).toBe("restarted");
 });
+it.each(["current", "legacy"])("recovers a %s credential save and keeps it invisible to the older dashboard", async source => {
+ const f = fixture();
+ if(source==="legacy") {
+  f.storage.write({scope:"scope",epoch:"epoch",key:"rotation",kind:"save",candidate:"existing",draft:"rotation-draft",
+   expires:Date.now()+60_000});
+ } else {
+  const c=f.build();
+  await c.init();
+  await c.openCredentials({id:"existing"});
+  await c.submitCredentials({username:"",password:"replacement"});
+  await c.test(document.createElement("video"));
+  await c.save();
+  expect(sessionStorage.getItem(RECOVERY_STORAGE_KEY)).toBeNull();
+ }
+ const record=f.storage.read(caps)!;
+ const saved={camera_id:"existing",catalog_revision:{...revision,generation:2},credentials_updated:true};
+ f.operations.set(record.key,{operation_key:record.key,kind:"save",state:"succeeded",runtime_epoch:"epoch",saved});
+ const restored=f.build();
+ await restored.init();
+ expect(restored.view.saved).toEqual(saved);
+ expect(f.api.operation).toHaveBeenCalledWith(record.key,record.epoch,record.candidate,"save",record.draft);
+ expect(sessionStorage.getItem(RECOVERY_STORAGE_KEY)).toBeNull();
+ expect(sessionStorage.getItem(CREDENTIAL_RECOVERY_KEY)).not.toBeNull();
+ expect(f.storage.read(caps)).toEqual({...record,credentialUpdate:true});
+ await restored.close();
+ expect(sessionStorage.getItem(CREDENTIAL_RECOVERY_KEY)).toBeNull();
+});
 it("never mints another Save while the original outcome is unknown",async()=>{
  const f=fixture(),c=f.build();await c.init();await c.submit(input);await c.test(document.createElement("video"));
  vi.mocked(f.api.save).mockRejectedValue(new ManagementFailure("save_outcome_unknown"));
  vi.mocked(f.api.operation).mockRejectedValue(new ManagementFailure("storage_unavailable"));
  await c.save();const record=sessionStorage.getItem(RECOVERY_STORAGE_KEY);expect(c.view.unresolved).toBe(true);
  await c.save();await c.cancel();expect(f.api.save).toHaveBeenCalledOnce();expect(sessionStorage.getItem(RECOVERY_STORAGE_KEY)).toBe(record);expect(c.view.canAbandon).not.toBe(true);
+});
+it("blocks cancellation and edits until failed save recovery finishes refreshing the draft", async () => {
+ const f = fixture(), c = f.build();
+ await c.init();
+ await c.openCredentials({id:"existing"});
+ await c.submitCredentials({username:"",password:"replacement"});
+ await c.test(document.createElement("video"));
+ const tested = c.view.draft!;
+ let finishRefresh!: (draft:DraftReview) => void;
+ const refreshStarted = new Promise<void>(started => {
+  vi.mocked(f.api.draft).mockImplementationOnce(() => new Promise(resolve => {
+   finishRefresh = resolve;
+   started();
+  }));
+ });
+ vi.mocked(f.api.save).mockImplementationOnce(async request => {
+  f.operations.set(request.operation_key, {
+   operation_key:request.operation_key,kind:"save",state:"not_committed",runtime_epoch:"epoch",
+   error:{code:"catalog_revision_conflict",message:"Catalog changed",retryable:false},
+  });
+  throw new ManagementFailure("catalog_revision_conflict");
+ });
+ const saving = c.save();
+ await refreshStarted;
+ expect(c.view).toMatchObject({busy:true,unresolved:true,phase:"recovering"});
+ const originalOperation = f.storage.read(caps);
+ expect(await c.cancel()).toBe(false);
+ await c.submitCredentials({username:"",password:"different"});
+ await c.recover();
+ expect(f.api.cancel).not.toHaveBeenCalled();
+ expect(f.api.patch).not.toHaveBeenCalled();
+ expect(f.api.operation).toHaveBeenCalledTimes(1);
+ expect(f.storage.read(caps)).toEqual(originalOperation);
+
+ finishRefresh(tested);
+ await saving;
+ expect(c.view).toMatchObject({busy:false,unresolved:false,error:"catalog_revision_conflict"});
+ expect(await c.cancel()).toBe(true);
+ expect(c.view.phase).toBe("canceled");
+ expect(f.storage.read(caps)).toBeUndefined();
+ await c.openCredentials({id:"existing"});
+ expect(c.view.draft).toBeUndefined();
+ expect(c.view.phase).toBe("editing");
+});
+it.each(["expired", "not_found"] as const)("lets a restored tab dismiss a credential save with result %s", async state => {
+ const f = fixture(), c = f.build();
+ f.storage.write({scope:"scope",epoch:"epoch",key:"rotation",kind:"save",candidate:"existing",
+   draft:"rotation-draft",revision:1,catalog:revision,expires:Date.now()-1});
+ f.operations.set("rotation",{operation_key:"rotation",kind:"save",state,runtime_epoch:"epoch"});
+ await c.init();
+ expect(f.api.operation).toHaveBeenCalledWith("rotation","epoch","existing","save","rotation-draft");
+ expect(c.view.error).toBe("receipt_expired");
+ expect(c.view.unresolved).toBe(false);
+ expect(f.storage.read(caps)).toBeUndefined();
+ expect(f.api.save).not.toHaveBeenCalled();
+ await c.close();
+ await c.openCredentials({id:"existing"});
+ expect(c.view.credentialTarget?.id).toBe("existing");
+ expect(c.view.phase).toBe("editing");
 });
 it("blocks mutations before sending anything when browser storage is unavailable",async()=>{
  const f=fixture();const storage=new RecoveryStorage({setItem(){throw Error()},getItem(){return null},removeItem(){}} as unknown as Storage);
@@ -109,6 +198,42 @@ it("blocks mutations before sending anything when browser storage is unavailable
 it("visibility cancellation does not invalidate an already cleaned successful test",async()=>{
  const f=fixture(),c=f.build();await c.init();await c.submit(input);await c.test(document.createElement("video"));await c.cancelTest();
  expect(c.view.draft?.state).toBe("tested");expect(f.api.cancelTest).not.toHaveBeenCalled();
+});
+it.each(["cancel", "retest"])("ignores a delayed terminal preview draft after %s", async action => {
+ const f = fixture(), c = f.build();
+ await c.init();
+ await c.openCredentials({id:"existing"});
+ await c.submitCredentials({username:"",password:"replacement"});
+ const ready = c.view.draft!;
+ let finish!: (draft:DraftReview) => void;
+ const started = new Promise<void>(resolveStarted => {
+  vi.mocked(f.api.draft).mockImplementationOnce(() => new Promise(resolve => {
+   finish = resolve;
+   resolveStarted();
+  }));
+ });
+ const readStatus = vi.mocked(f.api.testStatus).getMockImplementation()!;
+ vi.mocked(f.api.testStatus).mockImplementationOnce(async (...args) => ({
+  ...await readStatus(...args),stage:"failed",cleanup:"confirmed",
+ }));
+ const preview = c.test(document.createElement("video"));
+ await started;
+ const staleTest = c.view.test!;
+ if(action==="cancel") {
+  expect(await c.cancel()).toBe(true);
+ } else {
+  await c.cancelTest();
+  await c.test(document.createElement("video"));
+  expect(c.view.draft?.state).toBe("tested");
+ }
+ const currentDraft = c.view.draft;
+ const currentPhase = c.view.phase;
+ const currentRecord = f.storage.read(caps);
+ finish({...ready,test:staleTest});
+ await preview;
+ expect(c.view.draft).toEqual(currentDraft);
+ expect(c.view.phase).toBe(currentPhase);
+ expect(f.storage.read(caps)).toEqual(currentRecord);
 });
 it("reload after a lost unsaved draft adopts the new epoch and requires explicit re-entry",async()=>{
  const f=fixture(),c=f.build();await c.init();await c.submit(input);

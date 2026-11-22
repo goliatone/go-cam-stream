@@ -65,7 +65,9 @@ type Service struct {
 type serviceSource struct {
 	transient                       CameraID
 	retired                         atomic.Bool
-	gate                            chan struct{} // serializes backend operations for this source only
+	parked                          bool           // verified idle definition retained for credential testing
+	slotLender                      *serviceSource // parked definition whose slot this probe uses
+	gate                            chan struct{}  // serializes backend operations for this source only
 	key                             SourceKey
 	device                          PhysicalCameraID
 	kind                            SourceKind
@@ -211,7 +213,7 @@ func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, can
 	if existing != nil && ((transient && existing.transient != camera) || (!transient && existing.transient != "")) {
 		return nil, NewError(CodeConflict, nil)
 	}
-	src, err := s.sourceDefinition(spec)
+	src, err := s.sourceDefinition(spec, transient)
 	if err != nil {
 		return nil, err
 	}
@@ -230,29 +232,54 @@ func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, can
 	v := &serviceSession{source: src, camera: camera, stream: stream, cancel: cancel, reserved: true, pending: true,
 		state: SessionState{ID: id, SourceKey: spec.Key, State: StateConnecting, Resources: PresenceUnknown}}
 	s.sessions[id], src.live[id] = v, v
+	src.parked = false
 	s.active++
 	s.devices[src.device] = src.key
 	return v, nil
 }
 
 // Caller holds mu. The backend checks opaque concrete definitions in EnsureStream.
-func (s *Service) sourceDefinition(spec StreamSpec) (*serviceSource, error) {
+func (s *Service) sourceDefinition(spec StreamSpec, transient bool) (*serviceSource, error) {
 	src := s.sources[spec.Key]
 	if src != nil {
 		if !sameSource(src, spec) {
 			return nil, NewError(CodeConflict, nil)
 		}
+		if src.parked {
+			for _, other := range s.sources {
+				if other.slotLender == src {
+					return nil, NewError(CodeCameraBusy, nil)
+				}
+			}
+		}
 		return src, nil
 	}
+	usedSlots := len(s.sources)
+	var lender *serviceSource
+	anotherProbe := false
 	for _, other := range s.sources {
-		if other.device == spec.PhysicalCameraID && other.constraints != spec.Constraints {
+		if parked := other.slotLender; parked != nil && s.sources[parked.key] == parked {
+			usedSlots--
+		}
+		if other.device != spec.PhysicalCameraID {
+			continue
+		}
+		if other.constraints != spec.Constraints {
 			return nil, NewError(CodeConflict, nil)
 		}
+		if other.parked {
+			lender = other
+		}
+		anotherProbe = anotherProbe || other.transient != ""
 	}
-	if len(s.sources) >= s.options.MaxSources {
+	// The parked definition and its probe share one slot until retirement.
+	if !transient || anotherProbe {
+		lender = nil
+	}
+	if usedSlots >= s.options.MaxSources && lender == nil {
 		return nil, NewError(CodeCapacityExceeded, nil)
 	}
-	src = &serviceSource{key: spec.Key, device: spec.PhysicalCameraID, kind: spec.Source.Kind(), capabilities: spec.Capabilities, constraints: spec.Constraints, gate: make(chan struct{}, 1), live: make(map[SessionID]*serviceSession)}
+	src = &serviceSource{key: spec.Key, device: spec.PhysicalCameraID, kind: spec.Source.Kind(), capabilities: spec.Capabilities, constraints: spec.Constraints, gate: make(chan struct{}, 1), live: make(map[SessionID]*serviceSession), slotLender: lender}
 	s.sources[spec.Key] = src
 	return src, nil
 }

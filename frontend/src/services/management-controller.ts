@@ -19,6 +19,7 @@ export class ManagementController {
     readonly changed:()=>void, readonly refresh:(minimum?:CatalogRevision)=>Promise<CatalogRevision>,
     readonly previewFactory:(video:HTMLVideoElement)=>Preview=video=>new BrowserPreview(video)) {}
   #show(change:Partial<ManagementView>) { this.view={...this.view,...change};if(!this.#disposed)this.changed(); }
+  #remember(record:RecoveryRecord) { this.storage.write(record);this.#record=record; }
   async init() {
     try {
       this.capabilities=await this.api.capabilities();this.storage.check();
@@ -45,13 +46,17 @@ export class ManagementController {
     if(this.view.unresolved||this.#mutating)throw new ManagementFailure("operation_in_progress");
     const d=this.view.draft;
     const record:RecoveryRecord={scope:this.capabilities.recovery_scope,epoch:this.capabilities.runtime_epoch,key:operationKey(),kind,expires:Date.now()+20*60*1000,
-      ...(d?{draft:d.id,candidate:d.candidate_id,revision:d.revision}:{}),...extra};
-    this.storage.write(record);this.#previous=this.#record;this.#rejected=false;this.#record=record;this.#mutating=true;
+      ...(d?{draft:d.id,candidate:d.candidate_id,revision:d.revision}:{}),...(d?.credential_update?{credentialUpdate:true}:{}),...extra};
+    const previous=this.#record;
+    this.#remember(record);this.#previous=previous;this.#rejected=false;this.#mutating=true;
     this.#show({busy:true,unresolved:true,error:undefined,duplicateCamera:undefined,canAbandon:false,canRetrySave:false});
     return {operation_key:record.key,runtime_epoch:record.epoch};
   }
   #rememberDraft(draft:DraftReview) {
-    if(this.#record) {this.#record={...this.#record,draft:draft.id,candidate:draft.candidate_id,revision:draft.revision,expires:Date.parse(draft.expires_at)+5*60*1000};this.storage.write(this.#record)}
+    if(this.#record) {
+      this.#remember({...this.#record,draft:draft.id,candidate:draft.candidate_id,revision:draft.revision,
+        expires:Date.parse(draft.expires_at)+5*60*1000,...(draft.credential_update?{credentialUpdate:true}:{})});
+    }
     this.#show({draft,test:draft.test,phase:draft.state==="canceled"?"canceled":"review",busy:false,unresolved:false,error:undefined,duplicateCamera:undefined});
   }
   async #failed(error:unknown) {
@@ -81,7 +86,7 @@ export class ManagementController {
     const cameraID = draft?.candidate_id ?? this.view.credentialTarget?.id;
     if (!cameraID) return;
     try {
-      const mutation = this.#begin(draft ? "patch" : "create");
+      const mutation = this.#begin(draft ? "patch" : "create", {credentialUpdate:true});
       const result = draft
         ? await this.api.patch(draft.id, { ...mutation, expected_revision: draft.revision, credentials })
         : await this.api.credentialDraft({ ...mutation, camera_id: cameraID, credentials });
@@ -119,6 +124,10 @@ export class ManagementController {
   }
   async #saved(saved:SaveCameraResponse) {
     this.#show({saved,phase:"saved",busy:false,unresolved:false,error:undefined,canRetrySave:false,canAbandon:false});
+    const record=this.#record;
+    if(saved.credentials_updated&&record&&!record.credentialUpdate) {
+      try{this.#remember({...record,credentialUpdate:true})}catch(error){this.#error(error)}
+    }
     // A list failure cannot undo a confirmed durable Save. Watch waits for its row.
     try{await this.refresh(saved.catalog_revision)}catch{this.#show({error:"server_unavailable"})}
   }
@@ -126,14 +135,14 @@ export class ManagementController {
     this.capabilities=await this.api.capabilities();this.storage.clear();this.#record=undefined;this.#show({draft:undefined,test:undefined,unresolved:false,phase:"editing"});
   }
   async recover() {
-    if(this.#mutating)return;
+    if(this.#mutating||this.view.busy)return;
     const r=this.#record;if(!r)return;
-    this.#show({phase:"recovering",busy:true,unresolved:true});
+    this.#show({phase:"recovering",busy:true,unresolved:true,canAbandon:false,canRetrySave:false});
     try {
       const until=Date.now()+20000;
       let op:OperationResult;
       for(;;){
-        op=await this.api.operation(r.key,r.epoch,r.candidate);
+        op=await this.api.operation(r.key,r.epoch,r.candidate,r.kind,r.kind==="save"?r.draft:undefined);
         if(op.state!=="processing"&&op.state!=="outcome_unknown")break;
         if(Date.now()>=until){this.#show({busy:false,error:op.error?.code??"operation_in_progress"});return;}
         await delay(500);if(this.#disposed)return;
@@ -146,15 +155,32 @@ export class ManagementController {
       }
       if(op.state==="not_committed") {
         const failure={error:op.error?.code,duplicateCamera:duplicateCameraID(op.error?.code,op.error?.camera_id)};
-        this.#show({unresolved:false,busy:false,...failure,phase:"review"});
-        if(r.draft)try{this.#rememberDraft(await this.api.draft(r.draft));this.#show(failure)}catch(error){if(["draft_lost","draft_expired"].includes(managementCode(error)))await this.#lostDraft();this.#error(error)}
+        if(!r.draft) {
+          this.#show({unresolved:false,busy:false,...failure,phase:"review"});
+          return;
+        }
+        try {
+          this.#rememberDraft(await this.api.draft(r.draft));
+          this.#show(failure);
+        }catch(error){
+          if(["draft_lost","draft_expired"].includes(managementCode(error)))await this.#lostDraft();
+          this.#show({unresolved:false,phase:this.view.draft?"review":"editing"});
+          this.#error(error);
+        }
         return;
       }
       if(op.state==="not_found"&&this.#rejected) {
         const previous=this.#previous;
-        if(previous){this.storage.write(previous);this.#record=previous;if(previous.draft)this.#rememberDraft(await this.api.draft(previous.draft));}
+        if(previous){this.#remember(previous);if(previous.draft)this.#rememberDraft(await this.api.draft(previous.draft));}
         else{this.storage.clear();this.#record=undefined;}
         this.#show({busy:false,unresolved:false,phase:this.view.draft?"review":"editing"});return;
+      }
+      if (r.kind === "save" && (op.state === "expired" || op.state === "not_found" && Date.now() >= r.expires)) {
+        this.storage.clear();
+        this.#record = undefined;
+        this.#show({ phase: "canceled", draft: undefined, test: undefined, busy: false, unresolved: false,
+          error: "receipt_expired", canRetrySave: false, canAbandon: false });
+        return;
       }
       // Unknown/missing records never manufacture a new save or recreate secret input.
       this.#show({busy:false,error:op.state==="expired"?"receipt_expired":"operation_in_progress",canAbandon:r.kind!=="save",canRetrySave:op.state==="not_found"&&r.kind==="save"&&!!r.draft&&!!r.catalog&&!!r.revision&&r.epoch===this.capabilities?.runtime_epoch&&Date.now()<r.expires});
@@ -178,14 +204,18 @@ export class ManagementController {
       const m=this.#begin("test");operation=m.operation_key;
       const result=await this.api.test(d.id,{...m,expected_revision:d.revision,offer});
       this.#mutating=false;
-      if(this.#record){this.#record={...this.#record,test:result.id};this.storage.write(this.#record)}
+      if(this.#record)this.#remember({...this.#record,test:result.id});
       this.#show({test:result,unresolved:false,busy:false});
       if(generation!==this.#generation){await this.cancelTest();return;}
       if(result.answer)await preview.answer(result.answer);
       const until=Math.min(Date.parse(result.expires_at),Date.now()+21000);
       while(generation===this.#generation&&!this.#disposed) {
         const status=await this.api.testStatus(d.id,result.id);if(generation!==this.#generation)return;this.#show({test:status});
-        if(["failed","canceled","passed"].includes(status.stage)&&status.cleanup==="confirmed") {this.#rememberDraft(await this.api.draft(d.id));return;}
+        if(["failed","canceled","passed"].includes(status.stage)&&status.cleanup==="confirmed") {
+          const draft=await this.api.draft(d.id);
+          if(generation===this.#generation&&this.#record?.key===operation)this.#rememberDraft(draft);
+          return;
+        }
         if(Date.now()>=until) {await this.cancelTest();return;}
         const evidence=await preview.evidence();
         if(generation!==this.#generation)return;
@@ -199,7 +229,7 @@ export class ManagementController {
       }
     }catch(error){if(operation?this.#record?.key===operation:generation===this.#generation)await this.#failed(error)}finally{
       if(operation&&this.#record?.key===operation)this.#mutating=false;
-      preview?.close();if(this.#preview===preview){this.#preview=undefined;this.#show({busy:false})}
+      preview?.close();if(this.#preview===preview){this.#preview=undefined;if(generation===this.#generation)this.#show({busy:false})}
     }
   }
   async cancelTest() {

@@ -8,7 +8,8 @@ element fullscreen, and stays on when cameras switch; picture in picture uses
 detected browser APIs. See [browser behavior](../docs/browser-client-compatibility.md).
 
 The page puts the video first. A 56 px top bar names the camera, and the camera
-rail collapses to icons, starting that way below 1024 px. The 16:9 stage takes
+rail collapses to icons, starting that way below 1024 px until someone opens or
+collapses it; the browser then keeps that choice in local storage. The 16:9 stage takes
 the largest size that fits the window, so desktop views do not scroll. On a phone
 in portrait the player stays pinned while the stream details and camera list
 scroll beneath it. On a touch screen in landscape it fills the screen, and its
@@ -122,6 +123,14 @@ the stage and clear of its tooltip, the skip link's focus ring on its own margin
 and the stream select's text at 16 px, below which iOS Safari zooms in. When a new
 colour pair appears, add it to that test; a new page token needs a dark value too.
 
+Every button takes a role class: `primary-button`, `secondary-button`,
+`ghost-button` or `danger-button` for text, `icon-button` for an icon on the page
+and `control-button` on the video. Each role is drawn for the page. Inside
+`.video-stage`, primary and secondary take the stage's colours, and the style test
+checks that those rules win the cascade there in every state. Camera management's
+styles live in the same stylesheet, and its tests fail when a management,
+reconnect or rail button has no role.
+
 ## Preview snapshots
 
 `npm run snapshots` captures every state of `/preview.html` at a git ref and in the
@@ -155,6 +164,7 @@ To keep runs repeatable:
 
 - the preview's clock stands still, and timers of a second or more never fire;
 - the time zone is UTC and the locale en-US;
+- each view starts with the page's local storage cleared, as on a first visit;
 - animations and transitions are off, and reduced motion is set;
 - colours are sRGB, and one device pixel is one CSS pixel;
 - after the page loads, after the state is chosen and after each click, the

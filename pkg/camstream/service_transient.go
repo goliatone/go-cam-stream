@@ -6,17 +6,40 @@ import "context"
 // are closed and the backend confirms absence. Unknown cleanup retains the source
 // and admission block. Ordinary sources and aliases cannot use this operation.
 func (s *Service) RetireTransientSource(ctx context.Context, camera Camera, stream StreamID) error {
-	return s.retireInactiveSource(ctx, camera, stream, true)
+	return s.retireInactiveSource(ctx, camera, stream, true, false)
 }
 
 // RetireInactiveSource releases an old definition during an authorized host
 // configuration change. The host must fence creation for all aliases of it.
 // Existing viewers are never closed by this operation.
 func (s *Service) RetireInactiveSource(ctx context.Context, camera Camera, stream StreamID) error {
-	return s.retireInactiveSource(ctx, camera, stream, false)
+	return s.retireInactiveSource(ctx, camera, stream, false, false)
 }
 
-func (s *Service) retireInactiveSource(ctx context.Context, camera Camera, stream StreamID, transient bool) error {
+// PrepareInactiveSource frees an idle source's backend resources for a
+// replacement probe while keeping the saved definition and fault latch.
+func (s *Service) PrepareInactiveSource(ctx context.Context, camera Camera, stream StreamID) error {
+	return s.retireInactiveSource(ctx, camera, stream, false, true)
+}
+
+// DiscardPreparedSource forgets an already prepared definition during durable
+// replacement. The host still owns the admission fence for all its aliases.
+func (s *Service) DiscardPreparedSource(key SourceKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.sources[key]
+	if src == nil {
+		return nil
+	}
+	if !src.parked || len(src.live) != 0 {
+		return NewError(CodeConflict, nil)
+	}
+	src.retired.Store(true)
+	delete(s.sources, key)
+	return nil
+}
+
+func (s *Service) retireInactiveSource(ctx context.Context, camera Camera, stream StreamID, transient, preserve bool) error {
 	spec, err := s.resolve(ctx, camera, stream)
 	if err != nil {
 		return err
@@ -46,6 +69,10 @@ func (s *Service) retireInactiveSource(ctx context.Context, camera Camera, strea
 			return NewError(CodeCameraBusy, nil)
 		}
 		return NewError(CodeCleanupIncomplete, nil)
+	}
+	if preserve && src.parked {
+		s.mu.Unlock()
+		return nil
 	}
 	src.resetting = true
 	s.mu.Unlock()
@@ -90,14 +117,21 @@ func (s *Service) retireInactiveSource(ctx context.Context, camera Camera, strea
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.devices[src.device] == src.key {
+		delete(s.devices, src.device)
+	}
+	if preserve {
+		src.parked = true
+		src.state = idleState(src.key)
+		src.state.Fault = src.fault
+		src.unknown, src.resetFailed = false, false
+		return nil
+	}
 	src.retired.Store(true)
 	if transient {
 		for _, id := range ids {
 			delete(s.sessions, id)
 		}
-	}
-	if s.devices[src.device] == src.key {
-		delete(s.devices, src.device)
 	}
 	delete(s.sources, src.key)
 	return nil

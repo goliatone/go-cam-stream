@@ -12,7 +12,7 @@ function lazyDialog<P extends object>(load: () => Promise<{default: ComponentTyp
       void load().then(module => { if (active) setContent(() => module.default); }, () => { if (active) setFailed(true); });
       return () => { active = false; };
     }, []);
-    return Content ? createElement(Content, props) : <div role="status">{failed ? "Could not load. Close and try again." : "Loading…"}<button type="button" onClick={() => close(props)}>Close</button></div>;
+    return Content ? createElement(Content, props) : <div class="dialog-pending" role="status">{failed ? "Could not load. Close and try again." : "Loading…"}<button type="button" class="secondary-button" onClick={() => close(props)}>Close</button></div>;
   };
 }
 export const LazyManagement = lazyDialog<ManagementDialogProps>(() => import("./camera-management"), props => props.actions.close());

@@ -66,9 +66,18 @@ it("disables mutations when storage or an operation outcome is unresolved", () =
  rerender(<CameraManagementDialog view={{...view,phase:"recovering",draft,unresolved:true,error:"save_outcome_unknown"}} actions={a}/>);
  fireEvent.click(screen.getByRole("button",{name:"Check status"}));expect(a.recover).toHaveBeenCalledOnce();expect((screen.getByRole("button",{name:"Save Camera"}) as HTMLButtonElement).disabled).toBe(true);
 });
+it("offers a terminal message and close for an expired credential save", () => {
+ const a=actions();
+ render(<CameraManagementDialog view={{...view,phase:"canceled",error:"receipt_expired"}} actions={a}/>);
+ expect(screen.getByRole("alert").textContent).toMatch(/save result expired/);
+ expect(screen.queryByRole("button",{name:"Check status"})).toBeNull();
+ expect(screen.queryByRole("button",{name:"Retry original Save"})).toBeNull();
+ fireEvent.click(screen.getByRole("button",{name:"Close"}));
+ expect(a.close).toHaveBeenCalledOnce();
+});
 it("clears file inputs after import and explains missing credentials", async () => {
  const user=userEvent.setup();const a=actions();render(<CameraManagementDialog view={view} actions={a}/>);
- await user.click(screen.getByRole("button",{name:"Import Mac files"}));
+ await user.click(screen.getByRole("radio",{name:"Import Mac files"}));
  const file=new File(["camera data"],"camstream-camera.yaml",{type:"text/yaml"});
  await user.upload(screen.getByLabelText("Connection YAML"),file);
  expect((screen.getByLabelText("Connection YAML") as HTMLInputElement).files?.length).toBe(1);
@@ -82,4 +91,53 @@ it("Watch is explicit and source reconnect requires impact confirmation", async 
  fireEvent.click(screen.getByRole("button",{name:"Reconnect Camera"}));await waitFor(()=>expect(screen.getByRole("dialog")).toBeTruthy());
  expect(confirm).not.toHaveBeenCalled();expect(screen.getByText(/This stops all viewers/)).toBeTruthy();
  fireEvent.click(screen.getAllByRole("button",{name:"Reconnect Camera"})[1]!);expect(confirm).toHaveBeenCalledOnce();
+});
+// Each button takes a role class from styles.css, so none falls back to the
+// browser's own look.
+const ROLE = /(?:^|\s)(?:(?:primary|secondary|ghost|danger|icon|control)-button|add-camera|overlay-cameras)(?:\s|$)/;
+const unstyled = () => [...document.querySelectorAll("button")].filter(b => !ROLE.test(b.className)).map(b => b.textContent || b.getAttribute("aria-label"));
+const running = {id:"test",attempt_key:"attempt",draft_revision:1,stage:"source_media" as const,expires_at:draft.expires_at,source_media_observed:true,browser_frames_reported:false,cleanup:"pending" as const};
+const tested = {...draft,state:"tested" as const,test:{...running,stage:"passed" as const,browser_frames_reported:true,cleanup:"confirmed" as const}};
+const saved = {camera_id:"new",catalog_revision:{runtime_epoch:"epoch",generation:2}};
+it("draws every management, recovery and rail button in a role", async () => {
+ const user=userEvent.setup();
+ const views:ManagementView[]=[view,{...view,phase:"review",draft},{...view,phase:"testing",draft:{...draft,state:"testing"},test:running},{...view,phase:"review",draft:tested,test:tested.test},
+  {...view,phase:"recovering",draft,unresolved:true,error:"save_outcome_unknown",canRetrySave:true,canAbandon:true},{...view,phase:"saved",saved},{...view,phase:"canceled"},
+  {...view,credentialTarget:{id:"room1",name:"Room 1"},error:"duplicate_camera",duplicateCamera:"room1"}];
+ for(const v of views){const {unmount}=render(<CameraManagementDialog view={v} actions={{...actions(),openSettings:vi.fn(),abandon:vi.fn(),retrySave:vi.fn()}}/>);expect(unstyled(),v.phase).toEqual([]);unmount();}
+ render(<CameraManagementDialog view={view} actions={actions()}/>);
+ await user.click(screen.getByRole("radio",{name:"Import Mac files"}));expect(unstyled()).toEqual([]);cleanup();
+ const recovery=<CameraRecovery busy={false} unresolved={false} disabled={false} onConfirm={vi.fn()} onCheck={vi.fn()}/>;
+ const cameras=[{id:"room1",name:"Room 1",availability:"idle" as const,can_update_credentials:true,streams:[{id:"default",name:"Default",capabilities:{video:true,audio:false}}]}];
+ render(<App catalog={{cameras}} catalogStale refreshCatalog={vi.fn(async()=>{})} onAddCamera={vi.fn()} onCameraSettings={vi.fn()} recoveryControl={recovery}/>);
+ fireEvent.click(screen.getByRole("button",{name:"Reconnect Camera"}));await waitFor(()=>expect(screen.getByRole("dialog",{name:"Reconnect this camera?"})).toBeTruthy());
+ expect(unstyled()).toEqual([]);
+});
+it("closes from its icon and offers Cancel draft only with a draft and Close only at the end", () => {
+ const a=actions();const {rerender}=render(<CameraManagementDialog view={view} actions={a}/>);
+ const footer=()=>[...document.querySelectorAll(".management-dialog .dialog-inner > .dialog-actions button")].map(b=>b.textContent);
+ expect(screen.getByRole("button",{name:"Close Add Camera"}).querySelector("svg")).toBeTruthy();expect(footer()).toEqual([]);
+ rerender(<CameraManagementDialog view={{...view,phase:"review",draft}} actions={a}/>);expect(footer()).toEqual(["Save Camera","Cancel draft"]);
+ fireEvent.click(screen.getByRole("button",{name:"Cancel draft"}));expect(a.cancel).toHaveBeenCalledOnce();
+ rerender(<CameraManagementDialog view={{...view,phase:"recovering",draft,unresolved:true,error:"save_outcome_unknown",canAbandon:true}} actions={a}/>);expect(footer()).toEqual(["Save Camera","Check status","Abandon unsaved draft"]);
+ rerender(<CameraManagementDialog view={{...view,phase:"canceled"}} actions={a}/>);expect(footer()).toEqual(["Close"]);
+ rerender(<CameraManagementDialog view={{...view,phase:"saved",saved}} actions={a}/>);expect(footer()).toEqual(["Watch Camera","Close"]);
+ fireEvent.click(screen.getByRole("button",{name:"Close Add Camera"}));expect(a.close).toHaveBeenCalledOnce();
+});
+it("links each hint and file error to its field", async () => {
+ const user=userEvent.setup();const {unmount}=render(<CameraManagementDialog view={view} actions={actions()}/>);
+ const notes=(label:string)=>(screen.getByLabelText(label).getAttribute("aria-describedby")??"").split(" ").map(id=>document.getElementById(id)?.textContent);
+ expect(notes("RTSP address")).toEqual([expect.stringMatching(/^Localhost means this server/)]);
+ expect(notes("Authentication")).toEqual([expect.stringMatching(/^For Camstream Camera on Mac/)]);
+ await user.click(screen.getByRole("radio",{name:"Import Mac files"}));
+ expect(notes("Connection YAML")).toEqual([expect.stringMatching(/^YAML up to 32 KiB/)]);
+ await user.upload(screen.getByLabelText("Connection YAML"),new File(["x".repeat(40000)],"large.yaml"));
+ fireEvent.submit(screen.getByRole("button",{name:"Import and review"}).closest("form")!);
+ expect(notes("Credentials file (optional)")).toEqual([expect.stringMatching(/^YAML up to/),"Choose files within these size limits."]);
+ expect(screen.getByLabelText("Connection YAML").getAttribute("aria-invalid")).toBe("true");unmount();
+ render(<CameraManagementDialog view={{...view,phase:"review",draft}} actions={actions()}/>);
+ await user.click(screen.getByRole("button",{name:"Edit details"}));
+ for(const label of ["Username","Password"])expect(notes(label)).toEqual(["Leave both fields blank to keep the draft’s credentials."]);cleanup();
+ render(<CameraManagementDialog view={{...view,credentialTarget:{id:"room1",name:"Room 1"}}} actions={actions()}/>);
+ expect(notes("Username")).toEqual(["Leave blank to keep the saved username."]);
 });

@@ -1,4 +1,4 @@
-import type { Capabilities, CompleteTestRequest, CreateDraftRequest, CreateTestRequest, CredentialDraftRequest, DraftReview, ManagementErrorCode, Mutation, OperationResult, PatchDraftRequest, ReconnectResponse, SaveCameraRequest, SaveCameraResponse, StreamRef, TestResult } from "./contracts";
+import type { Capabilities, CompleteTestRequest, CreateDraftRequest, CreateTestRequest, CredentialDraftRequest, DraftReview, ManagementErrorCode, Mutation, OperationKind, OperationResult, PatchDraftRequest, ReconnectResponse, SaveCameraRequest, SaveCameraResponse, StreamRef, TestResult } from "./contracts";
 import { CSRF_HEADER, CSRF_PATH } from "./contracts";
 import { errorCopy } from "./copy";
 import { managementCopy } from "./management-copy";
@@ -34,7 +34,7 @@ function operation(value: unknown): OperationResult {
 export interface ManagementAPI {
   capabilities(): Promise<Capabilities>;
   draft(id: string): Promise<DraftReview>;
-  operation(key: string, epoch: string, candidate?: string, recovery?: boolean): Promise<OperationResult>;
+  operation(key: string, epoch: string, candidate?: string, kind?: OperationKind, draft?: string): Promise<OperationResult>;
   create(request: CreateDraftRequest): Promise<DraftReview>;
   credentialDraft(request: CredentialDraftRequest): Promise<DraftReview>;
   import(request: Mutation, yaml: File, env?: File): Promise<DraftReview>;
@@ -81,10 +81,11 @@ export class ManagementClient implements ManagementAPI {
   #draft(id: string) { return `/api/camera-drafts/${encodeURIComponent(id)}`; }
   async capabilities() { return capabilities(await this.#request("/api/capabilities")); }
   async draft(id: string) { return draft(await this.#request(this.#draft(id))); }
-  async operation(key:string,epoch:string,candidate?:string,recovery=false) {
+  async operation(key:string,epoch:string,candidate?:string,kind?:OperationKind,draft?:string) {
     const params = new URLSearchParams({runtime_epoch:epoch});
     if (candidate) params.set("candidate_id",candidate);
-    if (recovery) params.set("kind","recovery");
+    if (draft) params.set("draft_id",draft);
+    if (kind) params.set("kind",kind);
     return operation(await this.#request(`/api/camera-operations/${encodeURIComponent(key)}?${params}`));
   }
   async create(request:CreateDraftRequest) { return draft(await this.#request("/api/camera-drafts","POST",request)); }

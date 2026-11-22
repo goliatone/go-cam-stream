@@ -172,10 +172,22 @@ function pairs(theme: Tokens): Pair[] {
     // The only thing a failed camera shows in the collapsed rail.
     ["Failed camera icon", "--icon-dim", token("--fill"), GRAPHIC],
     ["Current camera icon", "--accent", token("--accent-tint"), GRAPHIC],
-    ["Primary button", "--on-primary", token("--primary"), TEXT],
-    ["Primary button on hover", "--on-primary", token("--primary-hover"), TEXT],
-    ["Disabled primary button", "--on-disabled", token("--stage-hover"), TEXT],
-    ["Secondary button on hover", "--on-stage", token("--stage-hover"), TEXT],
+    // Buttons and fields on the page
+    ["Primary button", "--on-accent", token("--accent"), TEXT],
+    ["Primary button on hover", "--on-accent", token("--accent-hover"), TEXT],
+    ["Secondary or ghost button on hover", "--text", token("--fill-strong"), TEXT],
+    ["Danger button and field error", "--danger", token("--surface"), TEXT],
+    ["Danger button on hover", "--danger", token("--danger-soft"), TEXT],
+    ["Disabled button, field or choice", "--text-disabled", token("--fill"), TEXT],
+    ["Add Camera", "--accent", token("--surface"), TEXT],
+    ["Add Camera on hover", "--accent", token("--fill-soft"), TEXT],
+    ["Chosen segment", "--accent", token("--accent-tint"), TEXT],
+    ["Refresh icon on hover", "--warn", token("--fill-strong"), GRAPHIC],
+    // Buttons on the stage
+    ["Primary button on the stage", "--on-primary", token("--primary"), TEXT],
+    ["Primary button on hover on the stage", "--on-primary", token("--primary-hover"), TEXT],
+    ["Disabled primary button on the stage", "--on-disabled", token("--stage-hover"), TEXT],
+    ["Secondary button on hover on the stage", "--on-stage", token("--stage-hover"), TEXT],
     ["Stage text", "--on-stage", token("--stage"), TEXT],
     ["Muted stage text", "--on-stage-muted", token("--stage"), TEXT],
     ["Status badge", "--on-stage-soft", on(WHITE_FRAME, "--glass"), TEXT],
@@ -186,7 +198,7 @@ function pairs(theme: Tokens): Pair[] {
     ["Message title", "--on-stage", on(WHITE_FRAME, "--scrim-edge"), TEXT],
     ["Message copy", "--on-stage-muted", on(WHITE_FRAME, "--scrim-edge"), TEXT],
     [
-      "Secondary button",
+      "Secondary button on the stage",
       "--on-stage",
       on(WHITE_FRAME, "--scrim-edge", "--glass-weak"),
       TEXT,
@@ -226,8 +238,12 @@ const BACKINGS: [selector: string, property: string, value: string][] = [
   [".stage-badge", "background", "var(--glass)"],
   [".overlay-cameras", "background", "var(--glass)"],
   [".player-notice", "background", "var(--scrim)"],
-  [".secondary-button", "background", "var(--glass-weak)"],
-  [".secondary-button:hover", "background", "var(--stage-hover)"],
+  [".video-stage .secondary-button", "background", "var(--glass-weak)"],
+  [
+    ".video-stage .secondary-button:hover:not(:disabled)",
+    "background",
+    "var(--stage-hover)",
+  ],
   [".player-hint", "background", "var(--tip)"],
   [".control-button::after", "background", "var(--tip)"],
   [
@@ -254,10 +270,17 @@ const SETTERS: [styles: RegExp, property: RegExp, selectors: string[]][] = [
   [/\.stage-badge(?![\w-])/, BACKGROUND, [".stage-badge"]],
   [/\.overlay-cameras(?![\w-])/, BACKGROUND, [".overlay-cameras"]],
   [/\.player-notice(?![\w-])/, BACKGROUND, [".player-notice"]],
+  // The page's rules come first; on the stage, `.video-stage` outranks each.
   [
     /\.secondary-button(?![\w-])/,
     BACKGROUND,
-    [".secondary-button", ".secondary-button:hover"],
+    [
+      ".secondary-button",
+      ":is(.secondary-button, .ghost-button):hover:not(:disabled)",
+      ":is(.primary-button, .secondary-button, .danger-button):disabled",
+      ".video-stage .secondary-button",
+      ".video-stage .secondary-button:hover:not(:disabled)",
+    ],
   ],
   [/\.player-hint(?![\w-])/, BACKGROUND, [".player-hint"]],
   [/\.control-button(?![\w-]).*::after$/, BACKGROUND, [".control-button::after"]],
@@ -270,6 +293,26 @@ const SETTERS: [styles: RegExp, property: RegExp, selectors: string[]][] = [
   [/:focus/, /^box-shadow$/, [".video-stage :focus-visible"]],
   [/\.skip-link(?![\w-])/, /^box-shadow$/, [".skip-link"]],
 ];
+
+/** [ids, classes, types] of one selector. `:is()` and `:not()` count as their
+    most specific argument, which is all this stylesheet's selectors need. */
+function specificity(selector: string): number[] {
+  const count = [0, 0, 0];
+  const rest = selector.replace(/:(?:is|not)\(([^()]*)\)/g, (_, inner: string) => {
+    const best = splitTop(inner, /,/)
+      .map(specificity)
+      .reduce((a, b) => (outranks(a, b) ? a : b));
+    best.forEach((n, i) => (count[i]! += n));
+    return "";
+  });
+  count[0]! += (rest.match(/#[\w-]+/g) ?? []).length;
+  count[1]! += (rest.match(/\.[\w-]+|\[[^\]]*\]|(?<!:):[\w-]+/g) ?? []).length;
+  count[2]! += (rest.match(/(?:^|[\s>+~])[a-z][\w-]*|::[\w-]+/gi) ?? []).length;
+  return count;
+}
+/** Whether `a` wins over `b` when `a` comes later in the source. */
+const outranks = (a: number[], b: number[]) =>
+  (a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!) >= 0;
 
 /** Properties whose values can paint a colour. */
 const PAINTS =
@@ -419,6 +462,39 @@ describe("viewer styles", () => {
           .map((r) => r.selector),
         `${styles} ${property}`,
       ).toEqual(selectors);
+  });
+
+  // The page's button rules apply on the stage too, so the stage's rules must
+  // win the cascade there, in each state, for every colour they set.
+  it("give primary and secondary buttons on the stage its colours in every state", () => {
+    for (const role of [".primary-button", ".secondary-button"])
+      for (const hover of [false, true])
+        for (const disabled of [false, true])
+          for (const property of ["background", "color", "border-color"]) {
+            let winner: { selector: string; weight: number[] } | undefined;
+            for (const r of rules) {
+              if (r.at) continue;
+              const sets = r.declarations.some(
+                ([name]) =>
+                  name === property || (property === "border-color" && name === "border"),
+              );
+              if (!sets) continue;
+              for (const selector of splitTop(r.selector, /,/)) {
+                const parts = splitTop(selector, /[\s>+~]/);
+                const subject = parts.at(-1)!;
+                const above = parts.slice(0, -1).join(" ");
+                if (!subject.includes(role) || (above && above !== ".video-stage")) continue;
+                const enabledOnly = subject.includes(":not(:disabled)");
+                if (subject.includes(":hover") && !hover) continue;
+                if (enabledOnly && disabled) continue;
+                if (!enabledOnly && subject.includes(":disabled") && !disabled) continue;
+                const weight = specificity(selector);
+                if (!winner || outranks(weight, winner.weight)) winner = { selector, weight };
+              }
+            }
+            const state = `${role}${hover ? ":hover" : ""}${disabled ? ":disabled" : ""}`;
+            expect(winner?.selector, `${state} ${property}`).toMatch(/^\.video-stage /);
+          }
   });
 
   it("keep toolbar icons on the solid shade, and focus halos clear of edges and tooltips", () => {

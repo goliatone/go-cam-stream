@@ -14,3 +14,5 @@ export const MutedIcon = icon("muted");
 export const FullscreenIcon = icon("fullscreen");
 export const ExitFullscreenIcon = icon("exitfullscreen");
 export const PipIcon = icon("pip");
+export const PlusIcon = icon("plus");
+export const RefreshIcon = icon("refresh");

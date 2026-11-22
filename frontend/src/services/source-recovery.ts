@@ -29,7 +29,7 @@ export class SourceRecovery {
     try {
       const until=Date.now()+20000;
       for(;;) {
-        const op=await this.api.operation(r.key,r.epoch,undefined,true);
+        const op=await this.api.operation(r.key,r.epoch,undefined,"recovery");
         if(op.state==="succeeded"){await this.#success();return;}
         if(op.state==="not_committed"){this.unresolved=false;this.error=op.error?.code;this.storage.clear();this.#record=undefined;await this.refreshed();return;}
         if(op.state==="not_found"||op.state==="expired")throw new ManagementFailure("recovery_lost");

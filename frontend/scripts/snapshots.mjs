@@ -466,6 +466,9 @@ async function openPage(browser) {
     async load(url) {
       loading.clear();
       origin = new URL(url).origin;
+      // Each view starts as a first visit: the viewer keeps its rail choice in
+      // the origin's local storage.
+      await send("Storage.clearDataForOrigin", { origin, storageTypes: "local_storage" });
       let done;
       const loaded = new Promise((resolve) => loads.add((done = resolve)));
       try {

@@ -9,7 +9,7 @@ try{
  const catalog=await page.evaluate(()=>fetch('/api/cameras').then(r=>r.json()));
  if(!catalog.cameras.length)throw Error('Expected persisted camera catalog');
  const click=name=>page.getByRole('button',{name,exact:true}).click();
- const open=async()=>{await click('Add Camera');await click('Import Mac files');await page.getByLabel('Connection YAML').setInputFiles(yaml)};
+ const open=async()=>{await click('Add Camera');await page.getByRole('radio',{name:'Import Mac files',exact:true}).check();await page.getByLabel('Connection YAML').setInputFiles(yaml)};
  // Intercept the response, not the upload: request replay omits Chromium's files.
  const cdp=await page.context().newCDPSession(page);let responses=0,status;
  await cdp.send('Fetch.enable',{patterns:[{urlPattern:'*/api/camera-drafts/import',requestStage:'Response'}]});

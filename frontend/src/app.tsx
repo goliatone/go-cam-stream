@@ -16,6 +16,8 @@ import {
   CameraIcon,
   CloseIcon,
   KeyboardIcon,
+  PlusIcon,
+  RefreshIcon,
   SidebarIcon,
 } from "./components/icon";
 import { Player, type PlayerPresentation } from "./components/player";
@@ -53,15 +55,26 @@ export interface AppProps {
   recoveryControl?: ComponentChildren;
   management?: ManagementDialogProps | undefined;
   catalogStale?: boolean | undefined;
+  /** Asks for the camera list again; it rejects when the list stays stale. */
+  refreshCatalog?: (() => Promise<unknown>) | undefined;
   onSelect?: (selection: StreamRef | undefined) => void;
 }
 /** Status updates that stop for this long, while the page asks, warn. */
 const STALE_MS = 10000;
 const sameStream = (a: StreamRef, b: StreamRef) =>
   a.camera_id === b.camera_id && a.stream_id === b.stream_id;
-// Below 1024 px the rail starts as icons, leaving the width to the video.
+// Below 1024 px the rail starts as icons, leaving the width to the video,
+// until someone opens or collapses it; this device then keeps that choice.
 const narrow = () =>
   typeof matchMedia === "function" && matchMedia("(max-width: 1023px)").matches;
+const RAIL_KEY = "camstream.rail";
+function initialRail() {
+  try {
+    const saved = localStorage.getItem(RAIL_KEY);
+    if (saved) return saved === "open";
+  } catch {}
+  return !narrow();
+}
 
 
 export function App({
@@ -73,9 +86,10 @@ export function App({
   onSelect,
   onReload,
   onAddCamera, onCameraSettings, watchSelection, recoveryControl, management, catalogStale,
+  refreshCatalog,
 }: AppProps) {
   const [requested, setRequested] = useState(initialSelection);
-  const [railOpen, setRailOpen] = useState(() => !narrow());
+  const [railOpen, setRailOpen] = useState(initialRail);
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheet = useRef<HTMLDialogElement>(null);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -189,7 +203,12 @@ export function App({
             aria-controls="camera-rail"
             aria-expanded={railOpen}
             title={railOpen ? "Hide camera names" : "Show camera names"}
-            onClick={() => setRailOpen(!railOpen)}
+            onClick={() => {
+              setRailOpen(!railOpen);
+              try {
+                localStorage.setItem(RAIL_KEY, railOpen ? "collapsed" : "open");
+              } catch {}
+            }}
           >
             <SidebarIcon />
           </button>
@@ -221,7 +240,6 @@ export function App({
           <KeyboardIcon />
         </button>
       </header>
-      {catalogStale && <p class="catalog-stale" role="status">Camera list may be out of date.</p>}
       <main id="viewer" ref={viewerRoot} tabIndex={-1} data-player-root="">
         {error ? (
           <div class="catalog-message" role="alert">
@@ -252,6 +270,7 @@ export function App({
               to add cameras or give you access.
             </p>
             {onAddCamera && <button type="button" class="primary-button" onClick={onAddCamera}>Add Camera</button>}
+            {catalogStale && <StaleNotice refresh={refreshCatalog} />}
           </div>
         ) : camera && stream ? (
           <Player
@@ -275,7 +294,7 @@ export function App({
           <div class="stream-bar-inner">
             {recoveryControl}
             {camera.can_update_credentials && onCameraSettings &&
-              <button type="button" onClick={() => onCameraSettings(camera.id)}>Camera settings</button>}
+              <button type="button" class="secondary-button" onClick={() => onCameraSettings(camera.id)}>Camera settings</button>}
             <StreamDetails
               id="stream-select"
               camera={camera}
@@ -300,6 +319,7 @@ export function App({
             <h2 id="rail-title">Cameras</h2>
             {!loading && <span class="count">{cameras.length}</span>}
           </div>
+          {catalogStale && <StaleNotice refresh={refreshCatalog} titled={!railOpen} />}
           {loading ? (
             <div aria-hidden="true">
               {[0, 1, 2].map((row) => (
@@ -318,8 +338,19 @@ export function App({
               titles={!railOpen}
             />
           )}
-          {onAddCamera && <button type="button" class="add-camera" onClick={onAddCamera} aria-label="Add Camera">+ Add Camera</button>}
-          <p class="rail-note">Switching cameras changes only this page.</p>
+          {onAddCamera && (
+            <button
+              type="button"
+              class="add-camera"
+              title={railOpen ? undefined : "Add Camera"}
+              onClick={onAddCamera}
+            >
+              <span class="add-camera-icon">
+                <PlusIcon />
+              </span>
+              <span class="add-camera-label">Add Camera</span>
+            </button>
+          )}
         </nav>
       )}
       <dialog
@@ -359,12 +390,13 @@ export function App({
                 observingSince={observingSince}
                 onChange={chooseStream}
               />
-              {camera.can_update_credentials && onCameraSettings && <button type="button" onClick={() => {
+              {camera.can_update_credentials && onCameraSettings && <button type="button" class="secondary-button" onClick={() => {
                 hideCameras();
                 onCameraSettings(camera.id);
               }}>Camera settings</button>}
             </div>
           )}
+          {sheetOpen && catalogStale && <StaleNotice refresh={refreshCatalog} />}
           {sheetOpen && (
             <CameraLinks
               cameras={cameras}
@@ -376,6 +408,40 @@ export function App({
         </div>
       </dialog>
       {helpOpen && <LazyShortcuts onClose={() => { setHelpOpen(false); dialogClosed(); }} />}
+    </div>
+  );
+}
+
+// A failed refresh keeps the last list. The collapsed rail shows only the
+// refresh icon, so its tooltip names the problem.
+function StaleNotice({
+  refresh,
+  titled = false,
+}: {
+  refresh: (() => Promise<unknown>) | undefined;
+  titled?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div class="rail-notice">
+      <p role="status">Camera list may be out of date.</p>
+      {refresh && (
+        <button
+          type="button"
+          class="secondary-button"
+          title={titled ? "Camera list may be out of date. Refresh" : undefined}
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void refresh()
+              .catch(() => {})
+              .finally(() => setBusy(false));
+          }}
+        >
+          <RefreshIcon />
+          <span>{busy ? "Refreshing…" : "Refresh"}</span>
+        </button>
+      )}
     </div>
   );
 }

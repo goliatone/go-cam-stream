@@ -13,8 +13,10 @@ export interface RecoveryRecord {
   revision?: number;
   catalog?: CatalogRevision;
   ref?: StreamRef;
+  credentialUpdate?: true;
 }
 export const RECOVERY_STORAGE_KEY = "camstream.camera-operation.v1";
+export const CREDENTIAL_RECOVERY_KEY = RECOVERY_STORAGE_KEY+".credentials";
 const kinds = ["create","import","patch","cancel","test","complete","cancel_test","save","recovery"];
 const id = (value:unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 // Pick only permitted fields even if a caller passes an object with extra keys.
@@ -25,32 +27,53 @@ export function recoveryRecord(record: RecoveryRecord): RecoveryRecord {
     ...(record.ref?{ref:{camera_id:record.ref.camera_id,stream_id:record.ref.stream_id}}:{})};
 }
 export class RecoveryStorage {
-  constructor(readonly storage: Storage) {}
+  readonly #keys: [string] | [string, string];
+  constructor(readonly storage: Storage, key = RECOVERY_STORAGE_KEY) {
+    this.#keys=key===RECOVERY_STORAGE_KEY?[key,CREDENTIAL_RECOVERY_KEY]:[key];
+  }
   check() {
-    try { const key=RECOVERY_STORAGE_KEY+".check";this.storage.setItem(key,"1");if(this.storage.getItem(key)!=="1")throw Error();this.storage.removeItem(key); }
+    try { const key=this.#keys[0]+".check";this.storage.setItem(key,"1");if(this.storage.getItem(key)!=="1")throw Error();this.storage.removeItem(key); }
     catch { throw new ManagementFailure("recovery_storage_unavailable"); }
   }
   write(record:RecoveryRecord) {
-    try { const text=JSON.stringify(recoveryRecord(record));this.storage.setItem(RECOVERY_STORAGE_KEY,text);if(this.storage.getItem(RECOVERY_STORAGE_KEY)!==text)throw Error(); }
+    const [normal,credential]=this.#keys;
+    const key=record.credentialUpdate&&credential?credential:normal;
+    try {
+      const text=JSON.stringify(recoveryRecord(record));
+      this.storage.setItem(key,text);
+      if(this.storage.getItem(key)!==text)throw Error();
+      if(credential)this.storage.removeItem(key===credential?normal:credential);
+    }
     catch { throw new ManagementFailure("recovery_storage_unavailable"); }
   }
-  clear() { try{this.storage.removeItem(RECOVERY_STORAGE_KEY)}catch{throw new ManagementFailure("recovery_storage_unavailable")} }
+  clear() {
+    for(const key of this.#keys)this.#remove(key);
+  }
+  #remove(key:string) {
+    try{this.storage.removeItem(key)}catch{throw new ManagementFailure("recovery_storage_unavailable")}
+  }
   read(caps:Capabilities):RecoveryRecord|undefined {
+    for(const key of this.#keys) {
+      const record=this.#read(caps,key);
+      if(record)return record;
+    }
+  }
+  #read(caps:Capabilities,key:string):RecoveryRecord|undefined {
     try {
-      const raw=this.storage.getItem(RECOVERY_STORAGE_KEY);if(!raw)return;
-      if(raw.length>2048){this.clear();return;}
-      const r:unknown=JSON.parse(raw);
-      if(!r || typeof r!=="object" || Array.isArray(r)){this.clear();return;}
-      const value=r as RecoveryRecord;
-      if(value.scope!==caps.recovery_scope || !id(value.epoch)||!id(value.key)||!kinds.includes(value.kind)||!Number.isFinite(value.expires)) {this.clear();return;}
-      for(const v of [value.draft,value.candidate,value.test])if(v!==undefined&&!id(v)){this.clear();return;}
-      if(value.revision!==undefined&&(!Number.isSafeInteger(value.revision)||value.revision<1)){this.clear();return;}
-      if(value.catalog&&(!id(value.catalog.runtime_epoch)||!Number.isSafeInteger(value.catalog.generation)||value.catalog.generation<1)){this.clear();return;}
-      if(value.ref&&(!id(value.ref.camera_id)||!id(value.ref.stream_id))){this.clear();return;}
+      const raw=this.storage.getItem(key);if(!raw)return;
+      if(raw.length>2048)throw Error();
+      const value=JSON.parse(raw) as RecoveryRecord;
+      if(value.scope!==caps.recovery_scope || !id(value.epoch)||!id(value.key)||!kinds.includes(value.kind)||!Number.isFinite(value.expires))throw Error();
+      for(const v of [value.draft,value.candidate,value.test])if(v!==undefined&&!id(v))throw Error();
+      if(value.revision!==undefined&&(!Number.isSafeInteger(value.revision)||value.revision<1))throw Error();
+      if(value.catalog&&(!id(value.catalog.runtime_epoch)||!Number.isSafeInteger(value.catalog.generation)||value.catalog.generation<1))throw Error();
+      if(value.ref&&(!id(value.ref.camera_id)||!id(value.ref.stream_id)))throw Error();
       // Save anchors outlive both draft and ordinary receipt retention.
-      if(value.kind!=="save"&&value.kind!=="recovery"&&Date.now()>value.expires){this.clear();return;}
-      return recoveryRecord(value);
-    } catch(error) { if(error instanceof ManagementFailure)throw error;this.clear();return; }
+      if(value.kind!=="save"&&value.kind!=="recovery"&&Date.now()>value.expires)throw Error();
+      const record=recoveryRecord(value);
+      if(key===CREDENTIAL_RECOVERY_KEY)record.credentialUpdate=true;
+      return record;
+    } catch { this.#remove(key); }
   }
 }
 export function operationKey():string {

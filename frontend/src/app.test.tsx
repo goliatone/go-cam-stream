@@ -19,7 +19,11 @@ import type {
 import { errorCopy } from "./services/copy";
 import samples from "../../data/api/examples.json";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // The rail's open or collapsed choice is kept on the device.
+  localStorage.clear();
+});
 const catalog: CameraList = {
   cameras: [
     {
@@ -1372,5 +1376,68 @@ describe("live status and recovery", () => {
     rerender(<App catalog={rows("failed", "idle")} viewer={unreachable} />);
     expect(badge("Room 1")).toBe("Unavailable");
     expect(dimmed("Room 1")).toBe(false);
+  });
+});
+
+describe("camera list upkeep", () => {
+  it("keeps the rail's open or collapsed choice on this device", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App catalog={catalog} />);
+    const toggle = () => screen.getByRole("button", { name: "Camera list" });
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    await user.click(toggle());
+    unmount();
+    render(<App catalog={catalog} />);
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    await user.click(toggle());
+    expect(localStorage.getItem("camstream.rail")).toBe("open");
+  });
+
+  it("ends the rail with Add Camera, named in a tooltip once collapsed", async () => {
+    const user = userEvent.setup();
+    const add = vi.fn();
+    render(<App catalog={catalog} onAddCamera={add} />);
+    const rail = screen.getByRole("navigation", { name: "Cameras" });
+    const button = within(rail).getByRole("button", { name: "Add Camera" });
+    expect(rail.lastElementChild).toBe(button);
+    expect(button.getAttribute("title")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Camera list" }));
+    expect(button.getAttribute("title")).toBe("Add Camera");
+    await user.click(button);
+    expect(add).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/Switching cameras/)).toBeNull();
+  });
+
+  it("marks a stale list at the top of the rail and refreshes it on request", async () => {
+    const user = userEvent.setup();
+    let settle!: () => void;
+    const refresh = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
+    const { rerender } = render(
+      <App catalog={catalog} catalogStale refreshCatalog={refresh} />,
+    );
+    const rail = screen.getByRole("navigation", { name: "Cameras" });
+    const notice = within(rail).getByText("Camera list may be out of date.");
+    expect(
+      notice.compareDocumentPosition(within(rail).getByRole("list")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await user.click(within(rail).getByRole("button", { name: "Refresh" }));
+    expect(refresh).toHaveBeenCalledOnce();
+    const busy = within(rail).getByRole("button", { name: "Refreshing…" });
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    settle();
+    await waitFor(() =>
+      expect(within(rail).getByRole("button", { name: "Refresh" })).toBeTruthy(),
+    );
+    rerender(<App catalog={catalog} refreshCatalog={refresh} />);
+    expect(screen.queryByText("Camera list may be out of date.")).toBeNull();
+    // With no camera to list, the notice joins the empty state.
+    rerender(<App catalog={{ cameras: [] }} catalogStale refreshCatalog={refresh} />);
+    expect(
+      screen
+        .getByText("Camera list may be out of date.")
+        .closest(".catalog-message")
+        ?.querySelector("h2")?.textContent,
+    ).toBe("No cameras yet");
   });
 });
