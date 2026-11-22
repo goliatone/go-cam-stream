@@ -104,7 +104,7 @@ The import fixture matches the Mac exporter; its all-zero password is synthetic.
 | POST `/api/camera-drafts/:id/tests/:test/complete` | `CompleteTestRequest` | 200 `TestResult` after cleanup | owning manager |
 | DELETE `/api/camera-drafts/:id/tests/:test` | `Mutation` | 200 `TestResult` after cleanup | owning manager |
 | POST `/api/cameras` | `SaveCameraRequest` | 201 `SaveCameraResponse` | owning manager |
-| GET `/api/camera-operations/:key?runtime_epoch=...&candidate_id=...&kind=recovery` | none | 200 `OperationResult` | owner with operation-specific permission |
+| GET `/api/camera-operations/:key` | query `runtime_epoch`, optional `candidate_id`, `kind` and save `draft_id` | 200 `OperationResult` | owner with operation-specific permission |
 | POST `/api/cameras/:id/streams/:stream/recovery` | `Mutation` | 200 `ReconnectResponse` | reconnect grants across affected aliases |
 
 All mutations require CSRF. JSON uses strict bounded decoding, with null rejected
@@ -129,10 +129,17 @@ Operation results contain IDs and safe outcomes, not original inputs. Unknown is
 not failed: look up the existing operation before any replay/rebase. A saved
 result includes the current catalog epoch/generation even after restart. Permanent
 candidate/creation anchors survive the 24-hour receipt window. Credential
-updates are recoverable through their save receipts. Save resolution
-requires creator view permission when management is disabled; reset resolution
-requires reconnect permission. Cross-owner lookups return the same access-denied
-shape as nonexistent resources.
+updates are recoverable through their save receipts. A missing update receipt
+and operation return `expired` for the authorized camera. A caller can
+distinguish an exact retry using `kind=save` and the current tested `draft_id`.
+The server retries an uncertain disk commit in the background. Only the save
+that reached storage can return `outcome_unknown`. A save blocked by another
+pending commit records `not_committed` with `operation_in_progress`. Existing
+draft results and durable receipts remain available to their authorized owners.
+Blocked saves leave the draft mutation quota available. At the shared cache
+limit, the server can evict the oldest blocked response before other records.
+Save resolution requires creator view permission when management is disabled.
+Reset resolution requires reconnect permission.
 
 Draft transitions are incomplete → ready → testing → cleaning → tested → saving
 → saved. Edits invalidate a pass; edits during testing/cleaning/saving conflict.

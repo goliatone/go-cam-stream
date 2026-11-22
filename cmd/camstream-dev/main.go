@@ -46,7 +46,7 @@ func run() int {
 			return err
 		}
 		return controller.Run(ctx)
-	})
+	}, app.PrepareManagedRollback)
 }
 
 // The task passes its port override only to this development executable. Keep

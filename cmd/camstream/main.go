@@ -27,5 +27,5 @@ func run() int {
 			return err
 		}
 		return controller.Run(ctx)
-	})
+	}, app.PrepareManagedRollback)
 }

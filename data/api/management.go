@@ -224,6 +224,13 @@ const (
 
 type OperationState string
 
+// OperationLookup describes an optional recovery intent when a key has no
+// retained record. DraftID is used only for an exact save retry.
+type OperationLookup struct {
+	Kind    OperationKind
+	DraftID string
+}
+
 const (
 	OperationProcessing   OperationState = "processing"
 	OperationUnknown      OperationState = "outcome_unknown"
