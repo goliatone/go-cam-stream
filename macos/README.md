@@ -483,9 +483,9 @@ versions are hosted separately from app versions.
 [Runtime-1](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-1)
 is published for the historical signed 0.1.0/0.1.1 builds; its anonymous download
 passes the pinned hash and inventory checks. [Runtime-2](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-2)
-is published for historical preview-enabled builds. The current lock selects
-the local audio-capable runtime-3 pack, whose URL is unset; supply the locked
-archive or preseed the cache. Neither older pack satisfies the current lock.
+is published for historical preview-enabled builds.
+[Runtime-3](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-3)
+provides the audio-capable archive selected by the current lock.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
 

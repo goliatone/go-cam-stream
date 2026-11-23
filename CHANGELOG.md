@@ -1,6 +1,51 @@
 # Changelog
 
+# [0.1.6](https://github.com/goliatone/go-cam-stream/compare/v0.1.5...v0.1.6) - (2026-11-21)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- **ci:** Include native camera test fixtures in release builds ([66945f8](https://github.com/goliatone/go-cam-stream/commit/66945f8b74b2f7a4106ff8151c937fe7219ccd0f))  - (goliatone)
+
+# [0.1.5](https://github.com/goliatone/go-cam-stream/compare/v0.1.4...v0.1.5) - (2026-11-21)
+
+
+New patch release: v0.1.5
+
+## <!-- 0 -->🚀 Features
+
+- Bundle Optic icons for native and dashboard builds ([c9c3d7c](https://github.com/goliatone/go-cam-stream/commit/c9c3d7cd6d4d47cf7bbf53a0cdd0cbeabb9517a4))  - (goliatone)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Start up ([cb5778a](https://github.com/goliatone/go-cam-stream/commit/cb5778a2ec0815336e7792a8ba5d083ed24f7c02))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.1.5 ([fdaec79](https://github.com/goliatone/go-cam-stream/commit/fdaec791d26243c49446eac7588e4c1dd15345b3))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Shared links ([77f43fc](https://github.com/goliatone/go-cam-stream/commit/77f43fc85e8be533458665aa96d6fe1a58407722))  - (goliatone)
+- Audio setup ([231ebfc](https://github.com/goliatone/go-cam-stream/commit/231ebfc776f27e2571356b3676558aec82886d61))  - (goliatone)
+- Camera and audio setup ([3d9bf8c](https://github.com/goliatone/go-cam-stream/commit/3d9bf8c5547678693616ab09387a52b3d2ce5a03))  - (goliatone)
+- Browser camera onboarding ([d8a13db](https://github.com/goliatone/go-cam-stream/commit/d8a13db2c0342f32f53ee41f0774255c064f5cc1))  - (goliatone)
+- Audo managemnt ([912bdd9](https://github.com/goliatone/go-cam-stream/commit/912bdd929d6528c7296e64b41aca2363fa613bae))  - (goliatone)
+- Camera management and ui ([71b92ae](https://github.com/goliatone/go-cam-stream/commit/71b92aef18ee3c95032210d8c903819095b4b3b8))  - (goliatone)
+- Frontend; ([b3d79de](https://github.com/goliatone/go-cam-stream/commit/b3d79de74732a8102598662e174f366da41e35e0))  - (goliatone)
+- Cam stream services ([45a0363](https://github.com/goliatone/go-cam-stream/commit/45a0363069d148c689896cb579a3d6285669507a))  - (goliatone)
+
+## <!-- 29 -->👷 CI/CD
+
+- Pin the hosted camera runtime 3 archive ([7217b62](https://github.com/goliatone/go-cam-stream/commit/7217b6215ca301e9c5c43e5acee5fd02fd807b5e))  - (goliatone)
+
 # [0.1.4](https://github.com/goliatone/go-cam-stream/compare/v0.1.3...v0.1.4) - (2026-11-15)
+
+
+New patch release: v0.1.4
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.1.4 ([acf847a](https://github.com/goliatone/go-cam-stream/commit/acf847a8bb5c572d6982b6e5e4cfec82956bd02b))  - (goliatone)
 
 ## <!-- 16 -->➕ Add
 
