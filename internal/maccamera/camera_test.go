@@ -280,6 +280,12 @@ func waitStreaming(t *testing.T, ctx context.Context, s *Service) {
 	}
 }
 
+// fakeTools links ffmpeg and mediamtx to this test binary, which TestMain runs
+// as the fake runtime. A link to the running binary is not a new executable.
+// macOS assesses each new executable, shell scripts included, before its first
+// launch, one at a time across the system, so in a full parallel
+// `go test ./...` a fresh script's first launch can wait seconds behind the
+// other packages' new test binaries.
 func fakeTools(t *testing.T) Tools {
 	t.Helper()
 	t.Setenv("CAMERA_RUNTIME_HELPER", "1")
@@ -289,40 +295,41 @@ func fakeTools(t *testing.T) Tools {
 	}
 	dir := t.TempDir()
 	for _, name := range []string{"ffmpeg", "mediamtx"} {
-		body := "#!/bin/sh\nexec '" + strings.ReplaceAll(exe, "'", "'\\''") + "' -test.run=TestRuntimeHelper -- " + name + " \"$@\"\n"
-		if err = os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+		if err = os.Symlink(exe, filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return Tools{FFmpeg: filepath.Join(dir, "ffmpeg"), MediaMTX: filepath.Join(dir, "mediamtx")}
 }
 
-func TestRuntimeHelper(t *testing.T) {
-	if os.Getenv("CAMERA_RUNTIME_HELPER") != "1" {
-		return
+// TestMain dispatches before m.Run so the testing flag parser never sees the
+// fake tool's arguments.
+func TestMain(m *testing.M) {
+	if os.Getenv("CAMERA_RUNTIME_HELPER") == "1" {
+		if name := filepath.Base(os.Args[0]); name == "ffmpeg" || name == "mediamtx" {
+			runtimeHelper(name, os.Args[1:])
+		}
 	}
-	args := os.Args
-	for len(args) > 0 && args[0] != "--" {
-		args = args[1:]
-	}
-	if len(args) < 2 {
-		os.Exit(2)
-	}
-	if args[1] == "mediamtx" {
-		if args[2] == "--version" {
+	os.Exit(m.Run())
+}
+
+func runtimeHelper(name string, args []string) {
+	invocation := strings.Join(args, " ")
+	if name == "mediamtx" {
+		if len(args) > 0 && args[0] == "--version" {
 			fmt.Println(MediaMTXVersion)
 			os.Exit(0)
 		}
 		fmt.Println("[RTSP] started with listeners on 127.0.0.1 (TCP)")
 	} else {
-		if strings.Contains(strings.Join(args, " "), "-list_devices") {
+		if strings.Contains(invocation, "-list_devices") {
 			fmt.Fprintln(os.Stderr, "[avf] AVFoundation video devices:\n[avf] [0] MacBook Pro Camera\n[avf] AVFoundation audio devices:")
 			os.Exit(1)
 		}
 		if os.Getenv("CAMERA_TEST_EXIT") == "1" {
 			os.Exit(2)
 		}
-		if strings.Contains(strings.Join(args, " "), "-pix_fmt bgra") {
+		if strings.Contains(invocation, "-pix_fmt bgra") {
 			previewRuntimeHelper()
 			os.Exit(0)
 		}
