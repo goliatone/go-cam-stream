@@ -63,17 +63,28 @@ export function readInvitation(location: URL): Invitation | null {
   return { room, token, appURL: location.protocol === "https:" ? `camstream://conversation/join?${query}#${token}` : null };
 }
 
-export async function redeem({ room, token }: Invitation, signal: AbortSignal): Promise<RoomAdmission> {
+export function newGuestToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+export async function redeem(invitation: Invitation, signal: AbortSignal, guestToken?: string): Promise<RoomAdmission> {
+  const { room, token } = invitation;
   const response = await fetch(`${CONVERSATION_API_PREFIX}/${room}/redeem`, {
-    method: "POST", body: JSON.stringify({ version: CONVERSATION_VERSION, invitation: token }),
+    method: "POST", body: JSON.stringify({ version: CONVERSATION_VERSION, invitation: token, guest_token: guestToken }),
     headers: { "Content-Type": "application/json" },
     credentials: "omit", mode: "same-origin", cache: "no-store", redirect: "error",
     referrerPolicy: "origin", signal: AbortSignal.any([signal, AbortSignal.timeout(6000)]),
   });
   const body = await response.json();
+  // Hosts predating client-generated guest tokens reject the field before admission.
+  if (guestToken && response.status === 400 && body?.error?.code === "invalid_request") {
+    return redeem(invitation, signal);
+  }
   if (!response.ok) throw new Error(body?.error?.code ?? "media_unreachable");
   if (body?.room?.room_id !== room || body.room.version !== CONVERSATION_VERSION ||
-      body.role !== "guest" || typeof body.token !== "string" || !roomID.test(body.token)) throw new Error("incompatible_client");
+      body.role !== "guest" || typeof body.token !== "string" || !roomID.test(body.token) ||
+      (guestToken && body.token !== guestToken)) throw new Error("incompatible_client");
   return body;
 }
 

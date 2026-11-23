@@ -19,7 +19,7 @@ export const managementCopy: Partial<Record<ManagementErrorCode, string>> = {
   catalog_revision_conflict: "The camera list changed. Review the details and save again.",
   duplicate_camera: "Another camera, or a check in progress, already uses this address.",
   credentials_required: "Enter both the username and password.",
-  credentials_changed: "The saved sign-in changed. Close this and start again.",
+  credentials_changed: "The saved camera address or sign-in changed. Close Settings and open it again to start from the current settings.",
   import_invalid: "Choose the .yaml file the Camstream Mac app exports and, optionally, its .env file.",
   destination_denied: "The server doesn’t allow this camera address.",
   address_unavailable: "The camera address couldn’t be found. Check it and try again.",

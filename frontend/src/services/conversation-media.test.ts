@@ -109,3 +109,50 @@ test("successful polling does not mask a persistent media setup failure", async 
   expect(failure).toHaveBeenCalledExactlyOnceWith("media_unreachable");
   expect(fetcher.mock.calls.some(([path]) => path.endsWith("/leave"))).toBe(true);
 });
+
+test("a lost signal response replays the same SDP after late ICE candidates", async () => {
+  vi.useFakeTimers();
+  const room: RoomView = {
+    room_id: "A".repeat(43), version: 1, generation: 1, state: "joining",
+    expires_at: "2026-11-23T16:00:00Z",
+    participants: [
+      { role: "host", joined: true, publication: { camera: false, microphone: false } },
+      { role: "guest", joined: true, publication: { camera: false, microphone: false } },
+    ],
+  };
+  const peer = {
+    iceGatheringState: "gathering", connectionState: "new",
+    localDescription: null as RTCSessionDescriptionInit | null,
+    createOffer: async (): Promise<RTCSessionDescriptionInit> => ({type: "offer", sdp: "v=0\r\n"}),
+    setLocalDescription: async (description: RTCSessionDescriptionInit) => { peer.localDescription = description; },
+    addEventListener: vi.fn(), removeEventListener: vi.fn(), close: vi.fn(),
+    addTransceiver: () => ({sender: {}}),
+  };
+  const signals: string[] = [];
+  const fetcher = vi.fn(async (path: string, request?: RequestInit) => {
+    if (path.endsWith("/join")) return new Response(JSON.stringify({ room, relay_only: false }));
+    if (path.endsWith("/signal")) {
+      signals.push(JSON.parse(String(request?.body)).sdp);
+      if (signals.length === 1) {
+        peer.localDescription = {type: "offer", sdp: "v=0\r\na=end-of-candidates\r\n"};
+        peer.iceGatheringState = "complete";
+        throw new TypeError("response lost after the server stored the offer");
+      }
+      if (signals.at(-1) !== signals[0]) {
+        return new Response(JSON.stringify({error: {code: "permission_denied"}}), {status: 403});
+      }
+    }
+    return new Response(JSON.stringify({room}));
+  });
+  const failure = vi.fn();
+  const session = new ConversationMedia({room, role: "host", token: "fixture-token"}, vi.fn(), failure, {
+    now: Date.now, fetch: fetcher as typeof fetch,
+    peer: () => peer as unknown as RTCPeerConnection,
+    stream: () => ({} as MediaStream),
+  });
+  session.join({getTracks: () => []} as unknown as MediaStream);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(signals).toHaveLength(2);
+  expect(signals[1]).toEqual(signals[0]);
+  expect(failure).not.toHaveBeenCalled();
+});

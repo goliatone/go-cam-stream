@@ -4,24 +4,34 @@ import WebKit
 @main
 enum Main {
     static func main() {
-        guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 3, let input = readLine(),
+        guard CommandLine.arguments.count == 4 || CommandLine.arguments.count == 5, let input = readLine(),
               let data = input.data(using: .utf8),
               let prejoin = try? JSONDecoder().decode(ConversationPrejoin.self, from: data),
               prejoin.pageURL.scheme == "http", prejoin.pageURL.host == "127.0.0.1",
               let script = try? String(contentsOfFile: CommandLine.arguments[1], encoding: .utf8) else { exit(2) }
         let app = NSApplication.shared
-        let delegate = Endpoint(prejoin: prejoin, script: script, startMuted: CommandLine.arguments.last == "--start-muted")
+        let camera = CameraModel(permissions: SyntheticPermissions(),
+                                 directory: URL(fileURLWithPath: CommandLine.arguments[3], isDirectory: true),
+                                 helper: URL(fileURLWithPath: CommandLine.arguments[2]))
+        let delegate = Endpoint(prejoin: prejoin, script: script, startMuted: CommandLine.arguments.last == "--start-muted", camera: camera)
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
     }
 }
 
+// The helper verifies the real capture lock. WebKit receives synthetic tracks
+// and the proof never asks macOS to open a physical input.
+private struct SyntheticPermissions: CameraPermissions {
+    func status(_ media: CameraMedia) -> String { "denied" }
+    func request(_ media: CameraMedia, completion: @escaping () -> Void) { completion() }
+}
+
 private final class Endpoint: NSObject, NSApplicationDelegate {
     private let prejoin: ConversationPrejoin
     private let script: String
     private let startMuted: Bool
-    private let camera = CameraModel()
+    private let camera: CameraModel
     private var surface: ConversationMediaSurface?
     private var window: NSWindow?
     private var timer: Timer?
@@ -32,14 +42,16 @@ private final class Endpoint: NSObject, NSApplicationDelegate {
     private let deadline = Date().addingTimeInterval(28)
     private var diagnosing = false
 
-    init(prejoin: ConversationPrejoin, script: String, startMuted: Bool) {
+    init(prejoin: ConversationPrejoin, script: String, startMuted: Bool, camera: CameraModel) {
         self.prejoin = prejoin
         self.script = script
         self.startMuted = startMuted
+        self.camera = camera
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        camera.ready = true
+        camera.didFinishQuit = { NSApp.reply(toApplicationShouldTerminate: true) }
+        camera.launch()
         guard let surface = ConversationMediaSurface(prejoin: prejoin, camera: camera, startMuted: startMuted, ended: { [weak self] problem in
             self?.closed = true
             if let problem { fputs(problem + "\n", stderr) }
@@ -58,6 +70,10 @@ private final class Endpoint: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.probe() }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        camera.quit() ? .terminateNow : .terminateLater
+    }
+
     private func probe() {
         if !received && !closed && Date() >= deadline, !diagnosing {
             diagnosing = true
@@ -74,7 +90,7 @@ private final class Endpoint: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
-        if received { return }
+        guard !received, camera.ready, !camera.working else { return }
         inFlight = true
         if !joining && !startMuted {
             view.callAsyncJavaScript("return document.querySelector('#join-call') ? await integratedProof.start() : false",

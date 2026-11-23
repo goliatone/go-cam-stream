@@ -66,10 +66,11 @@ async function connectedHost(native = nativeHost(async () => true)) {
 
 /** Redemption replies in order; later calls repeat the last one. */
 function redemptions(...replies: Array<{ status: number; body: unknown }>) {
-  const fetcher = vi.fn(async (path: string) => {
+  const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
     if (!path.endsWith("/redeem")) return new Response(JSON.stringify({ room: waiting }));
     const reply = replies.length > 1 ? replies.shift()! : replies[0]!;
-    return new Response(JSON.stringify(reply.body), { status: reply.status });
+    const body = reply.status === 200 ? { ...guest, token: JSON.parse(String(init?.body)).guest_token } : reply.body;
+    return new Response(JSON.stringify(body), { status: reply.status });
   });
   vi.stubGlobal("fetch", fetcher);
   return fetcher;
@@ -322,6 +323,20 @@ test("a full room keeps an explicit retry that joins once the seat frees", async
   expect(screen.queryByRole("alert")).toBeNull();
   expect(fetcher.mock.calls.filter(([path]) => path.endsWith("/redeem"))).toHaveLength(2);
   expect(getUserMedia).not.toHaveBeenCalled();
+});
+
+test("Join retries a lost admission with the original token", async () => {
+  const fetcher = redemptions({ status: 502, body: { error: { code: "media_unreachable" } } }, { status: 200, body: guest });
+  render(<Conversation invitation={invitation} native={undefined} />);
+  joinWithoutDevices();
+  await screen.findByText("The call could not connect. Check your connection and try again.");
+  fireEvent.click(screen.getByRole("button", { name: "Join" }));
+  await screen.findByRole("heading", { name: "Waiting for the host" });
+  const tokens = fetcher.mock.calls.filter(([path]) => path.endsWith("/redeem"))
+    .map(([, init]) => JSON.parse(String(init?.body)).guest_token);
+  expect(tokens).toHaveLength(2);
+  expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(tokens[1]).toBe(tokens[0]);
 });
 
 test("ended, expired and invalid invitations stop offering Join and release a preview", async () => {

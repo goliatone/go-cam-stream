@@ -245,12 +245,12 @@ with the prior immutable image and compatible configuration only after the old
 container has completely stopped. Restoring native also requires stopping/removing
 Compose before enabling the service. Keep the stable installation ID/runtime root.
 
-Before rolling back to a build that predates dashboard credential updates, stop
+Before rolling back to a build that predates the current camera settings storage, stop
 the current host and back up its current managed-state directory privately. Run
 `camstream managed-state prepare-rollback --config FILE` with the newer binary as
 the service user against the same config and state mount, then start the older
 binary after the command succeeds. This keeps the latest camera settings and
-passwords and removes credential-update receipts the older binary cannot read.
+passwords and removes newer connection metadata and recovery receipts the older binary cannot read.
 The command is safe to repeat and refuses an installation owned by a running
 controller.
 

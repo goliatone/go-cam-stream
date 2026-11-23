@@ -69,8 +69,8 @@ test("one browser Join keeps the camera when microphone permission fails and can
     throw new DOMException("denied", "NotAllowedError");
   });
   vi.stubGlobal("navigator", { mediaDevices: { getUserMedia, enumerateDevices: async () => [] } });
-  const fetcher = vi.fn(async (path: string, _init?: RequestInit) => {
-    const body = path.endsWith("/redeem") ? guest : { room: guest.room };
+  const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+    const body = path.endsWith("/redeem") ? { ...guest, token: JSON.parse(String(init?.body)).guest_token } : { room: guest.room };
     return new Response(JSON.stringify(body));
   });
   vi.stubGlobal("fetch", fetcher);
@@ -354,7 +354,7 @@ test("leaving while the native capture lease is pending does not open devices", 
 
 test("a redemption that returns after pagehide releases its guest seat", async () => {
   let finishRedemption!: (response: Response) => void;
-  const fetcher = vi.fn(async (path: string) => path.endsWith("/redeem")
+  const fetcher = vi.fn(async (path: string, _init?: RequestInit) => path.endsWith("/redeem")
     ? new Promise<Response>((resolve) => { finishRedemption = resolve; })
     : new Response(JSON.stringify({ room: guest.room })));
   vi.stubGlobal("fetch", fetcher);
@@ -366,7 +366,8 @@ test("a redemption that returns after pagehide releases its guest seat", async (
   const event = new Event("pagehide");
   Object.defineProperty(event, "persisted", { value: true });
   fireEvent(window, event);
-  finishRedemption(new Response(JSON.stringify(guest)));
+  const request = fetcher.mock.calls.find(([path]) => path.endsWith("/redeem"));
+  finishRedemption(new Response(JSON.stringify({ ...guest, token: JSON.parse(String(request?.[1]?.body)).guest_token })));
   await waitFor(() => expect(fetcher.mock.calls.some(([path]) => path.endsWith("/leave"))).toBe(true));
   expect(screen.queryByRole("button", { name: "Leave" })).toBeNull();
 });

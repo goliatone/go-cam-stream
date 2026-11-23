@@ -212,9 +212,13 @@ func integratedBrowser(t *testing.T, browser context.Context, link string, guest
 	}
 }
 
-func integratedWebKit(t *testing.T, ctx context.Context, executable, script string, prejoin api.NativeConversationPrejoin, startMuted bool) integratedPeer {
+func integratedWebKit(t *testing.T, ctx context.Context, executable, script, helper string, prejoin api.NativeConversationPrejoin, startMuted bool) integratedPeer {
 	t.Helper()
-	args := []string{script}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{script, helper, dir}
 	if startMuted {
 		args = append(args, "--start-muted")
 	}
@@ -331,7 +335,7 @@ func TestIntegratedConversation(t *testing.T) {
 			}
 			var caller, callee integratedPeer
 			if pair.macHost {
-				caller = integratedWebKit(t, ctx, native, script, host, pair.mutedStart)
+				caller = integratedWebKit(t, ctx, native, script, helper, host, pair.mutedStart)
 				if pair.mutedStart {
 					waitForMutedHost(t, ctx, owner, host.Admission.Room.RoomID)
 				}
@@ -351,11 +355,12 @@ func TestIntegratedConversation(t *testing.T) {
 						t.Fatalf("reopen after releasing the native guest seat: %s", fault)
 					}
 				}
-				callee = integratedWebKit(t, ctx, native, script, guest, false)
+				callee = integratedWebKit(t, ctx, native, script, helper, guest, false)
 			} else {
 				callee = integratedBrowser(t, browser, host.InvitationURL, true, pair.mutedStart)
 			}
-			if fault := command(t, guestOwner, api.ConversationNativeOpen, "", host.InvitationURL, nil); fault != string(api.RoomFull) {
+			thirdOwner := ownerPipe(t, ctx, helper, origin)
+			if fault := command(t, thirdOwner, api.ConversationNativeOpen, "", host.InvitationURL, nil); fault != string(api.RoomFull) {
 				t.Fatalf("third participant: %s", fault)
 			}
 			ref := host.Admission.Room.RoomID

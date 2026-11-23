@@ -6,7 +6,7 @@ import { deviceLabel, type CallEnd, type CallPhase, type CallState, type Capture
 import { CallView, type CallActions, type CallModel, type CallPresence } from "./call-view";
 import { failureOf, inputKinds, type Choices, type InputErrors, type InputFailure, type Pending } from "./devices";
 import { Icon, type IconName } from "./icons";
-import { acknowledgeBrowserStop, BrowserCaptureStop, download, redeem, redeemHost, type HostHandoff, type Invitation } from "./invitation";
+import { acknowledgeBrowserStop, BrowserCaptureStop, download, newGuestToken, redeem, redeemHost, type HostHandoff, type Invitation } from "./invitation";
 import { duration } from "./layout";
 import { Notices, type Toast } from "./overlays";
 import { Prejoin, type PrejoinActions, type PrejoinModel } from "./prejoin";
@@ -134,6 +134,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
   const [page, setPage] = useState<HTMLDivElement | null>(null);
   const preview = useRef<MediaStream | null>(null);
   const browserCapture = useRef<BrowserCaptureStop | null>(null);
+  const guestAttempt = useRef<string | undefined>(undefined);
   const session = useRef<ConversationMedia | null>(null);
   const lifetime = useRef(new AbortController());
   const operation = useRef(0);
@@ -267,6 +268,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
     }
     const onHide = () => {
       operation.current++;
+      guestAttempt.current = undefined;
       stop(preview.current);
       void session.current?.leave();
       browserCapture.current?.stopped();
@@ -392,8 +394,10 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
     try {
       let endpoint = session.current;
       if (!endpoint && browserInvitation) {
-        const value = await redeem(invitation, lifetime.current.signal);
+        guestAttempt.current ??= newGuestToken();
+        const value = await redeem(invitation, lifetime.current.signal, guestAttempt.current);
         if (operation.current !== revision) { discardAdmission(value); return; }
+        guestAttempt.current = undefined;
         setBlocked(null);
         setFinished(false);
         setPlaybackMuted(false);

@@ -36,8 +36,12 @@ Extract the archive for your Mac architecture and open Terminal in that folder:
 ./camstream-camera start
 ```
 
-`configure` chooses the built-in MacBook/FaceTime camera. Use `--device "EXACT NAME"`
-from `devices` to select another webcam. The default is 1280x720 at 30fps; use
+`configure` chooses the built-in camera. Use `--device 'UID_SELECTOR'` with the
+`id` shown by `devices` to select another webcam. A unique name or a current
+list index also works. The helper saves the camera's persistent AVFoundation
+identity, so unplugging or reordering devices cannot swap the selected feed.
+If an older saved name matches several webcams, select one explicitly.
+The default is 1280x720 at 30fps. Use
 `--width`, `--height`, `--fps` if the camera requires another mode. Configuration
 flags describe the complete desired configuration; omitted flags use defaults.
 Credentials are generated once and preserved across configuration changes.
@@ -100,7 +104,7 @@ pack pinned in `macos/runtime.lock.json`:
 ```sh
 python3 scripts/package-camera.py 0.1.0
 # Or provide the complete locked runtime pack from offline storage:
-python3 scripts/package-camera.py 0.1.0 --runtime-pack /path/to/camera-runtime-1-darwin-arm64-macos26.0.tar.gz
+python3 scripts/package-camera.py 0.1.0 --runtime-pack /path/to/the-locked-runtime-pack.tar.gz
 ```
 
 The packager verifies the complete archive, recipe/target and file inventory,

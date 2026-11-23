@@ -64,6 +64,7 @@ export class ConversationMedia {
   private running = false;
   private offered = false;
   private answered = false;
+  private outboundSignal: RTCSessionDescriptionInit | undefined;
   private reportedConnected = false;
   private disconnectedSince: number | undefined;
   private pairingSince: number | undefined;
@@ -319,14 +320,19 @@ export class ConversationMedia {
   }
 
   private async publishDescription(peer: RTCPeerConnection, generation: number) {
-    try {
-      await gather(peer, this.abort.signal, 4000);
-    } catch {
-      this.abort.signal.throwIfAborted();
+    if (!this.outboundSignal) {
+      try {
+        await gather(peer, this.abort.signal, 4000);
+      } catch {
+        this.abort.signal.throwIfAborted();
+      }
+      const description = peer.localDescription;
+      if (!description) throw new Error("missing local description");
+      // A lost response can follow a committed signal. Late ICE candidates must
+      // not change the payload on the retry for this peer generation.
+      this.outboundSignal = { type: description.type, sdp: description.sdp };
     }
-    const description = peer.localDescription;
-    if (!description) throw new Error("missing local description");
-    await this.request("/signal", { generation, type: description.type, sdp: description.sdp });
+    await this.request("/signal", { generation, ...this.outboundSignal });
   }
 
   private async prepareAnswer(peer: RTCPeerConnection) {
@@ -383,6 +389,7 @@ export class ConversationMedia {
     this.incomingAudio = null;
     this.senders = [];
     this.disconnectedSince = undefined;
+    this.outboundSignal = undefined;
     this.offered = this.answered = this.reportedConnected = false;
   }
 }
