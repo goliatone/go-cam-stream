@@ -79,11 +79,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func paneChanged() {
         window?.title = selectedPane.title
+        if !isShowing || selectedPane != .camera { model.webcamPreview.stop(in: .settings) }
         model.callSettingsVisible = isShowing && selectedPane == .calls
         visibilityChanged()
     }
 
     func windowWillClose(_ notification: Notification) {
+        model.webcamPreview.stop(in: .settings)
         model.applySettings()
         model.callSettingsVisible = false
         DispatchQueue.main.async { [weak self] in self?.visibilityChanged() }

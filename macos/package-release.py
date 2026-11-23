@@ -182,7 +182,7 @@ def package(args):
         payload.mkdir()
         run('ditto', app, payload / app.name)
         (payload / 'Applications').symlink_to('/Applications')
-        instructions = 'Camstream Camera ' + args.version + '\n\nCopy Camstream Camera to Applications. Eject this disk, then open the app from Applications.\nAllow camera access, save settings, then choose Start Camera. Closing the window keeps capture running; Quit stops it.\nTo update or roll back: Quit, replace the app, then reopen. Settings and credentials are preserved.\nRequires Apple Silicon and macOS ' + lock['target']['minimum_macos'] + ' or later.\n'
+        instructions = 'Camstream Camera ' + args.version + '\n\nCopy Camstream Camera to Applications. Eject this disk, then open the app from Applications.\nAllow camera access, choose a webcam to preview it, then choose Start Camera. Closing the window keeps capture running; Quit stops it.\nTo update or roll back: Quit, replace the app, then reopen. Settings and credentials are preserved.\nRequires Apple Silicon and macOS ' + lock['target']['minimum_macos'] + ' or later.\n'
         if args.development:
             instructions += '\nDEVELOPMENT BUILD: ad-hoc signed, not notarized or approved for external distribution.\n'
         (payload / 'Install.txt').write_text(instructions)

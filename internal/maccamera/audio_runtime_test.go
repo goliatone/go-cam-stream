@@ -76,7 +76,7 @@ func actualAudioSession(t *testing.T, root, helper, tools, mode string) {
 	if mode == "removed" {
 		capture = "exit 91"
 	}
-	script := "#!/bin/sh\ncase \" $* \" in\n*' -h demuxer=avfoundation '*) exec " + quote(filepath.Join(tools, "ffmpeg")) + " \"$@\";;\n*' -camstream_list_audio_devices '*) printf '%s\\n' '{\"version\":1,\"devices\":[{\"id\":\"synthetic: mic\",\"name\":\"Synthetic microphone\"}]}'; exit 251;;\n*' -f avfoundation '*) " + capture + ";;\n*) exec " + quote(filepath.Join(tools, "ffmpeg")) + " \"$@\";;\nesac\n"
+	script := "#!/bin/sh\ncase \" $* \" in\n*' -h demuxer=avfoundation '*) exec " + quote(filepath.Join(tools, "ffmpeg")) + " \"$@\";;\n*' -camstream_list_audio_devices '*) printf '%s\\n' '{\"version\":1,\"devices\":[{\"id\":\"synthetic: mic\",\"name\":\"Synthetic microphone\"}]}'; exit 251;;\n*' -camstream_list_video_devices '*) printf '%s\\n' '{\"version\":1,\"devices\":[{\"id\":\"synthetic-camera\",\"name\":\"MacBook Pro Camera\",\"builtin\":true}]}'; exit 251;;\n*' -f avfoundation '*) " + capture + ";;\n*) exec " + quote(filepath.Join(tools, "ffmpeg")) + " \"$@\";;\nesac\n"
 	if err = os.WriteFile(filepath.Join(fixtureTools, "ffmpeg"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

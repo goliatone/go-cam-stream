@@ -26,6 +26,38 @@ func TestIdleSweepExpiresRoomWithoutParticipantTraffic(t *testing.T) {
 	}
 }
 
+func TestGuestTokenRecoversLostAdmissionWithoutTakingAnotherSeat(t *testing.T) {
+	now := time.Now()
+	s, err := NewService(Options{PublicOrigin: "https://call.example.test", Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.Create(WithOwner(t.Context()), CreateRoom{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(created.InvitationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestToken := handle()
+	msg := RedeemRoom{RoomRef: created.Admission.Room.RoomRef, RoomRedeemRequest: api.RoomRedeemRequest{
+		Version: api.ConversationVersion, Invitation: link.Fragment, GuestToken: guestToken,
+	}}
+	if _, err = s.Redeem(t.Context(), msg); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(api.ConversationHeartbeat)
+	recovered, err := s.Redeem(t.Context(), msg)
+	if err != nil || recovered.Token != guestToken || len(recovered.Room.Participants) != 2 || recovered.Room.Generation != created.Admission.Room.Generation {
+		t.Fatalf("recovering the guest seat: %+v %v", recovered.Room, err)
+	}
+	msg.GuestToken = handle()
+	if _, err = s.Redeem(t.Context(), msg); err != Fault(api.RoomFull) {
+		t.Fatalf("an independent guest must still see a full room: %v", err)
+	}
+}
+
 func TestTwoSlotsAndGenerationLifecycle(t *testing.T) {
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 	s, err := NewService(Options{PublicOrigin: "https://call.example.test", Clock: func() time.Time { return now }})

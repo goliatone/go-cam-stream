@@ -46,7 +46,15 @@ struct CameraConfig: Codable, Equatable {
 struct CameraDevice: Codable, Identifiable {
     let index: String
     let name: String
-    var id: String { name }
+    let selector: String?
+    var id: String { selector ?? "index:" + index }
+
+    enum CodingKeys: String, CodingKey { case index, name; case selector = "id" }
+
+    func label(in devices: [Self]) -> String {
+        guard devices.contains(where: { $0.id != id && $0.name == name }) else { return name }
+        return "\(name) · Camera \((Int(index) ?? 0) + 1)"
+    }
 }
 
 // Swift String equality folds canonical Unicode equivalents. Device identity
@@ -187,7 +195,10 @@ func cameraMessage(_ code: String) -> String {
     case "busy": return "This camera is already in use. Stop the other Camstream session, then quit and reopen Camstream Camera."
     case "not_configured": return "Camera settings weren’t applied. Choose Try Again to apply them and start."
     case "configuration_failed": return "Settings could not be applied. Check camera permission and the selected webcam, then try again."
+    case "device_ambiguous": return "More than one webcam has the saved name. Choose your webcam again in Camera settings."
     case "device_unavailable": return "No available webcam was found. Check camera permission and reconnect the camera, then try again."
+    case "capture_format_unsupported": return "This webcam couldn’t open a supported video format. Choose another webcam in Camera settings."
+    case "capture_no_frames": return "No video arrived from the selected webcam. Check that it’s connected and ready, then try Start Camera again."
     case "capture_failed": return "The camera stopped. Check camera permission and close other apps using the webcam, then try Start Camera again."
     case "export_failed": return "Connection files could not be exported. Check access to the app’s private folder and try again. Capture is unchanged."
     default: return "The camera service couldn’t complete this action. Try again."

@@ -292,6 +292,20 @@ func runInvitationTests(conversations: [String: Any], check: (Bool, String) -> V
     check(lostAdmission.conversationPrejoin != nil && lostAdmissionHelper.incomingInvitations == [newInvitation, newInvitation] &&
           lostAdmissionHelper.guestAdmissionTokens.last != originalToken, "reopening uses a fresh grant after cleaning up the lost admission")
 
+    let retryHelper = FixtureSharingCamera()
+    retryHelper.guestAdmissionVersion = 1
+    let retrying = CameraModel(client: retryHelper, permissions: FixturePermissions(), directory: directory)
+    retrying.launch()
+    defer { _ = retrying.quit() }
+    retryHelper.conversationReply = ["error": ["code": "media_unreachable"]]
+    retrying.openConversationInvitation(newInvitation)
+    check(retrying.canRetryConversationInvitation, "a lost admission offers an invitation retry")
+    retryHelper.conversationReply = prejoin("guest")
+    retrying.retryConversationInvitation()
+    check(retrying.conversationPrejoin != nil && retryHelper.guestAdmissionTokens.count == 2 &&
+          retryHelper.guestAdmissionTokens.first == retryHelper.guestAdmissionTokens.last,
+          "retrying an uncertain admission uses the original guest token")
+
     let browserHelper = FixtureSharingCamera()
     browserHelper.conversationReply = prejoin("host")
     let browser = CameraModel(client: browserHelper, permissions: FixturePermissions(), directory: directory, openBrowser: { _ in true })

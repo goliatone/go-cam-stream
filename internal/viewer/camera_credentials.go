@@ -43,6 +43,7 @@ func (s *CameraManagementService) CredentialDraft(ctx context.Context, r api.Cre
 		d.review.CredentialUpdate = true
 		d.review.Authentication = api.AuthenticationCredentials
 		d.priorCredential = record.CredentialID
+		d.connectionRevision = record.ConnectionRevision
 		d.binding = record.Binding
 		if endpoint != "" {
 			d.addressChange, d.config, d.binding = true, cfg, AddressBinding{}
@@ -121,7 +122,7 @@ func (s *CameraManagementService) credentialTarget(ctx context.Context, d *camer
 		return ManagedRecord{}, denied()
 	}
 	for _, record := range s.durable.Cameras {
-		if record.ID == id && record.CredentialID == d.priorCredential {
+		if record.ID == id && record.ConnectionRevision == d.connectionRevision {
 			return record, nil
 		}
 	}

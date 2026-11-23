@@ -150,7 +150,8 @@ func redeemNativeLink(ctx context.Context, raw string, trusted []string, client 
 	var admission api.RoomAdmission
 	if err := decoder.Decode(&admission); err != nil || decoder.Decode(new(any)) != io.EOF ||
 		admission.Room.RoomRef != link.Room || admission.Room.Version != api.ConversationVersion ||
-		admission.Room.Generation.Validate() != nil || admission.Role != api.RoomGuest || !api.ValidShareID(admission.Token) {
+		admission.Room.Generation.Validate() != nil || admission.Role != api.RoomGuest || !api.ValidShareID(admission.Token) ||
+		(token != "" && admission.Token != token) {
 		return api.NativeConversationPrejoin{}, Fault(api.RoomIncompatibleClient)
 	}
 	return api.NativeConversationPrejoin{PageURL: link.Origin + "/r/" + link.Room.RoomID, Admission: admission}, nil

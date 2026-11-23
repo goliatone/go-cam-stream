@@ -1,6 +1,7 @@
 package conversationhost
 
 import (
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,11 +15,11 @@ import (
 )
 
 func TestListenerDrainsAfterLastRoom(t *testing.T) {
-	runtime, err := Start(t.Context(), config.Conversations{Loopback: true}, nil, fstest.MapFS{
+	runtime, startErr := Start(t.Context(), config.Conversations{Loopback: true}, nil, fstest.MapFS{
 		"index.html": {Data: []byte("<html><head></head><body></body></html>")},
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
+	if startErr != nil {
+		t.Fatal(startErr)
 	}
 	t.Cleanup(runtime.Close)
 	newRoom := func() string {
@@ -35,13 +36,19 @@ func TestListenerDrainsAfterLastRoom(t *testing.T) {
 	page := newRoom()
 	now := time.Now()
 	runtime.reapIdle(now, listenerGrace)
-	res, err := (&http.Client{Timeout: time.Second}).Get(page)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, page, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := (&http.Client{Timeout: time.Second}).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, err := io.ReadAll(res.Body)
-	_ = res.Body.Close()
-	if err != nil || !strings.Contains(string(body), `name="camstream-room-state" content="ended"`) {
+	if err = errors.Join(err, res.Body.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `name="camstream-room-state" content="ended"`) {
 		t.Fatalf("old invitation did not render its terminal page: %s", body)
 	}
 	newRoom() // Restart in grace keeps the same port and resets the deadline.
@@ -55,10 +62,15 @@ func TestListenerDrainsAfterLastRoom(t *testing.T) {
 	if !runtime.Closed() {
 		t.Fatal("the new grace deadline did not close the listener")
 	}
-	origin, _ := url.Parse(page)
-	listener, err := net.Listen("tcp", origin.Host)
+	origin, err := url.Parse(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", origin.Host)
 	if err != nil {
 		t.Fatalf("grace did not release the port: %v", err)
 	}
-	_ = listener.Close()
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

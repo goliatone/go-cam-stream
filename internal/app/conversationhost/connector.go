@@ -113,19 +113,10 @@ func (c *Connector) start(ctx context.Context, reconnect bool) error {
 		}
 	}
 	if !loaded {
-		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", c.profile.Metrics)
-		if err != nil {
-			return ErrConnectorSetup
-		}
-		_ = listener.Close()
-		if err := c.validateFiles(true); err != nil {
+		if err := c.bootstrap(ctx); err != nil {
 			return err
 		}
-		if _, err := c.launch(ctx, "bootstrap", c.domain, c.plist); err != nil {
-			return ErrConnectorUnavailable
-		}
-	}
-	if loaded && (reconnect || !running) {
+	} else if reconnect || !running {
 		args := []string{"kickstart"}
 		if reconnect {
 			args = append(args, "-k")
@@ -134,6 +125,27 @@ func (c *Connector) start(ctx context.Context, reconnect bool) error {
 			return ErrConnectorUnavailable
 		}
 	}
+	return c.awaitRegistration(ctx, previousID)
+}
+
+func (c *Connector) bootstrap(ctx context.Context) error {
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", c.profile.Metrics)
+	if err != nil {
+		return ErrConnectorSetup
+	}
+	if err := listener.Close(); err != nil {
+		return ErrConnectorSetup
+	}
+	if err := c.validateFiles(true); err != nil {
+		return err
+	}
+	if _, err := c.launch(ctx, "bootstrap", c.domain, c.plist); err != nil {
+		return ErrConnectorUnavailable
+	}
+	return nil
+}
+
+func (c *Connector) awaitRegistration(ctx context.Context, previousID string) error {
 	tick := time.NewTicker(300 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -189,8 +201,8 @@ func (c *Connector) readyID(ctx context.Context) string {
 	}
 	defer response.Body.Close() //nolint:errcheck // Bounded read from local metrics only.
 	var reply struct {
-		ConnectorID      string `json:"connectorId"`
-		ReadyConnections int    `json:"readyConnections"`
+		ConnectorID      string `json:"connectorId"`      //nolint:tagliatelle // cloudflared response field.
+		ReadyConnections int    `json:"readyConnections"` //nolint:tagliatelle // cloudflared response field.
 	}
 	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 1024)).Decode(&reply) != nil || reply.ReadyConnections < 1 {
 		return ""
@@ -242,7 +254,7 @@ func (c *Connector) definition() []byte {
 	out.WriteString(`</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer><key>ProgramArguments</key><array>`)
 	for _, arg := range args {
 		out.WriteString("<string>")
-		_ = xml.EscapeText(&out, []byte(arg))
+		_ = xml.EscapeText(&out, []byte(arg)) //nolint:errcheck // strings.Builder writes cannot fail.
 		out.WriteString("</string>")
 	}
 	out.WriteString(`</array></dict></plist>`)

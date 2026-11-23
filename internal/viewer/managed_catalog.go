@@ -20,16 +20,17 @@ import (
 // ManagedRecord is private durable metadata. The creation anchor is permanent;
 // bounded receipts can expire without permitting a second camera creation.
 type ManagedRecord struct {
-	ID           cs.CameraID         `json:"id"`
-	PhysicalID   cs.PhysicalCameraID `json:"physical_id"`
-	Name         string              `json:"name"`
-	Creator      string              `json:"creator"`
-	Binding      AddressBinding      `json:"binding"`
-	Path         string              `json:"path"`
-	Query        string              `json:"query"`
-	CredentialID string              `json:"credential_id,omitempty"`
-	CreationKey  string              `json:"creation_key"`
-	CreatedAt    time.Time           `json:"created_at"`
+	ID                 cs.CameraID         `json:"id"`
+	PhysicalID         cs.PhysicalCameraID `json:"physical_id"`
+	Name               string              `json:"name"`
+	Creator            string              `json:"creator"`
+	Binding            AddressBinding      `json:"binding"`
+	Path               string              `json:"path"`
+	Query              string              `json:"query"`
+	CredentialID       string              `json:"credential_id,omitempty"`
+	ConnectionRevision string              `json:"connection_revision,omitempty"`
+	CreationKey        string              `json:"creation_key"`
+	CreatedAt          time.Time           `json:"created_at"`
 }
 
 func (ManagedRecord) String() string   { return "[managed camera]" }
@@ -45,12 +46,13 @@ func (ManagedCredential) String() string   { return "[managed credential]" }
 func (ManagedCredential) GoString() string { return "[managed credential]" }
 
 type ManagedReceipt struct {
-	OperationKey string            `json:"operation_key"`
-	Owner        string            `json:"owner"`
-	CandidateID  cs.CameraID       `json:"candidate_id"`
-	Kind         api.OperationKind `json:"kind,omitempty"` // empty for a save or sign-in change
-	Fingerprint  string            `json:"fingerprint"`    // save contains only IDs/revisions, never a credential hash
-	ExpiresAt    time.Time         `json:"expires_at"`
+	OperationKey    string            `json:"operation_key"`
+	Owner           string            `json:"owner"`
+	CandidateID     cs.CameraID       `json:"candidate_id"`
+	Kind            api.OperationKind `json:"kind,omitempty"` // empty for a save or sign-in change
+	Fingerprint     string            `json:"fingerprint"`    // save contains only IDs/revisions, never a credential hash
+	ExpiresAt       time.Time         `json:"expires_at"`
+	StoppedSessions int               `json:"stopped_sessions,omitempty"`
 }
 
 // isSave reports whether a receipt records a draft save rather than a change
@@ -118,6 +120,9 @@ func (m ManagedCatalog) Validate() error {
 		ids[c.ID] = true
 		physical[c.PhysicalID] = true
 		anchors[key] = true
+		if c.ConnectionRevision != "" && !config.ValidID(c.ConnectionRevision) {
+			return storageFailure()
+		}
 		if c.CredentialID != "" {
 			if !credentials[c.CredentialID] || used[c.CredentialID] {
 				return storageFailure()
@@ -155,6 +160,9 @@ func (m ManagedCatalog) Validate() error {
 			return storageFailure()
 		}
 		receipts[key] = true
+		if r.StoppedSessions < 0 || (r.Kind != api.OperationRemove && r.StoppedSessions != 0) {
+			return storageFailure()
+		}
 		// A removal receipt names its tombstone. A change receipt never reuses a
 		// creation key; a save receipt may only reuse its own camera's.
 		if r.Kind == api.OperationRemove {

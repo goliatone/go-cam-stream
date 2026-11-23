@@ -31,20 +31,21 @@ type ManagementOptions struct {
 	MaxSources     int
 }
 type cameraDraft struct {
-	owner           string
-	review          api.DraftReview
-	config          rtsp.Config
-	credential      *ManagedCredential
-	priorCredential string
-	binding         AddressBinding
-	camera          cs.Camera
-	session         cs.SessionID
-	passedAt        time.Time
-	testOutcome     api.TestStage // terminal intent, independent of fallible cleanup
-	testCancel      context.CancelFunc
-	cancelRequested bool
-	addressChange   bool   // a settings draft that moves its camera to config's address
-	fence           func() // releases the admission fence a settings draft holds
+	owner              string
+	review             api.DraftReview
+	config             rtsp.Config
+	credential         *ManagedCredential
+	priorCredential    string
+	connectionRevision string
+	binding            AddressBinding
+	camera             cs.Camera
+	session            cs.SessionID
+	passedAt           time.Time
+	testOutcome        api.TestStage // terminal intent, independent of fallible cleanup
+	testCancel         context.CancelFunc
+	cancelRequested    bool
+	addressChange      bool   // a settings draft that moves its camera to config's address
+	fence              func() // releases the admission fence a settings draft holds
 }
 type managementOperation struct {
 	owner, target string
@@ -491,7 +492,10 @@ func (s *CameraManagementService) Operation(ctx context.Context, key, candidate,
 		if candidate != "" && candidate != string(receipt.CandidateID) {
 			return api.OperationResult{}, denied()
 		}
-		change := s.changeResponse(receipt.CandidateID, receipt.Kind == api.OperationRemove, 0)
+		if !time.Now().Before(receipt.ExpiresAt) {
+			return api.OperationResult{OperationKey: key, Kind: receipt.Kind, State: api.OperationExpired, RuntimeEpoch: s.epoch, CandidateID: string(receipt.CandidateID)}, nil
+		}
+		change := s.changeResponse(receipt.CandidateID, receipt.Kind == api.OperationRemove, receipt.StoppedSessions)
 		return api.OperationResult{OperationKey: key, Kind: receipt.Kind, State: api.OperationSucceeded, RuntimeEpoch: s.epoch, CandidateID: string(receipt.CandidateID), Change: &change}, nil
 	}
 	if removed := s.removedCamera(principal(ctx), key); removed != nil {

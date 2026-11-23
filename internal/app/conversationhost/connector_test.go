@@ -16,16 +16,18 @@ import (
 
 func testConnector(t *testing.T) *Connector {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	metrics := listener.Addr().String()
-	_ = listener.Close()
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
 	ingress := config.SharingIngress{Mode: config.SharingIngressExternal, PublicBaseURL: "https://mac.example.test", GuestListen: "127.0.0.1:18894"}
 	const id = "356af671-6769-4c51-b6f1-3cd77fb7b76f"
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
+	if err = os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	c, err := NewConnector(dir, config.Conversations{Ingress: ingress, Connector: &config.CallConnector{

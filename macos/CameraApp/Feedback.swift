@@ -112,7 +112,7 @@ extension CameraModel {
                             message: "Camera access is restricted on this Mac. Contact your device administrator.", actions: [])
         default:
             return Feedback(tone: .unavailable, title: "Camstream needs camera access",
-                            message: "Allow access to stream your webcam to your server. Nothing is captured until you choose Start Camera.",
+                            message: "Allow access to preview your webcam in Settings or start a stream.",
                             actions: [.allowCamera])
         }
     }

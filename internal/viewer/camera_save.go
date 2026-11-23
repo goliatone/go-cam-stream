@@ -239,6 +239,7 @@ func (s *CameraManagementService) SaveCamera(ctx context.Context, r api.SaveCame
 		var record ManagedRecord
 		if d.review.CredentialUpdate {
 			record = previous
+			record.ConnectionRevision = randomManagementID()
 			record.CredentialID = ""
 			if d.credential != nil {
 				record.CredentialID = d.credential.ID

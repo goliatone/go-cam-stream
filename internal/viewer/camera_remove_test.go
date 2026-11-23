@@ -86,7 +86,7 @@ func TestRemoveCameraStopsViewersAndFreesItsAddress(t *testing.T) {
 			if api.ManagementPublicError(err).Error.Code == string(api.CodeOperationInProgress) {
 				return
 			}
-			if err != nil || !change.Removed || change.CameraID != saved.CameraID || change.CatalogRevision.Generation != 4 {
+			if err != nil || !change.Removed || change.CameraID != saved.CameraID || change.CatalogRevision.Generation != 4 || change.StoppedSessions != 2 {
 				t.Error("removal", change, err)
 			}
 			if change.StoppedSessions == 2 {
@@ -95,8 +95,8 @@ func TestRemoveCameraStopsViewersAndFreesItsAddress(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if removals.Load() != 1 {
-		t.Fatal("the stopped-session count was not reported once", removals.Load())
+	if removals.Load() == 0 {
+		t.Fatal("no removal reported the stopped-session count")
 	}
 	if listed(t, cameras, ctx, saved.CameraID) || !listed(t, cameras, ctx, kept.CameraID) {
 		t.Fatal("catalog after removal")
@@ -125,7 +125,7 @@ func TestRemoveCameraStopsViewersAndFreesItsAddress(t *testing.T) {
 	}
 
 	again, err := s.RemoveCamera(ctx, saved.CameraID, remove)
-	if err != nil || !again.Removed || again.StoppedSessions != 0 {
+	if err != nil || !again.Removed || again.StoppedSessions != 2 {
 		t.Fatal("removal replay", again, err)
 	}
 	changed := remove
@@ -134,8 +134,15 @@ func TestRemoveCameraStopsViewersAndFreesItsAddress(t *testing.T) {
 		t.Fatal("changed removal intent", err)
 	}
 	op, err := s.Operation(ctx, remove.OperationKey, saved.CameraID, "epoch", api.OperationLookup{Kind: api.OperationRemove})
-	if err != nil || op.State != api.OperationSucceeded || op.Change == nil || !op.Change.Removed {
+	if err != nil || op.State != api.OperationSucceeded || op.Change == nil || !op.Change.Removed || op.Change.StoppedSessions != 2 {
 		t.Fatal("removal lookup", op, err)
+	}
+	fresh, actor, _ := managementFixture(t, func(o *viewer.ManagementOptions) { o.Epoch = "restarted" })
+	if err = fresh.InitializeManagedState(actor, state); err != nil {
+		t.Fatal(err)
+	}
+	if op, err = fresh.Operation(actor, remove.OperationKey, saved.CameraID, "epoch", api.OperationLookup{Kind: api.OperationRemove}); err != nil || op.Change == nil || op.Change.StoppedSessions != 2 {
+		t.Fatal("removal lookup after restart", op, err)
 	}
 	if _, err = s.SaveCamera(ctx, firstSave); api.ManagementPublicError(err).Error.Code != string(api.CodeReceiptExpired) {
 		t.Fatal("a removed camera's creation replayed", err)
@@ -187,7 +194,10 @@ func TestRemovalCommitOutcomesHoldOrReleaseTheFence(t *testing.T) {
 	saved := savedCamera(t, s, ctx, draftRequest(1), 2, 1)
 	id := cs.CameraID(saved.CameraID)
 	offer := api.SDPOffer{Type: "offer", SDP: "v=0\r\n"}
-	remove := api.RemoveCameraRequest{Mutation: mutation(10), CatalogRevision: cameras.CatalogRevision()}
+	if _, err := cameras.CreateSession(ctx, id, "default", api.CreateSessionRequest{Offer: offer}); err != nil {
+		t.Fatal(err)
+	}
+	remove := api.RemoveCameraRequest{Mutation: mutation(10), CatalogRevision: cameras.CatalogRevision(), StopViewers: true}
 	restore := viewer.FailManagedSyncForTest(store)
 	if _, err := s.RemoveCamera(ctx, saved.CameraID, remove); api.ManagementPublicError(err).Error.Code != string(api.CodeSaveUnknown) {
 		t.Fatal("removal acknowledged before durability", err)
@@ -204,7 +214,7 @@ func TestRemovalCommitOutcomesHoldOrReleaseTheFence(t *testing.T) {
 	}
 	restore()
 	op, err := s.Operation(ctx, remove.OperationKey, saved.CameraID, "epoch", lookup)
-	if err != nil || op.State != api.OperationSucceeded || op.Change == nil || !op.Change.Removed {
+	if err != nil || op.State != api.OperationSucceeded || op.Change == nil || !op.Change.Removed || op.Change.StoppedSessions != 1 {
 		t.Fatal("recovered removal", op, err)
 	}
 	if listed(t, cameras, ctx, saved.CameraID) {

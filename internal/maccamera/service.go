@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -219,6 +220,16 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 			if _, ok := audioMessages[failure.Code]; ok {
 				return audioFailure(failure.Code)
 			}
+			switch failure.Code {
+			case "device_ambiguous":
+				return errCameraAmbiguous
+			case "device_unavailable":
+				return errCameraUnavailable
+			case "capture_format_unsupported":
+				return errCameraFormat
+			case "capture_no_frames":
+				return errCameraNoFrames
+			}
 		}
 		return errors.New("camera stopped with an error; see the supervisor message")
 	}
@@ -295,7 +306,7 @@ func (s *Service) stoppedStatus(state string) Status {
 
 // ExportLegacy writes a separate video-only configuration for a stopped
 // downgrade. It does not overwrite active settings or rotate credentials.
-func (s *Service) ExportLegacy() (string, error) {
+func (s *Service) ExportLegacy(ctx context.Context) (string, error) {
 	lock, err := s.lock()
 	if err != nil {
 		return "", err
@@ -304,6 +315,25 @@ func (s *Service) ExportLegacy() (string, error) {
 	c, _, err := load(s.Dir)
 	if err != nil {
 		return "", err
+	}
+	if _, exact := cameraUID(c.Device); exact {
+		discovery := *s
+		if discovery.Tools.FFmpeg == "" {
+			if discovery.Tools, err = ResolveTools(); err != nil {
+				return "", err
+			}
+		}
+		devices, err := discovery.Devices(ctx)
+		if err != nil {
+			return "", err
+		}
+		device := slices.IndexFunc(devices, func(device Device) bool { return device.ID == c.Device })
+		if device < 0 {
+			return "", errCameraUnavailable
+		}
+		if c.Device, err = legacyDeviceName(devices[device], devices); err != nil {
+			return "", errors.New("the selected webcam cannot be identified by name in the older runtime; choose a uniquely named webcam before exporting legacy settings")
+		}
 	}
 	legacy := map[string]any{"device": c.Device, "listen": c.Listen, "host": c.Host, "port": c.Port, "path": c.Path, "width": c.Width, "height": c.Height, "fps": c.FPS}
 	path := filepath.Join(s.Dir, "camera-legacy.json")

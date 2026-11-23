@@ -107,14 +107,7 @@ func execute(ctx context.Context, args []string, serve ServeFunc, prepare Prepar
 		return validate(ctx, o.path)
 	}
 	if o.action == "prepare-rollback" {
-		if o.path == "" || prepare == nil {
-			return nil, invalid()
-		}
-		removed, err := prepare(ctx, o.path)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]int{"credential_receipts_removed": removed}, nil
+		return prepareRollback(ctx, o.path, prepare)
 	}
 	if o.action != "list" && (!config.ValidID(o.camera) || (o.stream != "" && !config.ValidID(o.stream))) {
 		return nil, invalid()
@@ -128,6 +121,17 @@ func execute(ctx context.Context, args []string, serve ServeFunc, prepare Prepar
 	}
 	defer client.Close()
 	return remote(ctx, client, o)
+}
+
+func prepareRollback(ctx context.Context, path string, prepare PrepareRollbackFunc) (any, error) {
+	if path == "" || prepare == nil {
+		return nil, invalid()
+	}
+	removed, err := prepare(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]int{"credential_receipts_removed": removed}, nil
 }
 func validate(ctx context.Context, path string) (any, error) {
 	if path == "" {

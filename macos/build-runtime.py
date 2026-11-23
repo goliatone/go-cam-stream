@@ -92,6 +92,11 @@ def build(args):
     if preview.stat().st_size != 3 * 640 * 360 * 4:
         raise ValueError("preview output size mismatch")
     preview.unlink()
+    if any("scale,pad,setsar" in option for option in lock["configure"]["ffmpeg"]):
+        run("video-format-smoke", [str(stage / "tools/ffmpeg"), "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=1920x1440:rate=30", "-an", "-frames:v", "3",
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "null", "-"], work)
     for name, directory in source_dirs.items():
         notice_dir = stage / "licenses" / name
         notice_dir.mkdir()
@@ -106,7 +111,7 @@ def build(args):
         "Camstream Camera runtime pack\n\n"
         "FFmpeg is built with GPL libx264 and distributed under GPL-2.0-or-later.\n"
         "Exact FFmpeg/x264 sources and build recipes accompany this pack.\n"
-        "FFmpeg is modified by the ordered, hash-pinned patches in the recipe (exact audio UID/discovery and bounded audio FIFO).\n"
+        "FFmpeg is modified by the ordered, hash-pinned patches in the recipe for device identity and audio capture.\n"
         "Static libopus (BSD-3-Clause) source and upstream license accompany audio-capable packs.\n"
         "pkgconf (ISC) is a build-only dependency; its source accompanies the recipe.\n"
         "MediaMTX is an unmodified, hash-pinned official MIT-licensed release binary.\n"

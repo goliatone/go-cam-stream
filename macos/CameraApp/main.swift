@@ -157,7 +157,11 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidMiniaturize(_ notification: Notification) { setWindowVisible(false) }
     func windowDidDeminiaturize(_ notification: Notification) { updateWindowVisibility() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateWindowVisibility() }
-    func applicationDidHide(_ notification: Notification) { popover?.close(); setWindowVisible(false) }
+    func applicationDidHide(_ notification: Notification) {
+        model.webcamPreview.stop()
+        popover?.close()
+        setWindowVisible(false)
+    }
     func applicationDidUnhide(_ notification: Notification) { updateWindowVisibility() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func application(_ application: NSApplication, open urls: [URL]) {

@@ -1,0 +1,64 @@
+--- a/libavdevice/avfoundation.m
++++ b/libavdevice/avfoundation.m
+@@ -355,7 +355,40 @@
+  *
+  * The NSUndefinedKeyException must be handled by the caller of this function.
+  *
++ */
++/*
++ * The configured stream format and the native device format are independent.
++ * Prefer the requested mode when available, otherwise keep the session's
++ * native mode. The publisher scales, pads and resamples the video it receives.
+  */
++static int configure_camstream_video_device(AVFormatContext *s, AVCaptureDevice *device)
++{
++    AVFContext *ctx = s->priv_data;
++    const double fps = av_q2d(ctx->framerate);
++
++    for (AVCaptureDeviceFormat *format in device.formats) {
++        CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
++        if (size.width != ctx->width || size.height != ctx->height)
++            continue;
++        for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
++            if (fps < range.minFrameRate || fps > range.maxFrameRate)
++                continue;
++            if (![device lockForConfiguration:NULL]) {
++                av_log(s, AV_LOG_ERROR, "Camstream video mode unavailable\n");
++                return AVERROR(EINVAL);
++            }
++            device.activeFormat = format;
++            CMTime duration = CMTimeMake(ctx->framerate.den, ctx->framerate.num);
++            device.activeVideoMinFrameDuration = duration;
++            device.activeVideoMaxFrameDuration = duration;
++            [device unlockForConfiguration];
++            return 0;
++        }
++    }
++
++    return 0;
++}
++
+ static int configure_video_device(AVFormatContext *s, AVCaptureDevice *video_device)
+ {
+     AVFContext *ctx = (AVFContext*)s->priv_data;
+@@ -493,7 +526,10 @@
+ 
+     // Configure device framerate and video size
+     @try {
+-        if ((ret = configure_video_device(s, video_device)) < 0) {
++        ret = ctx->camstream_video_uid
++            ? configure_camstream_video_device(s, video_device)
++            : configure_video_device(s, video_device);
++        if (ret < 0) {
+             return ret;
+         }
+     } @catch (NSException *exception) {
+@@ -868,7 +904,7 @@
+                 if ([ids containsObject:uid]) continue;
+                 [ids addObject:uid];
+                 [records addObject:@{@"id":uid, @"name":name,
+-                    @"builtin":@([[device deviceType] isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera])}];
++                    @"builtin":@([[device deviceType] isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera] && ![device isContinuityCamera])}];
+             }
+         }
+         NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"version":@1, @"devices":records}

@@ -1,0 +1,105 @@
+--- a/libavdevice/avfoundation.m
++++ b/libavdevice/avfoundation.m
+@@ -105,6 +105,8 @@
+     int             video_is_screen;
+ 
+     int             list_devices;
++    int             camstream_list_video_devices;
++    char           *camstream_video_uid;
+     int             camstream_list_audio_devices;
+     char           *camstream_audio_uid;
+     int             video_device_index;
+@@ -855,6 +857,29 @@
+ #endif
+ 
+     // List devices if requested
++    if (ctx->camstream_list_video_devices) {
++        NSMutableArray *records = [NSMutableArray array];
++        NSMutableSet *ids = [NSMutableSet set];
++        for (NSArray *inventory in @[devices ?: @[], devices_muxed ?: @[]]) {
++            for (AVCaptureDevice *device in inventory) {
++                NSString *uid = [device uniqueID];
++                NSString *name = [device localizedName];
++                if (!camstreamValidUID(uid) || ![name length]) goto fail;
++                if ([ids containsObject:uid]) continue;
++                [ids addObject:uid];
++                [records addObject:@{@"id":uid, @"name":name,
++                    @"builtin":@([[device deviceType] isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera])}];
++            }
++        }
++        NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"version":@1, @"devices":records}
++                                                     options:0 error:nil];
++        if (!json || [json length] > 131072) goto fail;
++        fwrite([json bytes], 1, [json length], stdout);
++        fputc('\n', stdout);
++        fflush(stdout);
++        goto fail; /* Enumeration does not start a capture session. */
++    }
++
+     if (ctx->camstream_list_audio_devices) {
+         NSMutableArray *records = [NSMutableArray array];
+         NSMutableSet *ids = [NSMutableSet set];
+@@ -919,7 +944,22 @@
+         sscanf(ctx->audio_filename, "%d", &ctx->audio_device_index);
+     }
+ 
+-    if (ctx->video_device_index >= 0) {
++    if (ctx->camstream_video_uid) {
++        if (ctx->video_device_index >= 0 || !ctx->video_filename || strcmp(ctx->video_filename, "none")) {
++            av_log(ctx, AV_LOG_ERROR, "Conflicting video selectors\n");
++            goto fail;
++        }
++        NSString *uid = [NSString stringWithUTF8String:ctx->camstream_video_uid];
++        video_device = camstreamSelectUniqueDevice(devices, uid);
++        if (!video_device) {
++            video_device = camstreamSelectUniqueDevice(devices_muxed, uid);
++            ctx->video_is_muxed = video_device != nil;
++        }
++        if (!video_device || ![video_device isConnected]) {
++            av_log(ctx, AV_LOG_ERROR, "Selected video identity unavailable\n");
++            goto fail;
++        }
++    } else if (ctx->video_device_index >= 0) {
+         if (ctx->video_device_index < ctx->num_video_devices) {
+             if (ctx->video_device_index < [devices count]) {
+                 video_device = [devices objectAtIndex:ctx->video_device_index];
+@@ -1027,7 +1067,7 @@
+             goto fail;
+         }
+         NSString *uid = [NSString stringWithUTF8String:ctx->camstream_audio_uid];
+-        audio_device = camstreamSelectAudio(getDevicesWithMediaType(AVMediaTypeAudio), uid);
++        audio_device = camstreamSelectUniqueDevice(getDevicesWithMediaType(AVMediaTypeAudio), uid);
+         if (!audio_device || ![audio_device isConnected]) {
+             av_log(ctx, AV_LOG_ERROR, "Selected audio identity unavailable\n");
+             goto fail;
+@@ -1082,6 +1122,10 @@
+     // Initialize capture session
+     ctx->capture_session = [[AVCaptureSession alloc] init];
+ 
++    if (video_device && ctx->camstream_video_uid && ![video_device isConnected]) {
++        av_log(s, AV_LOG_ERROR, "Selected video identity disconnected\n");
++        goto fail;
++    }
+     if (video_device && add_video_device(s, video_device)) {
+         goto fail;
+     }
+@@ -1328,6 +1372,8 @@
+ }
+ 
+ static const AVOption options[] = {
++    { "camstream_video_uid", "select a camera by its AVFoundation UID", offsetof(AVFContext, camstream_video_uid), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
++    { "camstream_list_video_devices", "emit versioned camera UID JSON without capture", offsetof(AVFContext, camstream_list_video_devices), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+     { "camstream_audio_uid", "select exactly one audio UID, without fallback", offsetof(AVFContext, camstream_audio_uid), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
+     { "camstream_list_audio_devices", "emit versioned audio UID JSON without capture (enumeration exit)", offsetof(AVFContext, camstream_list_audio_devices), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+     { "list_devices", "list available devices", offsetof(AVFContext, list_devices), AV_OPT_TYPE_BOOL, {.i64=0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+--- a/libavdevice/camstream_audio_uid.h
++++ b/libavdevice/camstream_audio_uid.h
+@@ -4,7 +4,7 @@
+     return uid && [uid length] && [uid lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= 1024 &&
+         [uid rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location == NSNotFound;
+ }
+-static id camstreamSelectAudio(NSArray *devices, NSString *uid) {
++static id camstreamSelectUniqueDevice(NSArray *devices, NSString *uid) {
+     if (!camstreamValidUID(uid)) return nil;
+     id selected = nil;
+     for (id device in devices) {

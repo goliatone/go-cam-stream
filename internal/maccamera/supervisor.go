@@ -2,6 +2,7 @@ package maccamera
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,32 @@ type child struct {
 	cmd  *exec.Cmd
 	done chan struct{}
 	err  error
+}
+
+var errCameraFormat = errors.New("selected webcam could not use a supported video format")
+var errCameraNoFrames = errors.New("selected webcam stopped providing video frames")
+
+// Keep only enough private stderr to classify an early failure. Wait joins
+// the stderr copy before the supervisor inspects it. Raw output stays private.
+type captureDiagnostics struct{ data []byte }
+
+func (d *captureDiagnostics) Write(p []byte) (int, error) {
+	d.data = append(d.data, p[:min(len(p), 16*1024-len(d.data))]...)
+	return len(p), nil
+}
+
+func (d *captureDiagnostics) failure() error {
+	for _, marker := range []string{"Camstream video mode unavailable", "Selected video size (", "Selected framerate (", "No such filter: 'pad'"} {
+		if bytes.Contains(d.data, []byte(marker)) {
+			return errCameraFormat
+		}
+	}
+	for _, marker := range []string{"Selected video identity unavailable", "Selected video identity disconnected", "Video device not found"} {
+		if bytes.Contains(d.data, []byte(marker)) {
+			return errCameraUnavailable
+		}
+	}
+	return nil
 }
 
 func startChild(cmd *exec.Cmd) (*child, error) {
@@ -61,6 +88,11 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 		return err
 	}
 	defer lock.Close() //nolint:errcheck // Closing releases the flock after child cleanup.
+	previewLock, err := s.namedLock("webcam-preview.lock")
+	if err != nil {
+		return err
+	}
+	defer previewLock.Close() //nolint:errcheck // Keep the webcam reserved through child cleanup.
 	c, secret, err := load(s.Dir)
 	if err != nil {
 		return err
@@ -77,7 +109,21 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 		}
 		return err
 	}
-
+	discoveryCtx, stopDiscovery := context.WithDeadline(ctx, deadline)
+	devices, err := s.Devices(discoveryCtx)
+	stopDiscovery()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if err != nil {
+		if c.AudioEnabled && errors.Is(err, context.DeadlineExceeded) {
+			return audioFailure("audio_startup_timeout")
+		}
+		return errCameraUnavailable
+	}
+	if c.Device, err = selectDevice(c.Device, devices); err != nil {
+		return err
+	}
 	dir, err := s.runtimeDir()
 	if err != nil {
 		return err
@@ -214,6 +260,8 @@ func (s *Service) runMedia(ctx context.Context, c Config, secret credentials, di
 		return audioFailure("audio_startup_timeout")
 	}
 	cmd := exec.Command(s.Tools.FFmpeg, ffmpegArgs(c)...) //nolint:noctx // Owned child cleanup uses bounded interrupt/kill and reap.
+	diagnostics := &captureDiagnostics{}
+	cmd.Stderr = diagnostics
 	progress, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -227,7 +275,7 @@ func (s *Service) runMedia(ctx context.Context, c Config, secret credentials, di
 	if _, err := fmt.Fprintln(out, "Capture starting; waiting for published media. Ctrl-C or camstream-camera stop ends capture."); err != nil {
 		return err
 	}
-	return s.monitor(ctx, c, secret, dir, server, producer, frames, audio, deadline, out)
+	return s.monitor(ctx, c, secret, dir, server, producer, frames, audio, deadline, out, diagnostics)
 }
 
 func waitServer(ctx context.Context, server *child, ready <-chan struct{}) error {
@@ -256,8 +304,8 @@ func readProgress(r io.Reader, frames *atomic.Int64) {
 	}
 }
 
-func (s *Service) monitor(ctx context.Context, c Config, secret credentials, dir string, server, producer *child, frames *atomic.Int64, audio *audioProgress, deadline time.Time, out io.Writer) error {
-	wait := 45 * time.Second
+func (s *Service) monitor(ctx context.Context, c Config, secret credentials, dir string, server, producer *child, frames *atomic.Int64, audio *audioProgress, deadline time.Time, out io.Writer, diagnostics *captureDiagnostics) error {
+	wait := 20 * time.Second
 	if c.AudioEnabled {
 		wait = time.Until(deadline)
 	}
@@ -268,6 +316,8 @@ func (s *Service) monitor(ctx context.Context, c Config, secret credentials, dir
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	ready := false
+	var lastFrame int64
+	var lastVideo time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -277,16 +327,29 @@ func (s *Service) monitor(ctx context.Context, c Config, secret credentials, dir
 		case err := <-watch.observed:
 			return err
 		case <-producer.done:
+			if err := diagnostics.failure(); err != nil {
+				return err
+			}
 			return producerFailure(c)
 		case <-startup.C:
 			if !ready && !(mediaReady(c, frames.Load(), audio)) {
+				if frames.Load() == 0 {
+					return errCameraNoFrames
+				}
 				return startupFailure(c)
 			}
-		case <-ticker.C:
-			if err := watch.tick(frames.Load()); err != nil {
+		case now := <-ticker.C:
+			frame := frames.Load()
+			if frame > lastFrame {
+				lastFrame, lastVideo = frame, now
+			}
+			if ready && now.Sub(lastVideo) >= 8*time.Second {
+				return errCameraNoFrames
+			}
+			if err := watch.tick(frame); err != nil {
 				return err
 			}
-			if !ready && mediaReady(c, frames.Load(), audio) {
+			if !ready && mediaReady(c, frame, audio) {
 				ready = true
 				if _, err := fmt.Fprintln(out, "Streaming configured media at "+c.URL()+" (authenticated RTSP/TCP)"); err != nil {
 					return err
@@ -345,5 +408,5 @@ func startupFailure(c Config) error {
 	if c.AudioEnabled {
 		return audioFailure("audio_startup_timeout")
 	}
-	return errors.New("no video frames within 45 seconds; grant camera access and retry")
+	return errCameraNoFrames
 }

@@ -24,7 +24,9 @@ final class CameraModel: ObservableObject {
     /// The first-run guide's step. The guide shows while the camera service
     /// has no settings, until you finish or skip it.
     enum WelcomeStep: Int, CaseIterable { case access, camera, microphone }
-    @Published private(set) var welcome: WelcomeStep?
+    @Published private(set) var welcome: WelcomeStep? {
+        didSet { if welcome != .camera { webcamPreview.stop(in: .welcome) } }
+    }
     private var welcomeDone = false
     /// How Start Call opens a call. Chosen in Settings → Calls.
     enum CallStart: String, CaseIterable { case cameraOff, setup, browser }
@@ -64,6 +66,7 @@ final class CameraModel: ObservableObject {
     private var shareWhenLive = false
     private var copyWhenShared = false
     let preview = PreviewController()
+    let webcamPreview = WebcamPreview()
     // Sharing is a separate model on the same helper pipe. It follows capture
     // and helper state but never starts capture itself.
     let sharing: SharingModel
@@ -142,6 +145,7 @@ final class CameraModel: ObservableObject {
         }
     }
     private var openingGuestAttempt: GuestAdmissionAttempt?
+    private var retryGuestAttempt: GuestAdmissionAttempt?
     private struct ConversationDeparture {
         let roomID: String?
         let method: ConversationMethod
@@ -231,7 +235,7 @@ final class CameraModel: ObservableObject {
     /// stream released capture. Reserve it against other supervisors until
     /// the call finishes with its devices.
     func claimConversationCapture(stop: @escaping () -> Void) -> UUID? {
-        guard canEditSettings, capture.releasedForCall,
+        guard canEditSettings, capture.releasedForCall, !webcamPreview.ownsCapture,
               let unlock = client.reserveCallCapture(in: directory) else { return nil }
         let lease = CaptureLease(stop: stop, unlock: unlock)
         conversationLease = lease
@@ -244,6 +248,13 @@ final class CameraModel: ObservableObject {
     /// A Stop in flight is awaited, and an unresolved failure first asks the
     /// helper to confirm cleanup. An active stream is never stopped here.
     func requestConversationCapture(stop: @escaping () -> Void, completion: @escaping (UUID?) -> Void) {
+        if webcamPreview.ownsCapture {
+            webcamPreview.stop { [weak self] in
+                guard let self else { completion(nil); return }
+                self.requestConversationCapture(stop: stop, completion: completion)
+            }
+            return
+        }
         if let lease = claimConversationCapture(stop: stop) { completion(lease); return }
         guard ready, !quitting, !conversationCapture else { completion(nil); return }
         let retry = { [weak self] in completion(self?.claimConversationCapture(stop: stop)) }
@@ -511,6 +522,13 @@ final class CameraModel: ObservableObject {
             return
         }
         guard canStartConversation else { return }
+        if let retryGuestAttempt, retryGuestAttempt.invitation != invitation {
+            // Release an uncertain seat before replacing its invitation.
+            closeConversation { [weak self] released in
+                if released { self?.presentConversation(method, invitation: invitation, hostStart: hostStart) }
+            }
+            return
+        }
         let role: ConversationRole = method == .openLink ? .guest : .host
         if role == .host { lastHostStart = (method, hostStart) }
         openingConversation = true
@@ -521,7 +539,9 @@ final class CameraModel: ObservableObject {
         invitationRevision += 1
         let revision = invitationRevision
         let generation = helperGeneration
-        let attempt = helper.guestAdmissionVersion == 1 ? invitation.flatMap(GuestAdmissionAttempt.init(invitation:)) : nil
+        let attempt = helper.guestAdmissionVersion == 1
+            ? retryGuestAttempt ?? invitation.flatMap(GuestAdmissionAttempt.init(invitation:)) : nil
+        retryGuestAttempt = nil
         openingGuestAttempt = attempt
         let receive: ([String: Any]) -> Void = { [weak self] reply in
             guard let self, self.helperGeneration == generation else { return }
@@ -543,7 +563,12 @@ final class CameraModel: ObservableObject {
                 if let prejoin { self.releaseAdmission(self.departure(for: prejoin)) { _ in } }
                 let fault: ConversationFault? = self.decode(reply["error"])
                 self.conversationFault = fault
-                if code == "room_full" { self.retryInvitationURL = invitation }
+                if code == "room_full" || (code == "media_unreachable" && fault?.setup == nil) {
+                    self.retryInvitationURL = invitation
+                }
+                if prejoin == nil, code == "media_unreachable" || code == "incompatible_client" {
+                    self.retryGuestAttempt = attempt
+                }
                 self.conversationNotice = ConversationNotice(
                     text: Self.conversationProblem(code: fault?.code ?? code, setup: fault?.setup, role: role),
                     problem: true, role: role, opening: true)
@@ -659,7 +684,9 @@ final class CameraModel: ObservableObject {
         closingConversation = true
         let surface = conversationSurface
         var departure = conversationPrejoin.map(self.departure(for:)) ?? failedDeparture
-        let uncertain = openingGuestAttempt.map { ConversationDeparture($0, helperGeneration: helperGeneration) }
+        let uncertain = (openingGuestAttempt ?? retryGuestAttempt).map { ConversationDeparture($0, helperGeneration: helperGeneration) }
+        retryGuestAttempt = nil
+        retryInvitationURL = nil
         let awaitingAdmission = openingConversation && ready
         if !awaitingAdmission && departure == nil { departure = uncertain }
         conversationSurface = nil
@@ -1206,6 +1233,13 @@ final class CameraModel: ObservableObject {
         guard canSave else { return }
         configure(quiet: false) { _ in }
     }
+
+    func chooseWebcam(_ selection: String, in surface: WebcamPreview.Surface) {
+        guard settingsEditable, permission == "authorized", callStage == nil, !hostSleeping else { return }
+        draft.device = selection
+        webcamPreview.open(selection, in: surface, directory: directory)
+        applySettings()
+    }
     /// Applies valid changes without a notice, as Settings does when a value
     /// changes. A request made while the helper is busy waits for it; one
     /// that is invalid or locked completes as not applied and stays a draft.
@@ -1304,6 +1338,10 @@ final class CameraModel: ObservableObject {
     func start() {
         refreshPermission()
         guard canStart else { cancelShareChain(); changed(); return }
+        if webcamPreview.ownsCapture {
+            webcamPreview.stop { [weak self] in self?.start() }
+            return
+        }
         notice = nil
         // Starting the camera, from the menus too, ends the welcome guide.
         if welcome != nil { welcome = nil; welcomeDone = true }
@@ -1359,6 +1397,7 @@ final class CameraModel: ObservableObject {
     func quit() -> Bool {
         if !quitting {
             quitting = true
+            if webcamPreview.ownsCapture { webcamPreview.stop { [weak self] in self?.advanceQuit() } }
             syncPreview()
             sharing.disconnect()
             pendingConversationURL = nil
@@ -1374,7 +1413,7 @@ final class CameraModel: ObservableObject {
         return false
     }
 
-    private var canFinishQuit: Bool { exited && !closingConversation && conversationLease == nil }
+    private var canFinishQuit: Bool { exited && !closingConversation && conversationLease == nil && !webcamPreview.ownsCapture }
 
     private func shutdownForQuit() {
         guard !exited, !quitShutdownStarted else { return }
@@ -1394,6 +1433,7 @@ final class CameraModel: ObservableObject {
     }
     func prepareForSleep(acknowledge: @escaping () -> Void) {
         hostSleeping = true
+        webcamPreview.stop()
         acknowledgeSleep()
         sleepRevision += 1
         let revision = sleepRevision
@@ -1512,13 +1552,19 @@ final class CameraModel: ObservableObject {
         if visible { previewSurfaces.insert(surface) } else { previewSurfaces.remove(surface) }
         syncPreview()
     }
-    func setWindowVisible(_ visible: Bool) { setPreviewSurface(.window, visible: visible) }
+    func setWindowVisible(_ visible: Bool) {
+        if !visible { webcamPreview.stop(in: .welcome) }
+        setPreviewSurface(.window, visible: visible)
+    }
     private func syncPreview() {
         // A call on the stage hides the preview, so it pauses.
         preview.update(wanted: !quitting && !previewSurfaces.isEmpty && callStage == nil && capture.phase == .streaming,
                        ready: ready && !quitting, supported: client.previewVersion == 1, captureGeneration: capture.generation)
     }
     private func changed() {
+        if webcamPreview.surface != nil && (!ready || permission != "authorized" || callStage != nil) {
+            webcamPreview.stop()
+        }
         syncPreview()
         let live = capture.phase == .streaming
         if live != (streamingSince != nil) { streamingSince = live ? Date() : nil }

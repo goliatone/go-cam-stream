@@ -183,6 +183,38 @@ func TestAnonymousCameraAddressChangeStaysAnonymous(t *testing.T) {
 	}
 }
 
+func TestAnonymousCameraRejectsStaleTestedAddressChange(t *testing.T) {
+	s, ctx, _, cameras, _ := editFixture(t)
+	saved := savedCamera(t, s, ctx, draftRequest(1), 2, 1)
+	draft := func(key int, endpoint string) api.DraftReview {
+		t.Helper()
+		d, err := s.CredentialDraft(ctx, api.CredentialDraftRequest{Mutation: mutation(key), CameraID: saved.CameraID, Endpoint: endpoint})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	save := func(key int, d api.DraftReview) error {
+		_, err := s.SaveCamera(ctx, api.SaveCameraRequest{Mutation: mutation(key), DraftID: d.ID, ExpectedRevision: d.Revision, CatalogRevision: cameras.CatalogRevision()})
+		return err
+	}
+	stale := draft(10, "rtsp://localhost:18558/stale")
+	passProbe(t, s, ctx, stale, 11)
+	endpoint := "rtsp://localhost:18559/current"
+	current := draft(20, endpoint)
+	passProbe(t, s, ctx, current, 21)
+	if err := save(23, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(24, stale); api.ManagementPublicError(err).Error.Code != string(api.CodeCredentialsChanged) {
+		t.Fatal("stale probe should be rejected even with a fresh catalog revision", err)
+	}
+	settings, err := s.CameraSettings(ctx, saved.CameraID)
+	if err != nil || settings.Endpoint != endpoint {
+		t.Fatal("stale probe replaced the saved endpoint", settings, err)
+	}
+}
+
 func TestAddressConflictAndFailedTestLeaveTheCameraUntouched(t *testing.T) {
 	s, ctx, _, cameras, _, backend := editHost(t)
 	first := savedCamera(t, s, ctx, draftRequest(1), 2, 1)

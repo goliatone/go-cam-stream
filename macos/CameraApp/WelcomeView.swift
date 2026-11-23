@@ -29,7 +29,7 @@ struct WelcomeView: View {
                 .resizable().frame(width: 64, height: 64).accessibilityHidden(true)
             Text("Welcome to Camstream Camera").font(.title.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
-            Text("Set up your camera in three steps. Nothing is captured until you choose Start Camera.")
+            Text("Set up your camera in three steps. Choose a webcam to preview it, then start streaming from the main window.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -53,7 +53,7 @@ struct WelcomeView: View {
             }
         case .camera:
             Section {
-                WebcamFields(model: model)
+                WebcamFields(model: model, preview: model.webcamPreview, surface: .welcome)
             } footer: {
                 SettingsFootnote(WebcamFields.footnote)
             }
@@ -74,7 +74,7 @@ struct WelcomeView: View {
         case "authorized": return "Camera access is on. Continue to choose your webcam."
         case "denied": return "Camera access is off. Turn on Camstream Camera in Privacy & Security → Camera, then come back here."
         case "restricted": return "Camera access is restricted on this Mac. Contact your device administrator, or choose Set Up Later."
-        default: return "macOS asks once. Camstream Camera uses the camera only while you stream or are in a call."
+        default: return "macOS asks once. Camera access is used for previews, streams and calls."
         }
     }
 

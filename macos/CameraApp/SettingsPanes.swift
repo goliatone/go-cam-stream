@@ -39,11 +39,9 @@ struct CameraSettingsPane: View {
                         }
                     }
                 }
-            } footer: {
-                SettingsFootnote("Nothing is captured until you choose Start Camera.")
             }
             Section {
-                WebcamFields(model: model)
+                WebcamFields(model: model, preview: model.webcamPreview, surface: .settings)
             } footer: {
                 SettingsFootnote(WebcamFields.footnote)
             }
@@ -68,26 +66,97 @@ struct CameraSettingsPane: View {
 /// or leave the field.
 struct WebcamFields: View {
     @ObservedObject var model: CameraModel
+    @ObservedObject var preview: WebcamPreview
+    let surface: WebcamPreview.Surface
     @FocusState private var nameFocused: Bool
 
-    static let footnote = "The camera name ends the RTSP address: letters, numbers, dashes or underscores."
+    static let footnote = "The camera name ends the RTSP address. Use letters, numbers, dashes or underscores."
+
+    private static let automatic = "Built-in camera (automatic)"
+
+    private var currentChoice: String {
+        let saved = model.draft.device
+        guard saved != "auto", !saved.hasPrefix("uid:") else { return saved }
+        let matching = model.devices.filter { $0.name == saved }
+        return matching.count == 1 ? matching[0].selector ?? saved : saved
+    }
+
+    private var currentLabel: String {
+        if currentChoice == "auto" { return Self.automatic }
+        let matches = model.devices.filter { ($0.selector ?? $0.name) == currentChoice || $0.name == currentChoice }
+        if matches.count > 1 { return "Saved webcam — choose again" }
+        return matches.first?.label(in: model.devices) ?? "Saved webcam — unavailable"
+    }
 
     var body: some View {
-        Picker("Webcam", selection: Binding(get: { model.draft.device }, set: { device in
-            model.draft.device = device
-            model.applySettings()
-        })) {
-            Text("Built-in camera (automatic)").tag("auto")
-            if model.draft.device != "auto", !model.devices.contains(where: { $0.name == model.draft.device }) {
-                Text("\(model.draft.device) — unavailable").tag(model.draft.device)
+        LabeledContent("Webcam") {
+            // Rows are explicit actions so reselecting a saved camera also gives
+            // a preview, including after closing Settings or reconnecting it.
+            Menu(currentLabel) {
+                choice(Self.automatic, "auto")
+                ForEach(model.devices) { device in
+                    if let selector = device.selector {
+                        choice(device.label(in: model.devices), selector)
+                    } else if model.devices.filter({ $0.name == device.name }).count == 1 {
+                        choice(device.name, device.name)
+                    }
+                }
             }
-            ForEach(model.devices) { device in Text(device.name).tag(device.name) }
+            .accessibilityIdentifier("webcam-picker")
+            .accessibilityHint("Choose a webcam to start a local preview.")
+            .disabled(model.permission != "authorized" || model.callStage != nil)
         }
+        previewContent
         TextField("Camera name", text: $model.draft.path, prompt: Text("macbook"))
             .focused($nameFocused)
             .onSubmit { model.applySettings() }
             .onChange(of: nameFocused) { _, focused in if !focused { model.applySettings() } }
         if let problem = model.nameValidation { FieldProblem(problem) }
+    }
+
+    private func choice(_ name: String, _ selection: String) -> some View {
+        Button {
+            model.chooseWebcam(selection, in: surface)
+        } label: {
+            if currentChoice == selection { Label(name, systemImage: "checkmark") }
+            else { Text(name) }
+        }
+    }
+
+    @ViewBuilder private var previewContent: some View {
+        if preview.surface == surface {
+            switch preview.phase {
+            case .idle: previewHint
+            case .opening:
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Opening camera…")
+                    Spacer()
+                    Button("Stop Preview") { preview.stop(in: surface) }
+                }
+            case let .live(session):
+                VStack(alignment: .leading, spacing: 8) {
+                    WebcamPreviewView(session: session)
+                        .frame(height: 152)
+                        .frame(maxWidth: .infinity)
+                        .background(.black)
+                        .clipShape(.rect(cornerRadius: 6))
+                        .accessibilityLabel("Live local camera preview")
+                    HStack {
+                        SettingsFootnote("Local preview")
+                        Spacer()
+                        Button("Stop Preview") { preview.stop(in: surface) }
+                    }
+                }
+            case let .failed(message): FieldProblem(message)
+            }
+        } else {
+            previewHint
+        }
+    }
+
+    private var previewHint: some View {
+        SettingsFootnote("Choose a webcam to see a local preview. Start Camera begins streaming.")
     }
 }
 

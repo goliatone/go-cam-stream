@@ -56,15 +56,18 @@ func appError(code string) *AppError {
 		return &AppError{Code: code, Message: message}
 	}
 	messages := map[string]string{
-		"preview_unavailable":  "Preview unavailable; retry while the camera is streaming.",
-		"invalid_request":      "Unsupported or malformed camera request.",
-		"busy":                 "Camera is already owned or running.",
-		"not_configured":       "Configure the camera before starting.",
-		"configuration_failed": "Camera settings could not be saved.",
-		"device_unavailable":   "Camera discovery failed; check permission and device availability.",
-		"capture_failed":       "Capture stopped; check camera permission, device and runtime.",
-		"status_unavailable":   "Camera status is unavailable.",
-		"export_failed":        "Private connection files could not be exported; stop capture first.",
+		"preview_unavailable":        "Preview unavailable; retry while the camera is streaming.",
+		"invalid_request":            "Unsupported or malformed camera request.",
+		"busy":                       "Camera is already owned or running.",
+		"not_configured":             "Configure the camera before starting.",
+		"configuration_failed":       "Camera settings could not be saved.",
+		"device_unavailable":         "Camera discovery failed; check permission and device availability.",
+		"device_ambiguous":           "Multiple webcams have that name; choose a webcam again.",
+		"capture_failed":             "Capture stopped; check camera permission, device and runtime.",
+		"capture_format_unsupported": "The selected webcam could not use a supported capture format.",
+		"capture_no_frames":          "The selected webcam did not provide video frames.",
+		"status_unavailable":         "Camera status is unavailable.",
+		"export_failed":              "Private connection files could not be exported; stop capture first.",
 	}
 	return &AppError{Code: code, Message: messages[code]}
 }
@@ -449,8 +452,8 @@ func (a *appSession) configure(ctx context.Context, c Config) (any, *AppError) {
 		return nil, appError("busy")
 	}
 	if err := (ConfigureHandler{Service: a.service}).Execute(ctx, Configure{Config: c}); err != nil {
-		if _, ok := errors.AsType[audioError](err); ok {
-			return nil, CaptureFailure(err)
+		if failure := CaptureFailure(err); failure.Code != "capture_failed" {
+			return nil, failure
 		}
 		return nil, appError("configuration_failed")
 	}

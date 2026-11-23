@@ -45,6 +45,79 @@ func TestValidationAndDeviceSelection(t *testing.T) {
 	}
 }
 
+func TestWebcamIdentitySurvivesDuplicateNamesAndInventoryReordering(t *testing.T) {
+	const first = `{"id":"model:serial-a","name":"USB Camera","builtin":false}`
+	const second = `{"id":"model:serial-b","name":"USB Camera","builtin":false}`
+	inventory := func(one, two string) []Device {
+		return parseIdentifiedDevices([]byte(`{"version":1,"devices":[` + one + `,` + two + `]}`))
+	}
+	devices := inventory(first, second)
+	if len(devices) != 2 || devices[0].ID == devices[1].ID {
+		t.Fatal("webcams with matching names need distinct identities")
+	}
+	if _, err := selectDevice("USB Camera", devices); err != errCameraAmbiguous {
+		t.Fatal("a legacy name should require an explicit choice", err)
+	}
+	selector, err := selectDevice("1", devices)
+	if err != nil || selector != devices[1].ID {
+		t.Fatal("numeric selection did not resolve to the chosen webcam", err)
+	}
+	reordered := inventory(second, first)
+	if got, err := selectDevice(selector, reordered); err != nil || got != reordered[0].ID {
+		t.Fatal("saved selection did not survive enumeration order change", err)
+	}
+	if _, err := selectDevice(selector, devices[:1]); err != errCameraUnavailable {
+		t.Fatal("an unplugged selection must never use the other webcam", err)
+	}
+	c := DefaultConfig()
+	c.Device = selector
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(ffmpegArgs(c), " ")
+	if !strings.Contains(args, "-camstream_video_uid model:serial-b -i none:none") || strings.Contains(args, "USB Camera") {
+		t.Fatal("FFmpeg did not receive the exact camera UID")
+	}
+}
+
+func TestLegacyExportConvertsOnlyUnambiguousWebcamIDs(t *testing.T) {
+	s := testService(t)
+	c, _, err := load(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const camera = `{"id":"camera-a","name":"USB Camera","builtin":false}`
+	setInventory := func(items string) []Device {
+		t.Helper()
+		body := `{"version":1,"devices":[` + items + `]}`
+		tool := filepath.Join(t.TempDir(), "ffmpeg")
+		if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf '%s\\n' '"+body+"'\nexit 251\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		s.Tools.FFmpeg = tool
+		return parseIdentifiedDevices([]byte(body))
+	}
+	c.Device = setInventory(camera)[0].ID
+	if err = writeJSON(filepath.Join(s.Dir, "camera.json"), c); err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.ExportLegacy(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy Config
+	if err = readJSON(path, &legacy); err != nil || legacy.Device != "USB Camera" {
+		t.Fatal("legacy export should contain the unique webcam name", err)
+	}
+	setInventory(camera + `,{"id":"camera-b","name":"USB Camera","builtin":false}`)
+	if _, err := s.ExportLegacy(t.Context()); err == nil {
+		t.Fatal("legacy export accepted an ambiguous webcam name")
+	}
+	if saved, _, err := load(s.Dir); err != nil || saved.Device != c.Device {
+		t.Fatal("legacy export rewrote the active configuration", err)
+	}
+}
+
 func TestAuthAndCapturePolicy(t *testing.T) {
 	c := DefaultConfig()
 	c.Device = "MacBook Pro Camera"

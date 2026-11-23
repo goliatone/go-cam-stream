@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -79,17 +80,15 @@ func Start(ctx context.Context, settings config.Conversations, relay conversatio
 		PublicOrigin: origin, Loopback: settings.Loopback, RelayOnly: settings.RelayOnly, Relay: relay,
 	})
 	if err != nil {
-		_ = listener.Close()
-		return nil, err
+		return nil, errors.Join(err, listener.Close())
 	}
 	bus := conversations.NewCommands(service)
 	handler, err := conversationguest.NewSite(origin, settings.Loopback, files, service, bus)
 	if err != nil {
 		bus.Close()
 		service.Close()
-		_ = listener.Close()
 		// The bundled call page is missing or unusable in this build.
-		return nil, errors.Join(err, ErrAssetsUnavailable)
+		return nil, errors.Join(err, ErrAssetsUnavailable, listener.Close())
 	}
 	var route *routeVerification
 	if !settings.Loopback {
@@ -103,7 +102,9 @@ func Start(ctx context.Context, settings config.Conversations, relay conversatio
 	}
 	runtime := &Runtime{http: server, state: service, bus: bus, origin: origin, route: route, relay: relay, connector: connector, done: make(chan struct{})}
 	go func() {
-		_ = server.Serve(listener)
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Warn("Conversation listener stopped unexpectedly")
+		}
 		runtime.Close()
 	}()
 	go runtime.watchIdle(ctx)
@@ -230,7 +231,9 @@ func (r *Runtime) Close() {
 	}
 	r.close.Do(func() {
 		r.state.Close()
-		_ = r.http.Close()
+		if err := r.http.Close(); err != nil {
+			slog.Warn("Conversation listener reported a shutdown error")
+		}
 		r.bus.Close()
 		close(r.done)
 	})

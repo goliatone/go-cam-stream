@@ -197,7 +197,7 @@ func TestAudioLegacyDowngrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closePreviewIO(lock)
-	if _, err := s.ExportLegacy(); err == nil {
+	if _, err := s.ExportLegacy(t.Context()); err == nil {
 		t.Fatal("export while active")
 	}
 }

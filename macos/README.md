@@ -32,10 +32,15 @@ that **Start Camera** applies. Starting the camera from the menus also ends the
 guide, and an invitation opened on first launch shows its call first.
 
 To stream, allow camera access and choose **Start Camera**. To pick another
-webcam or camera name (stream ID), open **Settings → Camera**. Camera and network
-settings apply as soon as they are valid: when you pick a value, leave a field,
-switch panes or close Settings. There is no Save step, and applying never starts
-capture. For sound, turn on **Include microphone audio** in **Settings → Camera**,
+webcam or camera name (stream ID), open **Settings → Camera**. Webcams with the
+same name are listed separately. A saved choice follows its AVFoundation
+identity when the hardware order changes. If an older saved name matches more
+than one webcam, choose the intended camera in Settings before starting.
+Camera and network settings apply as soon as they are valid. Choosing a webcam
+also opens a video-only local preview beside the picker. Choose **Stop Preview**,
+leave the pane, or close the window to release the camera. Opening Settings or
+restoring the saved choice keeps the camera off. **Start Camera** releases the
+local preview and starts the stream. For sound, turn on **Include microphone audio** in **Settings → Camera**,
 choose **Allow Microphone** if needed, and select a microphone. Microphone audio
 is off by default; permission grant, selection and reopening never start capture.
 Denial leaves video-only use available by turning microphone audio off. Choose
@@ -531,7 +536,9 @@ is published for the historical signed 0.1.0/0.1.1 builds; its anonymous downloa
 passes the pinned hash and inventory checks. [Runtime-2](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-2)
 is published for historical preview-enabled builds.
 [Runtime-3](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-3)
-provides the audio-capable archive selected by the current lock.
+provides the historical audio-capable archive. The current lock selects runtime
+5 for exact video identity and capture-format normalization. Host the reviewed
+archive at its locked URL before tagging the app release.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
 
@@ -685,10 +692,9 @@ Ordinary app builds are offline by default and never rebuild dependencies. The
 cache is `.cache/camera-runtime/packs`; `--cache DIR` or `--runtime-pack FILE`
 supports preseeded storage. `--download` permits fetching only a URL recorded in
 the reviewed lock. The current lock controls the exact pack and any approved download URL.
-Runtime-1 and runtime-2 are publicly hosted as separately pinned prereleases.
-The current runtime-3 lock selects a locally verified audio-capable pack with no
-hosted URL. Supply that matching pack or preseed the cache; runtime-1/runtime-2
-cannot satisfy the new lock. No runtime-3 publication is implied.
+Supply the exact pack from the current lock or preseed the cache. For a new
+runtime, anonymous download and hosted tag builds become available once the
+matching archive is published or an approved mirror supplies it.
 
 **Signing boundary:** proof/development builds use ad-hoc hardened signatures,
 including FFmpeg. Static non-system dependencies remove the T04 dylib Team ID
@@ -710,20 +716,17 @@ bootstraps the pinned pkgconf source and uses a system-only PATH and private pre
 python3 macos/build-runtime.py --work /private/tmp/camera-runtime-build
 # Offline build: preseed every filename in runtime.lock.json sources first.
 python3 macos/build-runtime.py --offline --cache /path/to/cache --work /private/tmp/camera-runtime-offline
-# Promote the exact verified T01 candidate without recompiling its tools:
-python3 macos/build-runtime.py --offline \
-  --candidate /private/tmp/camstream-audio-t01-6/candidate \
-  --work /private/tmp/camera-runtime-3-promotion
 ```
 
 The source cache is `CACHE/sources`. A wrong checksum is an error, never silently
 replaced. The builder compiles FFmpeg 9.0.2 and pinned x264 with a fixed reduced
 feature set, pinned static libopus 1.6.1 and static libraries, and copies the exact
-official MediaMTX 1.21.3 arm64 release. Runtime-3 retains T01’s codec/filter options
-and both ordered FFmpeg patches: exact microphone UID/discovery and bounded audio
-FIFO. Their SHA-256 values are recipe inputs; the builder verifies each patch and
+official MediaMTX 1.21.3 arm64 release. The ordered FFmpeg patches provide exact
+camera and microphone identity, device discovery and a bounded audio FIFO.
+Their SHA-256 values are recipe inputs. The builder verifies each patch and
 applies it to pristine source with zero fuzz. Its capability gate requires
-AVFoundation, libx264, H.264/Opus decode, libopus encode, both UID options, ffprobe,
+AVFoundation, libx264, H.264/Opus decode, libopus encode, camera and microphone
+UID options, ffprobe,
 RTSP/TCP and preview/null-sink support. Lavfi/testsrc2 and concat are retained for
 camera-free validation and private-input reader probes. Upstream-selected RTSP
 dependencies are recorded in BUILDINFO; this is not a general FFmpeg distribution.
@@ -939,6 +942,9 @@ use the new helper's `export-legacy --dir PRIVATE_DIRECTORY`. It writes a separa
 current settings and credentials and refuses an active supervisor lock. While
 stopped, back up `camera.json` privately and replace it with that generated file
 before installing/launching the old bundle. Keep `credentials.json` unchanged.
+If the saved webcam uses a persistent ID, the export resolves it to a name the
+older helper can select. Choose a uniquely named webcam before exporting if
+the older runtime would see several matches.
 Use the old app's Export action to regenerate a video-only server profile and
 reload it; do not reuse an earlier `audio: true` export. Restore the private backup
 only after returning to the matching audio-capable helper. No migration occurs
@@ -1011,9 +1017,9 @@ retain no images. They do not activate a webcam or certify the native UI.
 ### Using the live preview
 
 After you choose **Start Camera**, the camera stage displays
-an aspect-fit, unmirrored view of the published stream. No preview capture occurs
-before Start. In private-network mode, Start also makes the authenticated stream
-available to configured readers; this is not a preview-only mode.
+an aspect-fit, unmirrored view of the published stream. Choosing a webcam in
+Camera settings opens a separate local preview. In private-network mode,
+**Start Camera** makes the authenticated stream available to configured readers.
 
 Closing, minimizing, fully covering the window, or switching to the Call view
 pauses preview processing while streaming continues. Returning to the visible

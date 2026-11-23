@@ -150,7 +150,8 @@ class RuntimePackTests(unittest.TestCase):
     def test_patch_content_and_order_are_recipe_inputs(self):
         before = pack.recipe_hash(self.lock)
         paths = pack.verified_patches(self.lock)
-        self.assertEqual(len(paths), 2)
+        self.assertEqual([str(path.relative_to(pack.ROOT)) for path in paths],
+                         [record["file"] for record in self.lock["patches"]])
         self.lock["patches"].reverse()
         self.assertNotEqual(pack.recipe_hash(self.lock), before)
         record = self.lock["patches"][0]
@@ -183,17 +184,17 @@ class RuntimePackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "BUILDINFO digest mismatch"):
             pack.verified_candidate(self.root, self.lock)
 
-    def test_missing_audio_selector_and_encoder_are_rejected(self):
-        names = "avfoundation lavfi libx264 wrapped_avframe rawvideo h264 rtsp null scale fps format concat tcp pipe file libopus pcm_s16le pcm_s32le pcm_f32le pcm_f64le opus aresample aformat anullsrc sine s16le"
+    def test_missing_device_selectors_and_encoder_are_rejected(self):
+        names = "avfoundation lavfi libx264 wrapped_avframe rawvideo h264 rtsp null scale pad setsar fps format concat tcp pipe file libopus pcm_s16le pcm_s32le pcm_f32le pcm_f64le opus aresample aformat anullsrc sine s16le"
         def output(argv, **kwargs):
             if "-h" in argv:
-                return "-camstream_audio_uid -camstream_list_audio_devices"
+                return "-camstream_audio_uid -camstream_list_audio_devices -camstream_video_uid -camstream_list_video_devices"
             if "-version" in argv:
                 return "ffprobe version " + self.lock["sources"]["ffmpeg"]["version"]
             return names
         with patch("subprocess.check_output", side_effect=output):
             pack.inspect_capabilities(self.root, self.lock)
-        for missing in ("-camstream_audio_uid", "libopus"):
+        for missing in ("-camstream_audio_uid", "-camstream_video_uid", "-camstream_list_video_devices", "libopus"):
             with patch("subprocess.check_output", side_effect=lambda argv, **kw: output(argv, **kw).replace(missing, "")):
                 with self.assertRaisesRegex(ValueError, "missing"):
                     pack.inspect_capabilities(self.root, self.lock)

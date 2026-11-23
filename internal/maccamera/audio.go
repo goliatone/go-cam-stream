@@ -22,7 +22,7 @@ var audioMessages = map[string]string{
 	"audio_selection_invalid":   "Select a microphone by its device ID, or disable microphone audio.",
 	"audio_device_unavailable":  "Selected microphone is unavailable; select it again or disable audio, then explicitly restart.",
 	"audio_discovery_failed":    "Microphone discovery failed; check permission and the bundled runtime, then retry.",
-	"audio_runtime_unsupported": "Microphone audio requires the verified runtime-3 tools; restore the complete bundle or disable audio.",
+	"audio_runtime_unsupported": "Microphone audio requires a verified audio-capable runtime; restore the complete bundle or disable audio.",
 	"audio_startup_timeout":     "No published audio within 20 seconds; check microphone permission and selection, then explicitly restart.",
 	"audio_stalled":             "Microphone audio stopped progressing for 5 seconds; check the device, then explicitly restart.",
 	"audio_observer_failed":     "Audio verification failed; capture stopped. Check the bundled runtime, then explicitly restart.",
@@ -39,6 +39,18 @@ func audioFailure(code string) error { return audioError(code) }
 func CaptureFailure(err error) *AppError {
 	if e, ok := errors.AsType[audioError](err); ok {
 		return &AppError{Code: string(e), Message: e.Error()}
+	}
+	if errors.Is(err, errCameraAmbiguous) {
+		return appError("device_ambiguous")
+	}
+	if errors.Is(err, errCameraUnavailable) {
+		return appError("device_unavailable")
+	}
+	if errors.Is(err, errCameraFormat) {
+		return appError("capture_format_unsupported")
+	}
+	if errors.Is(err, errCameraNoFrames) {
+		return appError("capture_no_frames")
 	}
 	return appError("capture_failed")
 }

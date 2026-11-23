@@ -186,7 +186,15 @@ func (s *Service) Redeem(_ context.Context, m RedeemRoom) (api.RoomAdmission, er
 		return api.RoomAdmission{}, err
 	}
 	if r.guest != nil {
-		return api.RoomAdmission{}, Fault(api.RoomFull)
+		if m.GuestToken == "" || !equalDigest(m.GuestToken, r.guest.digest) {
+			return api.RoomAdmission{}, Fault(api.RoomFull)
+		}
+		// Recover the existing seat after a lost reply. Only a prejoin seat
+		// renews here. Joined participants use the current heartbeat rules.
+		if !r.guest.hasJoined {
+			r.guest.lastSeen, r.guest.lostAt = now, time.Time{}
+		}
+		return api.RoomAdmission{Room: r.view(), Role: api.RoomGuest, Token: m.GuestToken}, nil
 	}
 	token := m.GuestToken
 	if token == "" {

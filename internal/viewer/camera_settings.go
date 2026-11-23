@@ -140,7 +140,7 @@ func (s *CameraManagementService) replayChange(ctx context.Context, key string, 
 	if !time.Now().Before(receipt.ExpiresAt) {
 		return api.CameraChange{}, true, api.ManagementFailure(api.CodeReceiptExpired)
 	}
-	return s.changeResponse(camera, kind == api.OperationRemove, 0), true, nil
+	return s.changeResponse(camera, kind == api.OperationRemove, receipt.StoppedSessions), true, nil
 }
 
 // prepareChange builds the next generation for a change to a saved camera and
@@ -152,12 +152,7 @@ func (s *CameraManagementService) prepareChange(ctx context.Context, next Manage
 		revision := s.options.Viewer.CatalogRevision()
 		revision.Generation++
 		if err = s.options.Viewer.checkCatalog(merged, revision, s.options.Policy.Managers(), change); err == nil {
-			body, e := json.Marshal(next)
-			if e != nil {
-				err = storageFailure()
-			} else {
-				return &pendingCameraSave{owner: principal(ctx), key: key, kind: kind, change: change, state: ManagedState{Revision: s.stateRevision + 1, CommitID: randomManagementID(), Payload: body}, catalog: next, merged: merged, revision: revision}, nil
-			}
+			return &pendingCameraSave{owner: principal(ctx), key: key, kind: kind, change: change, catalog: next, merged: merged, revision: revision}, nil
 		}
 	}
 	next.Destroy()
@@ -168,6 +163,12 @@ func (s *CameraManagementService) prepareChange(ctx context.Context, next Manage
 // did not happen is abandoned; an uncertain one stays pending for recovery.
 func (s *CameraManagementService) commitChange(ctx context.Context, p *pendingCameraSave) (api.CameraChange, error) {
 	s.pendingSave = p
+	body, err := json.Marshal(p.catalog)
+	if err != nil {
+		s.abandonSave()
+		return api.CameraChange{}, storageFailure()
+	}
+	p.state = ManagedState{Revision: s.stateRevision + 1, CommitID: randomManagementID(), Payload: body}
 	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	outcome, err := s.options.Repository.Commit(commitCtx, s.stateRevision, p.state)
@@ -234,9 +235,9 @@ func (s *CameraManagementService) RemoveCamera(ctx context.Context, id string, r
 		pending.releaseAdmission, pending.oldSource, pending.stopped, err = s.retireSource(ctx, record, r.StopViewers)
 		if err != nil {
 			pending.catalog.Destroy()
-			clear(pending.state.Payload)
 			return nil, err
 		}
+		pending.catalog.Receipts[len(pending.catalog.Receipts)-1].StoppedSessions = pending.stopped
 		return s.commitChange(ctx, pending)
 	})
 	if err != nil {

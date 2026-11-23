@@ -40,8 +40,14 @@ var safeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 var hostName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$`)
 
 func (c Config) Validate() error {
-	if c.Device == "" || len(c.Device) > 200 || strings.ContainsAny(c.Device, ":\r\n\x00") || strings.Contains(strings.ToLower(c.Device), "capture screen") {
-		return errors.New("choose a named webcam; screen capture is not supported")
+	if strings.HasPrefix(c.Device, cameraUIDPrefix) {
+		if _, ok := cameraUID(c.Device); !ok {
+			return errors.New("invalid webcam ID")
+		}
+	} else {
+		if c.Device == "" || len(c.Device) > 200 || strings.ContainsAny(c.Device, ":\r\n\x00") || strings.Contains(strings.ToLower(c.Device), "capture screen") {
+			return errors.New("choose a named webcam; screen capture is not supported")
+		}
 	}
 	// IPv4 binding keeps the local publisher endpoint unambiguous.
 	if c.Listen != "127.0.0.1" && c.Listen != "0.0.0.0" {

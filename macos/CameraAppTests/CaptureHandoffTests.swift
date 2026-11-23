@@ -23,6 +23,24 @@ func runCaptureHandoffTests(conversation: [String: Any], check: (Bool, String) -
         ["version": 1, "event": "capture_stopped", "result": ["state": "failed"], "error": ["code": code]]
     }
 
+    do { // A deliberate selection starts a local attempt on a cold launch.
+        let (model, helper) = launched()
+        check(!model.webcamPreview.ownsCapture, "restoring saved settings leaves local preview idle")
+        // The test selects a nonexistent name, so the native path cannot open a camera.
+        model.chooseWebcam("Missing test webcam", in: .settings)
+        check(model.webcamPreview.surface == .settings && model.webcamPreview.ownsCapture &&
+              !helper.methods.contains("start"), "choosing a webcam alone starts preview, not publication")
+        model.startCamera()
+        check(!helper.methods.contains("start"), "Start Camera waits for the preview to release its device")
+        let deadline = Date().addingTimeInterval(2)
+        while !helper.methods.contains("start"), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        check(helper.methods.contains("start") && !model.webcamPreview.ownsCapture && model.webcamPreview.surface == nil,
+              "the publisher starts after the local preview has been cleared and released")
+        _ = model.quit()
+    }
+
     do { // The previous supervisor may outlive a cold launch.
         let (model, helper) = launched()
         check(!model.capture.releasedForCall && stopCount(helper) == 0, "cold launch leaves release unconfirmed without issuing Stop")

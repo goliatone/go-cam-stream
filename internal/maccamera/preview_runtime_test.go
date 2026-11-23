@@ -41,7 +41,7 @@ func TestPreviewActualRuntime(t *testing.T) {
 	ffmpeg := filepath.Join(tools, "ffmpeg")
 	quote := func(v string) string { return "'" + strings.ReplaceAll(v, "'", "'\\''") + "'" }
 	wrapper := filepath.Join(t.TempDir(), "synthetic-capture")
-	script := "#!/bin/sh\ncase \" $* \" in\n*' -f avfoundation '*)\nfor arg do last=$arg; done\nexec " + quote(ffmpeg) + " -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 -an -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 -progress pipe:1 -f rtsp -rtsp_transport tcp \"$last\";;\n*) exec " + quote(ffmpeg) + " \"$@\";;\nesac\n"
+	script := "#!/bin/sh\ncase \" $* \" in\n*' -camstream_list_video_devices '*) printf '%s\\n' '{\"version\":1,\"devices\":[{\"id\":\"synthetic-camera\",\"name\":\"MacBook Pro Camera\",\"builtin\":true}]}'; exit 251;;\n*' -f avfoundation '*)\nfor arg do last=$arg; done\nexec " + quote(ffmpeg) + " -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 -an -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 -progress pipe:1 -f rtsp -rtsp_transport tcp \"$last\";;\n*) exec " + quote(ffmpeg) + " \"$@\";;\nesac\n"
 	if err = os.WriteFile(wrapper, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

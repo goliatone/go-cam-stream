@@ -50,8 +50,8 @@ func (ExportLegacy) Type() string { return "camera.export-legacy.v1" }
 
 type ExportLegacyHandler struct{ Service *Service }
 
-func (h ExportLegacyHandler) Run(_ context.Context, _ ExportLegacy) (string, error) {
-	return h.Service.ExportLegacy()
+func (h ExportLegacyHandler) Run(ctx context.Context, _ ExportLegacy) (string, error) {
+	return h.Service.ExportLegacy(ctx)
 }
 func (h ExportLegacyHandler) Execute(ctx context.Context, m ExportLegacy) error {
 	_, err := h.Run(ctx, m)

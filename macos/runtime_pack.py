@@ -86,11 +86,15 @@ def inspect_capabilities(tools, lock):
         if any(name not in result.split() for name in names):
             raise ValueError("runtime missing required capabilities: " + option)
         capabilities[option] = result
-    if audio:
+    video_identity = lock.get("video_device_identity", False)
+    if audio or video_identity:
         result = subprocess.check_output([str(Path(tools) / "ffmpeg"), "-hide_banner", "-h", "demuxer=avfoundation"], text=True, stderr=subprocess.DEVNULL, timeout=20)
-        if any(name not in result.split() for name in ("-camstream_audio_uid", "-camstream_list_audio_devices")):
+        if audio and any(name not in result.split() for name in ("-camstream_audio_uid", "-camstream_list_audio_devices")):
             raise ValueError("runtime missing exact audio UID/discovery capabilities")
+        if video_identity and any(name not in result.split() for name in ("-camstream_video_uid", "-camstream_list_video_devices")):
+            raise ValueError("runtime missing exact video UID/discovery capabilities")
         capabilities["avfoundation_options"] = result
+    if audio:
         version = subprocess.check_output([str(Path(tools) / "ffprobe"), "-version"], text=True, stderr=subprocess.DEVNULL, timeout=20)
         if not version.startswith("ffprobe version " + lock["sources"]["ffmpeg"]["version"]):
             raise ValueError("runtime ffprobe version mismatch")

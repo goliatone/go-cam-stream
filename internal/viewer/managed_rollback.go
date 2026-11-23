@@ -22,8 +22,14 @@ func PrepareManagedRollback(ctx context.Context, store ManagedStateRepository) (
 	defer catalog.Destroy()
 
 	anchors := make(map[cs.CameraID]string, len(catalog.Cameras))
-	for _, camera := range catalog.Cameras {
+	var hasConnectionRevisions bool
+	for i := range catalog.Cameras {
+		camera := &catalog.Cameras[i]
 		anchors[camera.ID] = camera.CreationKey
+		if camera.ConnectionRevision != "" {
+			hasConnectionRevisions = true
+			camera.ConnectionRevision = ""
+		}
 	}
 	creationReceipts := catalog.Receipts[:0]
 	for _, receipt := range catalog.Receipts {
@@ -35,7 +41,7 @@ func PrepareManagedRollback(ctx context.Context, store ManagedStateRepository) (
 	// camera's creation receipt left with it, so dropping its tombstone frees
 	// nothing that a creation replay could reach.
 	removed := len(catalog.Receipts) - len(creationReceipts)
-	if removed == 0 && len(catalog.Removed) == 0 {
+	if removed == 0 && len(catalog.Removed) == 0 && !hasConnectionRevisions {
 		return 0, nil
 	}
 	catalog.Receipts, catalog.Removed = creationReceipts, nil

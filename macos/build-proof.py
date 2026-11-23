@@ -107,7 +107,8 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
         *[str(p) for p in sources], "-o", str(contents / "MacOS" / executable))
     permission_text = {"NSCameraUsageDescription": "Share the built-in webcam as a private RTSP camera while this app is running."}
     if production:
-        permission_text["NSCameraUsageDescription"] = "Camstream Camera uses your webcam only when you choose Start Camera or turn on your camera in a conversation."
+        permission_text["NSCameraUsageDescription"] = "Camstream Camera uses your webcam when you choose it to preview, start streaming, or turn it on in a conversation."
+        permission_text["NSCameraUseContinuityCameraDeviceType"] = True
         permission_text["NSMicrophoneUsageDescription"] = "Camstream Camera uses your microphone only when you turn on microphone audio for the server stream or in a conversation."
     url_types = [{"CFBundleURLName": "com.goliatone.camstream.camera.conversation",
                   "CFBundleURLSchemes": ["camstream"], "CFBundleTypeRole": "Viewer"}] if production else []

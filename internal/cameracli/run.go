@@ -145,7 +145,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 func configFlags(f *flag.FlagSet, c *maccamera.Config) {
 	f.BoolVar(&c.AudioEnabled, "audio-enabled", false, "Enable microphone audio on explicit Start")
 	f.StringVar(&c.AudioDeviceID, "audio-device-id", "", "Exact microphone ID from audio-devices")
-	f.StringVar(&c.Device, "device", c.Device, "Webcam name/index; auto selects the built-in camera")
+	f.StringVar(&c.Device, "device", c.Device, "Webcam ID or index from devices, or a unique name; auto selects the built-in camera")
 	f.StringVar(&c.Listen, "listen", c.Listen, "127.0.0.1 (local) or 0.0.0.0 (network)")
 	f.StringVar(&c.Host, "host", c.Host, "Mac address reachable by camstream")
 	f.IntVar(&c.Port, "port", c.Port, "RTSP TCP port")

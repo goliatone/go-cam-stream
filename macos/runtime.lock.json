@@ -1,6 +1,7 @@
 {
   "schema": 1,
-  "runtime_id": "camera-runtime-3",
+  "runtime_id": "camera-runtime-5",
+  "video_device_identity": true,
   "target": {
     "os": "darwin",
     "arch": "arm64",
@@ -89,7 +90,7 @@
       "--enable-muxer=rtsp,null,rawvideo",
       "--enable-demuxer=rtsp,concat",
       "--enable-protocol=file,pipe,tcp,udp,rtp",
-      "--enable-filter=buffer,buffersink,format,scale,fps,null,testsrc2",
+      "--enable-filter=buffer,buffersink,format,scale,pad,setsar,fps,null,testsrc2",
       "--enable-ffprobe",
       "--enable-libopus",
       "--enable-decoder=pcm_s16le,pcm_s32le,pcm_f32le,pcm_f64le,opus",
@@ -107,9 +108,9 @@
   },
   "packs": {
     "darwin-arm64": {
-      "file": "camera-runtime-3-darwin-arm64-macos26.0.tar.gz",
-      "sha256": "e7a828e2086eba2a6dc9cff47231d823b525ccf1f144d9e012c43cb7f62c6ea5",
-      "url": "https://github.com/goliatone/go-cam-stream/releases/download/camera-runtime-3/camera-runtime-3-darwin-arm64-macos26.0.tar.gz"
+      "file": "camera-runtime-5-darwin-arm64-macos26.0.tar.gz",
+      "sha256": "6d2f7f8fd750927633f0fcb5ddd44393db1ffe0e7e11dc0647b23c698f66a183",
+      "url": "https://github.com/goliatone/go-cam-stream/releases/download/camera-runtime-5/camera-runtime-5-darwin-arm64-macos26.0.tar.gz"
     }
   },
   "patches": [
@@ -120,9 +121,14 @@
     {
       "file": "macos/patches/ffmpeg/0002-camstream-audio-queue.patch",
       "sha256": "e42f7b777cda83e631787c43b42c94d2f086fa853228baa694b2a02fe0fc2f2f"
+    },
+    {
+      "file": "macos/patches/ffmpeg/0003-camstream-video-uid.patch",
+      "sha256": "94f5117536c447aaf934abd677d71651dd3f3ce8b396966b3c15dd958e5d3150"
+    },
+    {
+      "file": "macos/patches/ffmpeg/0004-camstream-video-format.patch",
+      "sha256": "7c8bc61af54482cb8325ed63af4499ce095122d106d411e8276a5b64e82d8049"
     }
-  ],
-  "proof_candidate": {
-    "buildinfo_sha256": "b4eff6ca014fee941700d69d2c425808b7b407a1360c1628abe697d80e0441a0"
-  }
+  ]
 }
