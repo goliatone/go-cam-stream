@@ -58,14 +58,20 @@ func newSessionProbe(t *testing.T, s *Service, run func(context.Context) error) 
 
 func (p sessionProbe) receive(t *testing.T) AppReply {
 	t.Helper()
+	return p.await(t, "reply")
+}
+
+// await names the awaited reply, so a stalled request fails with its method.
+func (p sessionProbe) await(t *testing.T, what string) AppReply {
+	t.Helper()
 	select {
 	case r, ok := <-p.replies:
 		if !ok {
-			t.Fatal("session closed before reply")
+			t.Fatalf("session closed before %s", what)
 		}
 		return r
 	case <-time.After(5 * time.Second):
-		t.Fatal("session reply timed out")
+		t.Fatalf("session %s timed out", what)
 		return AppReply{}
 	}
 }
@@ -75,7 +81,7 @@ func (p sessionProbe) request(t *testing.T, method string, c *Config) AppReply {
 	if err := json.NewEncoder(p.in).Encode(AppRequest{Version: 1, ID: method, Method: method, Config: c}); err != nil {
 		t.Fatal(err)
 	}
-	r := p.receive(t)
+	r := p.await(t, method+" reply")
 	if r.ID != method {
 		t.Fatalf("wrong request correlation: %+v", r)
 	}
