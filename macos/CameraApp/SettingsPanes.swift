@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Settings → General: app-wide choices. For now, whether the window opens
+/// at launch; the menu-bar icon's popover covers the camera without it.
+struct GeneralSettingsPane: View {
+    @ObservedObject var model: CameraModel
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show the window when Camstream Camera opens", isOn: $model.opensWindowAtLaunch)
+                    .accessibilityIdentifier("settings-opens-window")
+            } footer: {
+                SettingsFootnote("When this is off, Camstream Camera opens with only its menu-bar and Dock icons. Click the menu-bar icon for the camera’s status, a preview and the main actions. The window still opens for first-time setup and call invitations.")
+            }
+        }
+    }
+}
+
 /// Settings → Camera: access, the webcam, its camera name and the optional
 /// microphone. Choices apply as soon as they're valid; text applies when
 /// you press Return or leave the field.

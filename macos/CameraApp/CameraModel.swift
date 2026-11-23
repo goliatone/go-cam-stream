@@ -30,11 +30,22 @@ final class CameraModel: ObservableObject {
     enum CallStart: String, CaseIterable { case cameraOff, setup, browser }
     @Published var callStart: CallStart { didSet { defaults.set(callStart.rawValue, forKey: Self.callStartKey) } }
     private static let callStartKey = "callStart"
+    /// Whether the window opens at launch. Chosen in Settings → General. Off,
+    /// the app starts with only its menu-bar and Dock icons; the first-run
+    /// guide, a Dock click, a second launch and camstream:// links still
+    /// open the window.
+    @Published var opensWindowAtLaunch: Bool {
+        didSet { defaults.set(opensWindowAtLaunch, forKey: Self.opensWindowAtLaunchKey) }
+    }
+    private static let opensWindowAtLaunchKey = "opensWindowAtLaunch"
     private let defaults: UserDefaults
     /// The Join sheet: the Call card and the Call menu open it.
     @Published var showingJoin = false
     /// Opens the Settings window, at a pane or where it was left. The app sets it.
     var showSettings: (SettingsPane?) -> Void = { _ in }
+    /// Brings the main window forward. The app sets it. The first-run guide
+    /// calls it, since the guide shows even when launch skips the window.
+    var showWindow: () -> Void = {}
     /// Asks before a call ends or the stream stops for one, and runs the
     /// action only once you confirm. The app shows a sheet on the main
     /// window; until it sets this, nothing is confirmed.
@@ -160,7 +171,10 @@ final class CameraModel: ObservableObject {
     private var sleepAcknowledgement: (() -> Void)?
     private var sleepTimeout: DispatchWorkItem?
     private var hostSleeping = false
-    private var windowVisible = false
+    /// Where the preview shows. The window's stage and the menu-bar popover
+    /// draw the same frames, so one attach serves both.
+    enum PreviewSurface: Hashable { case window, popover }
+    private var previewSurfaces: Set<PreviewSurface> = []
     @Published var notice: String?
     /// Connection files were exported since the settings were last saved in
     /// this session. Older files may describe earlier settings.
@@ -200,6 +214,7 @@ final class CameraModel: ObservableObject {
         self.openBrowser = openBrowser
         self.defaults = defaults
         _callStart = Published(initialValue: defaults.string(forKey: Self.callStartKey).flatMap(CallStart.init) ?? .cameraOff)
+        _opensWindowAtLaunch = Published(initialValue: defaults.object(forKey: Self.opensWindowAtLaunchKey) as? Bool ?? true)
         sharing = SharingModel(helper: client as? SharingHelper)
         sharingObserver = sharing.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         sharing.didChange = { [weak self] in self?.sharingChanged() }
@@ -989,6 +1004,8 @@ final class CameraModel: ObservableObject {
                     // First run: the guide, from the first step not done yet.
                     if !self.welcomeDone, self.welcome == nil {
                         self.welcome = self.permission == "authorized" ? .camera : .access
+                        // The guide lives in the window, even when launch skips it.
+                        self.showWindow()
                     }
                 } else { self.showError(reply) }
                 if self.permission == "authorized" { self.refreshDevices() } else { self.refreshMicrophones() }
@@ -1484,10 +1501,17 @@ final class CameraModel: ObservableObject {
               let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
-    func setWindowVisible(_ visible: Bool) { windowVisible = visible; syncPreview() }
+    /// A surface started or stopped showing the preview. The preview runs
+    /// while any surface shows it, so moving from the popover to the window
+    /// keeps the same attach.
+    func setPreviewSurface(_ surface: PreviewSurface, visible: Bool) {
+        if visible { previewSurfaces.insert(surface) } else { previewSurfaces.remove(surface) }
+        syncPreview()
+    }
+    func setWindowVisible(_ visible: Bool) { setPreviewSurface(.window, visible: visible) }
     private func syncPreview() {
         // A call on the stage hides the preview, so it pauses.
-        preview.update(wanted: !quitting && windowVisible && callStage == nil && capture.phase == .streaming,
+        preview.update(wanted: !quitting && !previewSurfaces.isEmpty && callStage == nil && capture.phase == .streaming,
                        ready: ready && !quitting, supported: client.previewVersion == 1, captureGeneration: capture.generation)
     }
     private func changed() {

@@ -2,11 +2,13 @@ import Foundation
 
 /// The Settings window's panes, in toolbar order. One-time setup lives
 /// here; the main window keeps only what changes while you use the camera.
+/// The raw value is the pane's tab index.
 enum SettingsPane: Int, CaseIterable {
-    case camera, network, server, sharing, calls
+    case general, camera, network, server, sharing, calls
 
     var title: String {
         switch self {
+        case .general: return "General"
         case .camera: return "Camera"
         case .network: return "Network"
         case .server: return "Server"
@@ -16,6 +18,7 @@ enum SettingsPane: Int, CaseIterable {
     }
     var symbol: String {
         switch self {
+        case .general: return "gearshape"
         case .camera: return "video"
         case .network: return "network"
         case .server: return "server.rack"

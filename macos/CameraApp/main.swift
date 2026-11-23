@@ -4,27 +4,38 @@ import SwiftUI
 @MainActor
 final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static let guide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md")!
+    /// A second launch asks the running copy to show its window, which may
+    /// be closed when launch skips it.
+    private static let showWindowRequest = Notification.Name("com.goliatone.camstream.camera.show-window")
     private let model = CameraModel()
     private let server = ServerMonitor()
     private var window: NSWindow!
     private var status: NSStatusItem!
+    private var popover: MenuBarPopover!
     private var menus: AppMenus!
     private var settings: SettingsWindowController!
     private var devices: DeviceWatcher?
     private var hostPower: HostPowerMonitor?
     private var quitting = false
+    /// A camstream:// link arrived before launch finished, so the window opens.
+    private var openedWithLink = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let identity = Bundle.main.bundleIdentifier,
            let other = NSRunningApplication.runningApplications(withBundleIdentifier: identity)
             .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+            DistributedNotificationCenter.default().postNotificationName(Self.showWindowRequest, object: identity,
+                                                                         userInfo: nil, deliverImmediately: true)
             other.activate(options: [.activateAllWindows])
             NSApp.terminate(nil)
             return
         }
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(showWindowRequested),
+                                                            name: Self.showWindowRequest, object: Bundle.main.bundleIdentifier)
         settings = SettingsWindowController(model: model, server: server) { [weak self] in self?.showWindow() }
         settings.visibilityChanged = { [weak self] in self?.updateWindowVisibility() }
         model.showSettings = { [weak self] pane in self?.settings.show(pane) }
+        model.showWindow = { [weak self] in self?.showWindow() }
         model.confirm = { [weak self] confirmation, confirmed in self?.present(confirmation, then: confirmed) }
         menus = AppMenus(model: model)
         menus.openSettings = { [weak self] pane in self?.settings.show(pane) }
@@ -48,9 +59,17 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.isVisible = true
-        status.button?.title = ""
-        status.button?.imagePosition = .imageOnly
-        status.menu = menus.status
+        popover = MenuBarPopover(model: model)
+        if let button = status.button {
+            button.title = ""
+            button.imagePosition = .imageOnly
+            // The button opens the popover; the status menu shows only on a
+            // secondary click, so the item has no menu of its own.
+            button.target = self
+            button.action = #selector(statusClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            popover.anchor = button
+        }
         model.didChange = { [weak self] in self?.updateMenu() }
         model.didFinishQuit = { [weak self] in if self?.quitting == true { NSApp.reply(toApplicationShouldTerminate: true) } }
         hostPower = HostPowerMonitor(onSleep: { [model] acknowledge in
@@ -60,8 +79,24 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         devices = DeviceWatcher { [model] in model.devicesChanged() }
         model.launch()
         updateMenu()
-        showWindow()
+        // With the setting off, the menu-bar icon is the way in. The model
+        // still opens the window for the first-run guide.
+        if model.opensWindowAtLaunch || openedWithLink { showWindow() }
     }
+    /// A click toggles the popover. A right click or Control-click shows the
+    /// status menu, as the icon did before it had a popover.
+    @objc private func statusClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        guard event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true else {
+            popover.toggle()
+            return
+        }
+        popover.close()
+        status.menu = menus.status
+        sender.performClick(nil)
+        status.menu = nil
+    }
+    @objc private func showWindowRequested(_ notification: Notification) { showWindow() }
     private func updateMenu() {
         guard status != nil else { return }
         menus.update()
@@ -122,13 +157,14 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidMiniaturize(_ notification: Notification) { setWindowVisible(false) }
     func windowDidDeminiaturize(_ notification: Notification) { updateWindowVisibility() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateWindowVisibility() }
-    func applicationDidHide(_ notification: Notification) { setWindowVisible(false) }
+    func applicationDidHide(_ notification: Notification) { popover?.close(); setWindowVisible(false) }
     func applicationDidUnhide(_ notification: Notification) { updateWindowVisibility() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let invitation = urls.first(where: { $0.scheme == "camstream" }) else { return }
         model.openConversationInvitation(invitation.absoluteString)
-        if window != nil { showWindow() }
+        // Before launch finishes there is no window yet; launch shows it.
+        if window != nil { showWindow() } else { openedWithLink = true }
     }
     func applicationDidBecomeActive(_ notification: Notification) { model.refreshPermission() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

@@ -17,7 +17,11 @@ path to `./taskfile mac:build` to choose the destination.
 The window is a console: the camera stage with **Start Camera** under it, a
 status pill in the toolbar, and cards for the server stream, the share link and
 calls. One-time setup lives in **Settings** (⌘, or the gear in the toolbar), in
-five panes: **Camera**, **Network**, **Server**, **Sharing** and **Calls**.
+six panes: **General**, **Camera**, **Network**, **Server**, **Sharing** and
+**Calls**. **General** holds app-wide choices: **Show the window when Camstream
+Camera opens** is on by default. Turned off, the app opens with only its menu-bar
+and Dock icons, and the window still opens for the welcome guide, a second
+launch, a Dock click and `camstream://` links.
 
 On first launch, while no settings are saved, a welcome guide takes three steps:
 **Allow Camera**, then the webcam and camera name (prefilled), then the optional
@@ -51,17 +55,31 @@ problems first, and × dismisses it. If the helper stops, the app offers only
 **Quit Camstream Camera**; reopen it to continue. The window narrows to 640 ×
 520 pt. Below 860 pt the cards stack under the stage.
 
-The menu-bar icon, its menu, its tooltip and the toolbar status pill share one
-status summary: the camera stream, any share link (public or tailnet, end time
-and viewers) and any open call (role, phase and local camera/mic when
+The menu-bar icon, its popover and menu, its tooltip and the toolbar status pill
+share one status summary: the camera stream, any share link (public or tailnet,
+end time and viewers) and any open call (role, phase and local camera/mic when
 known). The pill adds elapsed time while live or in a call, for example
 **Live · 12:04 · 2 viewers** or **In call · 04:12**, and its tooltip lists each
 activity. The icon is outlined while stopped, filled while live, crossed out
 after a stream error and a phone during a call; an active share link adds a link
-badge. The menu offers Start/Stop Camera, Copy Share Link and Stop Sharing while
-a link exists, **Start Call** and **Join Call…**, or Copy Invitation and **End
-Call…** (**Leave Call…** for a guest) during a call, plus Show Camstream Camera,
-Settings… and Quit. The app menus include About, Settings… (⌘,), Hide (⌘H), Close
+badge.
+
+Click the icon for a popover with the status pill, the same activity lines, a
+16:9 preview while the camera is live (**Preview starting…** until the first
+frame), any banner message with its first fix, and the window's main action:
+**Start Camera** or **Stop Camera**, **Show Call** during a call, or **Finish
+Setup** while the welcome guide shows. The share and call actions follow, then
+**Open Camstream Camera**, **Settings…** and **Quit**. The window and the popover
+draw the same preview, which runs while either shows it, so the camera service
+keeps one preview subscriber. Actions that need a sheet or a confirmation (**Start
+Call…** while streaming, **Join Call…**, **End Call…**) close the popover and
+continue in the window. Click the icon again, click elsewhere or press Escape to
+close the popover; Return runs its main action.
+
+Right-click or Control-click the icon for its menu, which offers Start/Stop
+Camera, Copy Share Link and Stop Sharing while a link exists, **Start Call** and
+**Join Call…**, or Copy Invitation and **End Call…** (**Leave Call…** for a
+guest) during a call, plus Show Camstream Camera, Settings… and Quit. The app menus include About, Settings… (⌘,), Hide (⌘H), Close
 Window (⌘W), Undo/Redo, Start/Stop Camera (⇧⌘S), connection-file export, the
 **Call** menu (Start Call, Join Call…, Copy Invitation, End Call…), Minimize
 (⌘M), Zoom and a Help link to this guide. A call shows on the main window's
