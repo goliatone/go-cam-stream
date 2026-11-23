@@ -111,6 +111,7 @@ type RoomErrorResponse struct {
 type RoomRedeemRequest struct {
 	Version    int    `json:"version"`
 	Invitation string `json:"invitation"`
+	// GuestToken lets a retry recover the same seat if the reply is lost.
 	GuestToken string `json:"guest_token,omitempty"`
 }
 

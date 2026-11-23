@@ -62,6 +62,7 @@ func appError(code string) *AppError {
 		"not_configured":             "Configure the camera before starting.",
 		"configuration_failed":       "Camera settings could not be saved.",
 		"device_unavailable":         "Camera discovery failed; check permission and device availability.",
+		"device_inventory_failed":    "The camera service could not read the webcam list.",
 		"device_ambiguous":           "Multiple webcams have that name; choose a webcam again.",
 		"capture_failed":             "Capture stopped; check camera permission, device and runtime.",
 		"capture_format_unsupported": "The selected webcam could not use a supported capture format.",
@@ -372,7 +373,7 @@ func (a *appSession) dispatch(ctx context.Context, r AppRequest) (any, *AppError
 	case "devices":
 		v, err := a.service.Devices(ctx)
 		if err != nil {
-			return nil, appError("device_unavailable")
+			return nil, appError("device_inventory_failed")
 		}
 		return v, nil
 	case "config":

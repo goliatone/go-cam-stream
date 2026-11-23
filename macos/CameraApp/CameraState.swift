@@ -43,7 +43,7 @@ struct CameraConfig: Codable, Equatable {
     var endpoint: String { "rtsp://\(host):\(port)/\(path)" }
 }
 
-struct CameraDevice: Codable, Identifiable {
+struct CameraDevice: Codable, Identifiable, Equatable {
     let index: String
     let name: String
     let selector: String?

@@ -119,6 +119,66 @@ func runConsoleTests(conversations: [String: Any], sharing examples: [String: An
         check(lists() == streaming + 1, "and only once")
     }
 
+    do { // Discovery failures keep setup feedback off the stream status.
+        let helper = FixtureCameraHelper()
+        let model = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory)
+        defer { _ = model.quit() }
+        model.launch()
+        let inventory = model.devices
+        helper.hold = "devices"
+        model.refreshDevices()
+        helper.deliver(["error": ["code": "device_inventory_failed"]])
+        check(model.webcamDiscoveryFailed && model.devices == inventory && model.stage.feedback == nil && model.canStartCamera,
+              "a failed refresh keeps the old devices and a stopped stage")
+        model.refreshDevices()
+        helper.deliver(["result": [] as [[String: String]]])
+        check(model.webcamInventoryLoaded && !model.webcamDiscoveryFailed && model.devices.isEmpty,
+              "an empty successful inventory clears the discovery error")
+    }
+
+    do { // A refused save leaves the draft visible and can be retried explicitly.
+        let helper = FixtureCameraHelper()
+        let model = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory)
+        defer { _ = model.quit() }
+        model.launch()
+        let cached = model.saved
+        let selector = "uid:c3ludGhldGljLXBob25l"
+        helper.hold = "devices"
+        model.refreshDevices()
+        helper.hold = nil
+        helper.deliver(["result": [["index": "1", "id": selector, "name": "iPhone Camera"]]])
+        helper.hold = "configure"
+        model.draft.device = selector
+        model.applySettings()
+        helper.deliver(["error": ["code": "device_inventory_failed"]])
+        check(model.saved == cached && model.draft.device == selector && model.configurationProblem?.contains("weren’t saved") == true,
+              "a failed apply keeps the saved selection and explains the unsaved draft")
+        check(model.capture.phase == .stopped && model.stage.feedback == nil && !model.canStartCamera && model.startSettingsPane == .camera,
+              "the stopped stage links to configuration retry without showing a stream error")
+        model.applySettings()
+        check(helper.pending.isEmpty, "closing Settings cannot silently repeat a rejected draft")
+        helper.hold = nil
+        model.retryCameraConfiguration()
+        check(model.saved?.device == selector && model.configurationProblem == nil && model.canStartCamera &&
+              model.stage == .off(webcam: "iPhone Camera", name: "macbook"),
+              "retry saves the exact device, clears the error and shows its label on the stopped stage")
+    }
+
+    do { // Reading settings and streaming are also separate operations.
+        let helper = FixtureCameraHelper()
+        helper.hold = "config"
+        let model = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory)
+        defer { _ = model.quit() }
+        model.launch()
+        helper.hold = nil
+        helper.deliver(["error": ["code": "not_readable"]])
+        check(model.configurationProblem != nil && !model.settingsEditable && model.stage.feedback == nil,
+              "a failed settings read stays in setup and blocks writes")
+        model.retryCameraConfiguration()
+        check(model.configurationProblem == nil && model.settingsEditable && model.canStartCamera,
+              "retry recovers settings reads without marking capture failed")
+    }
+
     do { // One banner: problems first, then the last result.
         let helper = FixtureSharingCamera()
         let model = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory)

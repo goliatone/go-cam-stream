@@ -46,6 +46,9 @@ func CaptureFailure(err error) *AppError {
 	if errors.Is(err, errCameraUnavailable) {
 		return appError("device_unavailable")
 	}
+	if errors.Is(err, errCameraInventory) {
+		return appError("device_inventory_failed")
+	}
 	if errors.Is(err, errCameraFormat) {
 		return appError("capture_format_unsupported")
 	}

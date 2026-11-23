@@ -1,0 +1,62 @@
+--- a/libavdevice/avfoundation.m
++++ b/libavdevice/avfoundation.m
+@@ -27,6 +27,7 @@
+ 
+ #import <AVFoundation/AVFoundation.h>
+ #include "camstream_audio_uid.h"
++#include "camstream_video_inventory.h"
+ #include "camstream_audio_queue.h"
+ #include <pthread.h>
+ 
+@@ -903,8 +904,9 @@
+                 if (!camstreamValidUID(uid) || ![name length]) goto fail;
+                 if ([ids containsObject:uid]) continue;
+                 [ids addObject:uid];
+-                [records addObject:@{@"id":uid, @"name":name,
+-                    @"builtin":@([[device deviceType] isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera] && ![device isContinuityCamera])}];
++                [records addObject:camstreamVideoDeviceRecord(uid, name,
++                    [[device deviceType] isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera],
++                    [device isContinuityCamera])];
+             }
+         }
+         NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"version":@1, @"devices":records}
+--- /dev/null
++++ b/libavdevice/camstream_video_inventory.h
+@@ -0,0 +1,8 @@
++#import <Foundation/Foundation.h>
++
++static inline NSDictionary *camstreamVideoDeviceRecord(NSString *uid, NSString *name,
++                                                         BOOL wideAngle, BOOL continuity)
++{
++    // Box a boolean explicitly. Logical expressions can box as JSON numbers.
++    return @{@"id": uid, @"name": name, @"builtin": wideAngle && !continuity ? @YES : @NO};
++}
+--- /dev/null
++++ b/libavdevice/tests/camstream_video_inventory.m
+@@ -0,0 +1,26 @@
++#import <Foundation/Foundation.h>
++#import "../camstream_video_inventory.h"
++
++int main(void)
++{
++    @autoreleasepool {
++        NSArray *inventory = @[
++            camstreamVideoDeviceRecord(@"builtin", @"Built-in camera", YES, NO),
++            camstreamVideoDeviceRecord(@"continuity", @"iPhone Camera", YES, YES),
++            camstreamVideoDeviceRecord(@"desk", @"iPhone Desk View", NO, NO)
++        ];
++        NSData *data = [NSJSONSerialization dataWithJSONObject:inventory options:0 error:NULL];
++        if (!data)
++            return 1;
++        NSArray *decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
++        if (decoded.count != inventory.count)
++            return 1;
++        for (NSUInteger index = 0; index < decoded.count; index++) {
++            NSNumber *value = decoded[index][@"builtin"];
++            if (!value || CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID()
++                || value.boolValue != (index == 0))
++                return 1;
++        }
++        return 0;
++    }
++}

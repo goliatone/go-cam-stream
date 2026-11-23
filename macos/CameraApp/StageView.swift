@@ -240,7 +240,7 @@ struct StageView: View {
         } else if let reason = model.startCameraBlockedReason {
             Label(reason, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("start-reason")
-            if let pane = model.validationPane {
+            if let pane = model.startSettingsPane {
                 Button("Open \(pane.title) Settings…") { model.showSettings(pane) }.buttonStyle(.link).controlSize(.regular)
             }
         }

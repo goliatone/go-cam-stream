@@ -130,6 +130,15 @@ def assemble(runtime, app, lock, production=False, version="0.1.0", identity="-"
         sign(binary, identity, entitlements)
     sign(app, identity, entitlements)
     run("codesign", "--verify", "--deep", "--strict", str(app))
+    if production and lock.get("video_device_identity"):
+        try:
+            inventory = run(str(contents / "Helpers" / "camstream-camera"), "devices",
+                            capture_output=True, timeout=25)
+            devices = json.loads(inventory.stdout)
+        except (subprocess.SubprocessError, ValueError):
+            raise ValueError("the bundled camera helper could not read its webcam inventory") from None
+        if not isinstance(devices, list) or any(not device.get("id", "").startswith("uid:") for device in devices):
+            raise ValueError("the bundled camera helper did not return exact webcam identities")
     return build_id
 
 

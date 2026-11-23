@@ -46,9 +46,9 @@ struct CameraSettingsPane: View {
                 SettingsFootnote(WebcamFields.footnote)
             }
             .disabled(!model.settingsEditable)
+            CameraConfigurationProblemRow(model: model)
             MicrophoneSection(model: model)
         }
-        .onAppear { model.devicesChanged() }
     }
 
     static func accessText(_ permission: String) -> String {
@@ -85,7 +85,11 @@ struct WebcamFields: View {
         if currentChoice == "auto" { return Self.automatic }
         let matches = model.devices.filter { ($0.selector ?? $0.name) == currentChoice || $0.name == currentChoice }
         if matches.count > 1 { return "Saved webcam — choose again" }
-        return matches.first?.label(in: model.devices) ?? "Saved webcam — unavailable"
+        if let device = matches.first { return device.label(in: model.devices) }
+        if model.webcamDiscoveryFailed || !model.webcamInventoryLoaded {
+            return currentChoice.hasPrefix("uid:") ? "Saved webcam" : currentChoice
+        }
+        return "Saved webcam — unavailable"
     }
 
     var body: some View {
@@ -106,12 +110,27 @@ struct WebcamFields: View {
             .accessibilityHint("Choose a webcam to start a local preview.")
             .disabled(model.permission != "authorized" || model.callStage != nil)
         }
+        if model.webcamDiscoveryFailed || (model.webcamInventoryLoaded && model.devices.isEmpty) {
+            VStack(alignment: .leading, spacing: 8) {
+                FieldProblem(webcamDiscoveryMessage)
+                Button("Retry Webcam Discovery", action: model.refreshDevices)
+                    .disabled(!model.canEditSettings || model.permission != "authorized")
+                    .accessibilityIdentifier("retry-webcam-discovery")
+            }
+            .accessibilityIdentifier("webcam-discovery-problem")
+        }
         previewContent
         TextField("Camera name", text: $model.draft.path, prompt: Text("macbook"))
             .focused($nameFocused)
             .onSubmit { model.applySettings() }
             .onChange(of: nameFocused) { _, focused in if !focused { model.applySettings() } }
         if let problem = model.nameValidation { FieldProblem(problem) }
+    }
+
+    private var webcamDiscoveryMessage: String {
+        if !model.webcamDiscoveryFailed { return "No webcams are available. Connect one and try again." }
+        if model.devices.isEmpty { return "The camera service couldn’t load the webcam list." }
+        return "The camera service couldn’t refresh the webcam list. The last known list is shown."
     }
 
     private func choice(_ name: String, _ selection: String) -> some View {
@@ -157,6 +176,22 @@ struct WebcamFields: View {
 
     private var previewHint: some View {
         SettingsFootnote("Choose a webcam to see a local preview. Start Camera begins streaming.")
+    }
+}
+
+struct CameraConfigurationProblemRow: View {
+    @ObservedObject var model: CameraModel
+
+    var body: some View {
+        if let problem = model.configurationProblem {
+            Section {
+                FieldProblem(problem)
+                    .accessibilityIdentifier("camera-configuration-problem")
+                Button("Retry Camera Settings", action: model.retryCameraConfiguration)
+                    .disabled(!model.canRetryCameraConfiguration)
+                    .accessibilityIdentifier("retry-camera-configuration")
+            }
+        }
     }
 }
 

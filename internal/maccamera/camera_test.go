@@ -3,6 +3,7 @@ package maccamera
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -77,6 +78,34 @@ func TestWebcamIdentitySurvivesDuplicateNamesAndInventoryReordering(t *testing.T
 	args := strings.Join(ffmpegArgs(c), " ")
 	if !strings.Contains(args, "-camstream_video_uid model:serial-b -i none:none") || strings.Contains(args, "USB Camera") {
 		t.Fatal("FFmpeg did not receive the exact camera UID")
+	}
+}
+
+func TestVideoInventoryDistinguishesNoDevicesFromInvalidRecords(t *testing.T) {
+	service := testService(t)
+	for name, fixture := range map[string]struct {
+		json string
+		want error
+	}{
+		"empty":           {`{"version":1,"devices":[]}`, nil},
+		"null-list":       {`{"version":1,"devices":null}`, errCameraInventory},
+		"numeric-builtin": {`{"version":1,"devices":[{"id":"one","name":"Camera","builtin":0}]}`, errCameraInventory},
+		"missing-builtin": {`{"version":1,"devices":[{"id":"one","name":"Camera"}]}`, errCameraInventory},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := filepath.Join(t.TempDir(), "ffmpeg")
+			if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf '%s\\n' '"+fixture.json+"'\nexit 251\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			service.Tools.FFmpeg = tool
+			devices, err := service.Devices(t.Context())
+			if !errors.Is(err, fixture.want) {
+				t.Fatalf("Devices error = %v, want %v", err, fixture.want)
+			}
+			if err == nil && (devices == nil || len(devices) != 0) {
+				t.Fatal("a successful empty inventory must encode as an empty list")
+			}
+		})
 	}
 }
 

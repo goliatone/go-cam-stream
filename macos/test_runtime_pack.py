@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -192,12 +193,26 @@ class RuntimePackTests(unittest.TestCase):
             if "-version" in argv:
                 return "ffprobe version " + self.lock["sources"]["ffmpeg"]["version"]
             return names
-        with patch("subprocess.check_output", side_effect=output):
+        with patch("subprocess.check_output", side_effect=output), patch.object(pack, "inspect_video_inventory") as inventory:
             pack.inspect_capabilities(self.root, self.lock)
+            inventory.assert_called_once_with(str(self.root / "ffmpeg"))
         for missing in ("-camstream_audio_uid", "-camstream_video_uid", "-camstream_list_video_devices", "libopus"):
             with patch("subprocess.check_output", side_effect=lambda argv, **kw: output(argv, **kw).replace(missing, "")):
                 with self.assertRaisesRegex(ValueError, "missing"):
                     pack.inspect_capabilities(self.root, self.lock)
+
+    def test_video_inventory_checks_the_json_consumed_by_the_helper(self):
+        for records in ([], [{"id": "a", "name": "Built-in webcam", "builtin": True},
+                            {"id": "b", "name": "iPhone Desk View", "builtin": False}]):
+            result = subprocess.CompletedProcess([], 251, json.dumps({"version": 1, "devices": records}).encode())
+            with patch("subprocess.run", return_value=result):
+                pack.inspect_video_inventory("ffmpeg")
+        for value in (0, 1, None, "true"):
+            with self.subTest(value=value):
+                records = [{"id": "a", "name": "Camera", "builtin": value}]
+                result = subprocess.CompletedProcess([], 251, json.dumps({"version": 1, "devices": records}).encode())
+                with patch("subprocess.run", return_value=result), self.assertRaisesRegex(ValueError, "inventory device"):
+                    pack.inspect_video_inventory("ffmpeg")
 
     def test_macho_architecture_target_and_external_dependencies(self):
         def check(arch="arm64", minimum="26.0", dependency="/usr/lib/libSystem.B.dylib"):

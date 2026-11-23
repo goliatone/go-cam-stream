@@ -63,10 +63,7 @@ struct WelcomeView: View {
         case .microphone:
             MicrophoneSection(model: model)
         }
-        // A camera service reply that refused these settings.
-        if model.capture.phase == .error, let problem = model.capture.problem {
-            Section { FieldProblem(problem) }
-        }
+        CameraConfigurationProblemRow(model: model)
     }
 
     private var accessDetail: String {

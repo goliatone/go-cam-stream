@@ -119,7 +119,7 @@ func (s *Service) Devices(ctx context.Context) ([]Device, error) {
 		return nil, ctx.Err()
 	}
 	if len(stdout) > 0 && exitCode == 251 {
-		if devices := parseIdentifiedDevices(stdout); len(devices) != 0 {
+		if devices := parseIdentifiedDevices(stdout); devices != nil {
 			return devices, nil
 		}
 	} else if len(stdout) == 0 && exitCode > 0 {
@@ -127,13 +127,14 @@ func (s *Service) Devices(ctx context.Context) ([]Device, error) {
 			return devices, nil
 		}
 	}
-	return nil, errCameraUnavailable
+	return nil, errCameraInventory
 }
 
 const cameraUIDPrefix = "uid:"
 
 var errCameraUnavailable = errors.New("selected webcam unavailable; check camera access or select a listed webcam")
 var errCameraAmbiguous = errors.New("multiple webcams have that name; choose a webcam by ID")
+var errCameraInventory = errors.New("could not read the runtime webcam inventory")
 var numericCameraPrefix = regexp.MustCompile(`^\s*[+-]?[0-9]`)
 
 func cameraUID(selector string) (string, bool) {
@@ -154,23 +155,23 @@ func parseIdentifiedDevices(data []byte) []Device {
 		Devices []struct {
 			UID     string `json:"id"`
 			Name    string `json:"name"`
-			BuiltIn bool   `json:"builtin"`
+			BuiltIn *bool  `json:"builtin"`
 		} `json:"devices"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&inventory) != nil || decoder.Decode(new(any)) != io.EOF || inventory.Version != 1 {
+	if decoder.Decode(&inventory) != nil || decoder.Decode(new(any)) != io.EOF || inventory.Version != 1 || inventory.Devices == nil {
 		return nil
 	}
 	devices := make([]Device, 0, len(inventory.Devices))
 	seen := make(map[string]bool, len(inventory.Devices))
 	for index, device := range inventory.Devices {
-		if !validAudioID(device.UID) || device.Name == "" || seen[device.UID] {
+		if !validAudioID(device.UID) || device.Name == "" || device.BuiltIn == nil || seen[device.UID] {
 			return nil
 		}
 		seen[device.UID] = true
 		devices = append(devices, Device{Index: strconv.Itoa(index), Name: device.Name,
-			ID: cameraUIDPrefix + base64.RawURLEncoding.EncodeToString([]byte(device.UID)), builtIn: device.BuiltIn})
+			ID: cameraUIDPrefix + base64.RawURLEncoding.EncodeToString([]byte(device.UID)), builtIn: *device.BuiltIn})
 	}
 	if body, err := json.Marshal(devices); err != nil || len(body) > audioDiscoveryLimit {
 		return nil

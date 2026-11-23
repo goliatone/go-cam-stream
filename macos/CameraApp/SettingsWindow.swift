@@ -80,6 +80,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func paneChanged() {
         window?.title = selectedPane.title
         if !isShowing || selectedPane != .camera { model.webcamPreview.stop(in: .settings) }
+        if isShowing && selectedPane == .camera { model.devicesChanged() }
         model.callSettingsVisible = isShowing && selectedPane == .calls
         visibilityChanged()
     }

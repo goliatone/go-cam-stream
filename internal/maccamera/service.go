@@ -225,6 +225,8 @@ func (s *Service) Start(ctx context.Context, out, stderr io.Writer) error {
 				return errCameraAmbiguous
 			case "device_unavailable":
 				return errCameraUnavailable
+			case "device_inventory_failed":
+				return errCameraInventory
 			case "capture_format_unsupported":
 				return errCameraFormat
 			case "capture_no_frames":

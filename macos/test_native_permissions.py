@@ -51,12 +51,17 @@ class NativePermissionTests(unittest.TestCase):
                 for name in ('BUILDINFO.json', 'MANIFEST.json'):
                     (runtime / name).write_text(json.dumps({'fixture': True}))
                 lock = {'target': {'minimum_macos': '26.0'}, 'runtime_id': 'fixture',
-                        'packs': {'darwin-arm64': {'sha256': 'fixture'}}, 'sources': {'opus': {}}}
+                        'packs': {'darwin-arm64': {'sha256': 'fixture'}}, 'sources': {'opus': {}},
+                        'video_device_identity': True}
                 app = root / 'Fixture.app'
                 signed = []
                 icon_builds = []
+                inventories = []
                 assemble = builder['assemble']
                 def run_fixture(*args, **kwargs):
+                    if args[-1] == 'devices':
+                        inventories.append(args[0])
+                        return subprocess.CompletedProcess(args, 0, b'[]')
                     if args[:2] == ('xcrun', 'actool'):
                         icon_builds.append(args)
                         actool_outputs(args)
@@ -76,6 +81,7 @@ class NativePermissionTests(unittest.TestCase):
                     build_id = assemble(runtime, app, lock, production=production)
                 info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
                 self.assertIn('NSCameraUsageDescription', info)
+                self.assertEqual(inventories, [str(app / 'Contents/Helpers/camstream-camera')] if production else [])
                 self.assertEqual('NSMicrophoneUsageDescription' in info, production)
                 schemes = [scheme for entry in info.get('CFBundleURLTypes', []) for scheme in entry['CFBundleURLSchemes']]
                 self.assertEqual(schemes, ['camstream'] if production else [])

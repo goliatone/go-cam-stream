@@ -53,6 +53,14 @@ def build(args):
     for patch in patches:
         run("patch", ["/usr/bin/patch", "--batch", "--fuzz=0", "-p1", "-i", str(patch)], source_dirs["ffmpeg"])
 
+    inventory_test = source_dirs["ffmpeg"] / "libavdevice/tests/camstream_video_inventory.m"
+    if inventory_test.is_file():
+        inventory_binary = work / "video-inventory-test"
+        run("video-inventory-smoke", [cc, "-arch", "arm64", "-isysroot", sdk,
+            "-mmacosx-version-min=" + lock["target"]["minimum_macos"], "-framework", "Foundation",
+            str(inventory_test), "-o", str(inventory_binary)], work)
+        run("video-inventory-smoke", [str(inventory_binary)], work)
+
     for name in (() if candidate_info else ("pkgconf", "x264", *(("opus",) if "opus" in lock["sources"] else ()), "ffmpeg")):
         directory = source_dirs[name]
         options = [str(directory / "configure"), f"--prefix={prefix}", *lock["configure"][name]]

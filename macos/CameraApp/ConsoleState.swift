@@ -118,8 +118,13 @@ extension CameraModel {
                                                        message: capture.problem ?? cameraMessage("capture_failed"), actions: []))
         case .stopped:
             if let feedback = cameraAccessFeedback { return .needsAccess(feedback) }
-            let device = config.device
-            return .off(webcam: device == "auto" || device.isEmpty ? "Built-in camera" : device, name: config.path)
+            let selection = configurationProblem == nil ? config : saved ?? config
+            let device = selection.device
+            let webcam: String
+            if device == "auto" || device.isEmpty { webcam = "Built-in camera" }
+            else if let known = devices.first(where: { $0.selector == device }) { webcam = known.label(in: devices) }
+            else { webcam = device.hasPrefix("uid:") ? "Selected webcam" : device }
+            return .off(webcam: webcam, name: selection.path)
         }
     }
 

@@ -119,7 +119,7 @@ func (s *Service) Supervise(ctx context.Context, lifetime io.Reader, out io.Writ
 		if c.AudioEnabled && errors.Is(err, context.DeadlineExceeded) {
 			return audioFailure("audio_startup_timeout")
 		}
-		return errCameraUnavailable
+		return errCameraInventory
 	}
 	if c.Device, err = selectDevice(c.Device, devices); err != nil {
 		return err

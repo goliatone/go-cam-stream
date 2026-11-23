@@ -17,6 +17,13 @@ final class CameraModel: ObservableObject {
     @Published var portText = "8554"
     @Published var saved: CameraConfig?
     @Published var devices: [CameraDevice] = []
+    @Published private(set) var webcamInventoryLoaded = false
+    @Published private(set) var webcamDiscoveryFailed = false
+    private enum ConfigurationIssue {
+        case load
+        case apply(CameraConfig, message: String)
+    }
+    @Published private var configurationIssue: ConfigurationIssue?
     @Published var ready = false
     @Published var working = false
     @Published private(set) var helperFailure: HelperFailure?
@@ -229,7 +236,7 @@ final class CameraModel: ObservableObject {
     }
     var canEditSettings: Bool { ready && !working && !requestingPermission && !capture.active && !conversationCapture && !quitting }
     /// Settings fields stay enabled while a change applies, so typing keeps focus.
-    var settingsEditable: Bool { ready && !requestingPermission && !capture.active && !conversationCapture && !quitting }
+    var settingsEditable: Bool { ready && !requestingPermission && !capture.active && !conversationCapture && !quitting && !configurationLoadFailed }
 
     /// Grants the call-device lease only after the helper confirmed that the
     /// stream released capture. Reserve it against other supervisors until
@@ -869,6 +876,21 @@ final class CameraModel: ObservableObject {
         return value
     }
     var dirty: Bool { saved != config }
+    private var configurationLoadFailed: Bool {
+        if case .load? = configurationIssue { return true }
+        return false
+    }
+    var configurationProblem: String? {
+        switch configurationIssue {
+        case .load?: return "The camera service couldn’t read your saved settings."
+        case let .apply(rejected, message)? where dirty && config == rejected: return message
+        default: return nil
+        }
+    }
+    var canRetryCameraConfiguration: Bool {
+        canEditSettings && configurationProblem != nil &&
+            (configurationLoadFailed || (permission == "authorized" && validation == nil))
+    }
     /// The helper state that blocks every camera and call action.
     var helperBlockedReason: String? {
         guard !ready else { return nil }
@@ -902,6 +924,7 @@ final class CameraModel: ObservableObject {
         }
         if conversationCapture { return "End the call to use the camera for streaming." }
         if let validation { return validation }
+        if configurationProblem != nil { return "Open Camera Settings to retry applying your settings." }
         if saved == nil { return "Save your settings first." }
         if dirty { return "Save your changes first." }
         return nil
@@ -925,20 +948,21 @@ final class CameraModel: ObservableObject {
         switch code {
         case "capture_failed": return "The camera stopped. Close other apps using the webcam, then try again."
         case "device_unavailable": return "No available webcam was found. Reconnect the camera or choose another one, then try again."
+        case "device_inventory_failed": return "The camera service couldn’t read the webcam list. Try again."
         case "configuration_failed": return "Settings could not be applied. Check the selected webcam, then try again."
         default: return cameraMessage(code)
         }
     }
-    var canStart: Bool { canEditSettings && permission == "authorized" && saved != nil && !dirty && validation == nil }
+    var canStart: Bool { canStartCamera && saved != nil && !dirty }
     /// Start Camera in the window and menus. Valid changes not yet applied
     /// apply first, so they don't block it.
-    var canStartCamera: Bool { canEditSettings && permission == "authorized" && validation == nil }
+    var canStartCamera: Bool { canEditSettings && permission == "authorized" && validation == nil && configurationProblem == nil }
     var startCameraBlockedReason: String? {
         if canStartCamera || capture.active || quitting { return nil }
         return startBlockedReason
     }
     var canStop: Bool { ready && (capture.phase == .starting || capture.phase == .streaming) }
-    var canSave: Bool { canEditSettings && permission == "authorized" && validation == nil && dirty }
+    var canSave: Bool { canStartCamera && dirty }
     var canExport: Bool { ready && !working && !requestingPermission && !quitting && capture.phase != .starting && capture.phase != .stopping && saved != nil && !dirty && (!config.audioEnabled || audioSupported) }
     var validation: String? { nameValidation ?? portValidation ?? hostValidation ?? microphoneValidation }
     var nameValidation: String? {
@@ -959,6 +983,7 @@ final class CameraModel: ObservableObject {
         if portValidation != nil || hostValidation != nil { return .network }
         return microphoneValidation != nil ? .camera : nil
     }
+    var startSettingsPane: SettingsPane? { validationPane ?? (configurationProblem == nil ? nil : .camera) }
     var title: String {
         if helperFailure != nil { return "Camera service unavailable" }
         if reconnectingHelper { return "Reconnecting camera service…" }
@@ -1020,28 +1045,7 @@ final class CameraModel: ObservableObject {
             self.ready = true; self.working = true
             self.sharing.connect()
             self.redeemPendingConversation()
-            self.client.request("config") { [weak self] reply in
-                guard let self = self else { return }
-                self.working = false
-                let preserveDraft = self.loadedConfiguration && self.dirty
-                if let value: CameraConfig = self.decode(reply["result"]) {
-                    if self.saved != value { self.exportCurrent = false }
-                    self.saved = value
-                    if !preserveDraft { self.draft = value; self.portText = String(value.port) }
-                    self.loadedConfiguration = true
-                } else if self.errorCode(reply) == "not_configured" {
-                    self.saved = nil; self.exportCurrent = false
-                    self.loadedConfiguration = true
-                    // First run: the guide, from the first step not done yet.
-                    if !self.welcomeDone, self.welcome == nil {
-                        self.welcome = self.permission == "authorized" ? .camera : .access
-                        // The guide lives in the window, even when launch skips it.
-                        self.showWindow()
-                    }
-                } else { self.showError(reply) }
-                if self.permission == "authorized" { self.refreshDevices() } else { self.refreshMicrophones() }
-                self.changed()
-            }
+            self.readCameraConfiguration()
         }
         client.onEvent = { [weak self] reply in
             guard let self = self else { return }
@@ -1051,7 +1055,11 @@ final class CameraModel: ObservableObject {
                 if self.openingConversation, let value = reply["result"] as? String {
                     self.conversationProgress = ConversationSetupStage(rawValue: value) ?? self.conversationProgress
                 }
-            } else { self.showError(reply) }
+            } else if reply["event"] as? String == "session_error" {
+                self.loseHelper(.disconnected)
+                self.client.shutdown()
+                return
+            }
             self.changed()
         }
         client.onFailure = { [weak self] failure in self?.loseHelper(failure) }
@@ -1073,6 +1081,35 @@ final class CameraModel: ObservableObject {
         self.timer = timer
     }
 
+    private func readCameraConfiguration() {
+        working = true
+        client.request("config") { [weak self] reply in
+            guard let self else { return }
+            self.working = false
+            let preserveDraft = self.loadedConfiguration && self.dirty
+            if let value: CameraConfig = self.decode(reply["result"]) {
+                if self.saved != value { self.exportCurrent = false }
+                self.saved = value
+                if !preserveDraft { self.draft = value; self.portText = String(value.port) }
+                self.loadedConfiguration = true
+                if self.configurationLoadFailed { self.configurationIssue = nil }
+            } else if self.errorCode(reply) == "not_configured" {
+                self.saved = nil; self.exportCurrent = false
+                self.loadedConfiguration = true
+                if self.configurationLoadFailed { self.configurationIssue = nil }
+                // First run: the guide lives in the window even when launch skips it.
+                if !self.welcomeDone, self.welcome == nil {
+                    self.welcome = self.permission == "authorized" ? .camera : .access
+                    self.showWindow()
+                }
+            } else {
+                self.configurationIssue = .load
+            }
+            if self.permission == "authorized" { self.refreshDevices() } else { self.refreshMicrophones() }
+            self.changed()
+        }
+    }
+
     func retryHelper() {
         guard canRetryHelper else { return }
         exited = false
@@ -1089,6 +1126,7 @@ final class CameraModel: ObservableObject {
         reconnectingHelper = false
         ready = false; working = false
         audioSupported = false
+        webcamInventoryLoaded = false; webcamDiscoveryFailed = false
         devices = []; microphones = []; microphonesLoaded = false; microphoneDiscoveryError = nil
         callConnectorStatus = .external; reconnectingCallConnector = false; connectorStatusPending = false
         nextConnectorCheck = .distantPast
@@ -1223,8 +1261,11 @@ final class CameraModel: ObservableObject {
         client.request("devices") { [weak self] reply in
             guard let self = self else { return }
             self.working = false
-            if let devices: [CameraDevice] = self.decode(reply["result"]) { self.devices = devices }
-            else { self.showError(reply) }
+            if let devices: [CameraDevice] = self.decode(reply["result"]) {
+                self.devices = devices
+                self.webcamInventoryLoaded = true
+                self.webcamDiscoveryFailed = false
+            } else { self.webcamDiscoveryFailed = true }
             self.refreshMicrophones()
             self.changed()
         }
@@ -1232,6 +1273,17 @@ final class CameraModel: ObservableObject {
     func save() {
         guard canSave else { return }
         configure(quiet: false) { _ in }
+    }
+
+    func retryCameraConfiguration() {
+        guard canRetryCameraConfiguration else { return }
+        if configurationLoadFailed {
+            readCameraConfiguration()
+            changed()
+        } else {
+            configurationIssue = nil
+            applySettings()
+        }
     }
 
     func chooseWebcam(_ selection: String, in surface: WebcamPreview.Surface) {
@@ -1272,12 +1324,19 @@ final class CameraModel: ObservableObject {
             let value: CameraConfig? = self.decode(reply["result"])
             if let value {
                 self.saved = value
+                self.configurationIssue = nil
                 // An edit made while this change was in flight stays as the draft.
                 if self.config == sent { self.draft = value; self.portText = String(value.port) }
                 self.exportCurrent = false
                 self.capture.stopped()
                 if !quiet { self.notice = "Settings saved. Choose Start Camera when you’re ready." }
-            } else { self.showError(reply) }
+            } else {
+                let code = self.errorCode(reply) ?? "transport"
+                let reason = code == "device_unavailable"
+                    ? "The selected webcam is unavailable. Reconnect it or choose another webcam."
+                    : self.problemText(code)
+                self.configurationIssue = .apply(sent, message: "Your changes weren’t saved. " + reason)
+            }
             done(value != nil)
             self.changed()
         }
@@ -1285,7 +1344,7 @@ final class CameraModel: ObservableObject {
     /// Start Camera in the window and menus: valid changes apply first, so
     /// there is no separate Save step.
     func startCamera() {
-        guard !capture.active else { return }
+        guard canStartCamera else { return }
         guard dirty, canSave else { start(); return }
         applySettings { [weak self] applied in
             guard let self else { return }
@@ -1539,7 +1598,6 @@ final class CameraModel: ObservableObject {
     private func confirmedStop(_ reply: [String: Any]) -> Bool {
         errorCode(reply) == nil && (reply["result"] as? [String: Any])?["state"] as? String == "stopped"
     }
-    private func showError(_ reply: [String: Any]) { capture.failed(problemText(errorCode(reply) ?? "transport")) }
     private func decode<T: Decodable>(_ value: Any?) -> T? {
         guard let value = value, JSONSerialization.isValidJSONObject(value),
               let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }

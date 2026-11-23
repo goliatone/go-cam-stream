@@ -80,25 +80,53 @@ def inspect_capabilities(tools, lock):
         required["-decoders"] += ["opus", "pcm_s16le", "pcm_s32le", "pcm_f32le", "pcm_f64le"]
         required["-filters"] += ["aresample", "aformat", "anullsrc", "sine"]
         required["-muxers"] += ["s16le"]
+    ffmpeg = str(Path(tools) / "ffmpeg")
     capabilities = {}
     for option, names in required.items():
-        result = subprocess.check_output([str(Path(tools) / "ffmpeg"), "-hide_banner", option], text=True, stderr=subprocess.DEVNULL, timeout=20)
+        result = subprocess.check_output([ffmpeg, "-hide_banner", option], text=True, stderr=subprocess.DEVNULL, timeout=20)
         if any(name not in result.split() for name in names):
             raise ValueError("runtime missing required capabilities: " + option)
         capabilities[option] = result
     video_identity = lock.get("video_device_identity", False)
     if audio or video_identity:
-        result = subprocess.check_output([str(Path(tools) / "ffmpeg"), "-hide_banner", "-h", "demuxer=avfoundation"], text=True, stderr=subprocess.DEVNULL, timeout=20)
+        result = subprocess.check_output([ffmpeg, "-hide_banner", "-h", "demuxer=avfoundation"], text=True, stderr=subprocess.DEVNULL, timeout=20)
         if audio and any(name not in result.split() for name in ("-camstream_audio_uid", "-camstream_list_audio_devices")):
             raise ValueError("runtime missing exact audio UID/discovery capabilities")
         if video_identity and any(name not in result.split() for name in ("-camstream_video_uid", "-camstream_list_video_devices")):
             raise ValueError("runtime missing exact video UID/discovery capabilities")
         capabilities["avfoundation_options"] = result
+    if video_identity:
+        inspect_video_inventory(ffmpeg)
     if audio:
         version = subprocess.check_output([str(Path(tools) / "ffprobe"), "-version"], text=True, stderr=subprocess.DEVNULL, timeout=20)
         if not version.startswith("ffprobe version " + lock["sources"]["ffmpeg"]["version"]):
             raise ValueError("runtime ffprobe version mismatch")
     return capabilities
+
+
+def inspect_video_inventory(ffmpeg):
+    # Exercise the same inventory command as the Go helper. An empty list is
+    # valid on build hosts without cameras. Keep names and IDs out of build info.
+    result = subprocess.run([ffmpeg, "-hide_banner", "-f", "avfoundation", "-list_devices", "true",
+                             "-camstream_list_video_devices", "true", "-i", ""], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=20)
+    if result.returncode != 251 or len(result.stdout) > 128 * 1024:
+        raise ValueError("runtime video inventory did not complete")
+    try:
+        inventory = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise ValueError("invalid runtime video inventory JSON") from None
+    if (not isinstance(inventory, dict) or set(inventory) != {"version", "devices"}
+            or type(inventory["version"]) is not int or inventory["version"] != 1
+            or not isinstance(inventory["devices"], list)):
+        raise ValueError("invalid runtime video inventory envelope")
+    ids = set()
+    for device in inventory["devices"]:
+        if (not isinstance(device, dict) or set(device) != {"id", "name", "builtin"}
+                or not isinstance(device["id"], str) or not device["id"] or device["id"] in ids
+                or not isinstance(device["name"], str) or not device["name"] or type(device["builtin"]) is not bool):
+            raise ValueError("invalid runtime video inventory device")
+        ids.add(device["id"])
 
 
 def recipe_hash(lock):

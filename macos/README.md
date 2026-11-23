@@ -40,7 +40,9 @@ Camera and network settings apply as soon as they are valid. Choosing a webcam
 also opens a video-only local preview beside the picker. Choose **Stop Preview**,
 leave the pane, or close the window to release the camera. Opening Settings or
 restoring the saved choice keeps the camera off. **Start Camera** releases the
-local preview and starts the stream. For sound, turn on **Include microphone audio** in **Settings → Camera**,
+local preview and starts the stream. If discovery or saving fails, Camera Settings
+offers a retry. A failed save keeps the last saved settings and shows the pending
+choice in the picker. For sound, turn on **Include microphone audio** in **Settings → Camera**,
 choose **Allow Microphone** if needed, and select a microphone. Microphone audio
 is off by default; permission grant, selection and reopening never start capture.
 Denial leaves video-only use available by turning microphone audio off. Choose
@@ -537,7 +539,7 @@ passes the pinned hash and inventory checks. [Runtime-2](https://github.com/goli
 is published for historical preview-enabled builds.
 [Runtime-3](https://github.com/goliatone/go-cam-stream/releases/tag/camera-runtime-3)
 provides the historical audio-capable archive. The current lock selects runtime
-5 for exact video identity and capture-format normalization. Host the reviewed
+6 for exact video identity and capture-format normalization. Host the reviewed
 archive at its locked URL before tagging the app release.
 For each new runtime, prepare a draft, review archive/checksums/provenance and
 explicitly authorize publication before expecting anonymous downloads to work.
