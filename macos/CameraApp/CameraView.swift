@@ -11,8 +11,8 @@ struct CameraView: View {
         VStack(alignment: .leading, spacing: 12) {
             if model.browserCaptureNeedsConfirmation {
                 HStack {
-                    Text("Close the call tab in your browser to release the camera and microphone.")
-                    Button("Browser Tab Closed", action: model.confirmBrowserCallClosed)
+                    Text(CameraModel.browserTabPrompt)
+                    Button(CameraModel.browserTabClosed, action: model.confirmBrowserCallClosed)
                 }
             }
             // Without the camera service the console's stage shows its state

@@ -119,6 +119,10 @@ final class CameraModel: ObservableObject {
     private var connectorStatusPending = false
     private var browserCaptureLease: (id: UUID, roomID: String)?
     @Published private(set) var browserCaptureNeedsConfirmation = false
+    /// What the window and the popover ask while the browser may still hold
+    /// the camera and microphone, and the answer that releases them.
+    static let browserTabPrompt = "Close the call tab in your browser to release the camera and microphone."
+    static let browserTabClosed = "Browser Tab Closed"
     var hasBrowserCaptureLease: Bool { browserCaptureLease != nil }
     private var conversationCloseWaiters: [(Bool) -> Void] = []
     private var closingAdmission: ((Bool) -> Void)?

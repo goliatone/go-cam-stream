@@ -218,6 +218,27 @@ func runPopoverTests(conversations: [String: Any], sharing examples: [String: An
         check(model.banner?.source != .call, "Dismiss clears the message")
     }
 
+    do { // Content: after a call hosted in the browser ends, the window's tab prompt.
+        let helper = FixtureSharingCamera()
+        helper.conversationReply = admission("host")
+        let model = CameraModel(client: helper, permissions: FixturePermissions(), directory: directory, openBrowser: { _ in true })
+        defer { _ = model.quit() }
+        model.launch()
+        model.startConversationInBrowser()
+        check(model.hostInBrowser && model.conversationCapture && !model.popover.showsBrowserTabPrompt,
+              "a call hosted in the browser has no tab prompt while it runs")
+        helper.conversationReply = ["result": [:]]
+        helper.browserCapturePending = true
+        model.closeConversation()
+        check(model.browserCaptureNeedsConfirmation && model.popover.showsBrowserTabPrompt &&
+              PopoverAction.confirmBrowserTabClosed.title == CameraModel.browserTabClosed,
+              "when it ends while the browser may still hold the camera and microphone, the popover shows the window's prompt")
+        model.perform(popover: .confirmBrowserTabClosed)
+        check(!model.browserCaptureNeedsConfirmation && !model.conversationCapture && !model.popover.showsBrowserTabPrompt &&
+              model.popover.primary == PopoverButton(action: .startCamera),
+              "Browser Tab Closed releases them, and the popover returns to the camera")
+    }
+
     do { // Content: the share link's actions, and what each action leaves open.
         var created = examples["created"] as! [String: Any]
         var share = created["share"] as! [String: Any]
@@ -247,7 +268,7 @@ func runPopoverTests(conversations: [String: Any], sharing examples: [String: An
         model.perform(popover: .joinCall)
         check(panes.count == 1 && panes[0] == nil && model.showingJoin, "Settings… opens Settings, and Join Call… opens its sheet")
         let stays: [PopoverAction] = [.startCamera, .stopCamera, .retryPreview, .copyShareLink, .stopSharing, .copyInvitation, .cancelCall,
-                                      .dismissBanner, .fix(.allowCamera), .fix(.retryHelper)]
+                                      .confirmBrowserTabClosed, .dismissBanner, .fix(.allowCamera), .fix(.retryHelper)]
         let windows: [PopoverAction] = [.finishSetup, .showCall, .startCall(asks: true), .startCall(asks: false), .joinCall,
                                         .endCall(guest: false), .openWindow, .fix(.startNewConversation), .fix(.testLocalConversation),
                                         .fix(.retryConversationInvitation)]
@@ -256,7 +277,7 @@ func runPopoverTests(conversations: [String: Any], sharing examples: [String: An
               "camera and share actions keep the popover open; sheets, confirmations and calls go to the window; other places close it")
         let kinds: [PopoverAction] = [.startCamera, .stopCamera, .finishSetup, .showCall, .retryPreview, .fix(.allowCamera),
                                       .copyShareLink, .stopSharing, .startCall(asks: false), .joinCall, .copyInvitation, .cancelCall,
-                                      .endCall(guest: false), .dismissBanner, .openWindow, .settings, .quit]
+                                      .endCall(guest: false), .confirmBrowserTabClosed, .dismissBanner, .openWindow, .settings, .quit]
         check(Set(kinds.map(\.identifier)).count == kinds.count &&
               (stays + windows + closes).allSatisfy { $0.identifier.hasPrefix("popover-") && !$0.title.isEmpty },
               "every popover action has a title, and each kind its own identifier")

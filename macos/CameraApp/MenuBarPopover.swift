@@ -12,6 +12,9 @@ enum PopoverAction: Equatable {
     case startCall(asks: Bool)
     case joinCall, copyInvitation, cancelCall
     case endCall(guest: Bool)
+    /// After a call hosted in the browser ends, says its tab is closed, so
+    /// the camera and microphone are released.
+    case confirmBrowserTabClosed
     case dismissBanner, openWindow, settings, quit
 
     /// Sheets, confirmations and the call stage live in the window, so the
@@ -35,6 +38,7 @@ enum PopoverAction: Equatable {
         case .copyInvitation: return "Copy Invitation"
         case .cancelCall: return "Cancel Call"
         case .endCall(let guest): return guest ? "Leave Call…" : "End Call…"
+        case .confirmBrowserTabClosed: return CameraModel.browserTabClosed
         case .dismissBanner: return "Dismiss"
         case .openWindow: return "Open Camstream Camera"
         case .settings: return "Settings…"
@@ -57,6 +61,7 @@ enum PopoverAction: Equatable {
         case .copyInvitation: return "popover-copy-invitation"
         case .cancelCall: return "popover-cancel-call"
         case .endCall: return "popover-end-call"
+        case .confirmBrowserTabClosed: return "popover-browser-tab-closed"
         case .dismissBanner: return "popover-dismiss-banner"
         case .openWindow: return "popover-open-window"
         case .settings: return "popover-settings"
@@ -66,7 +71,8 @@ enum PopoverAction: Equatable {
 
     var handoff: Handoff {
         switch self {
-        case .startCamera, .stopCamera, .retryPreview, .copyShareLink, .stopSharing, .copyInvitation, .cancelCall, .dismissBanner:
+        case .startCamera, .stopCamera, .retryPreview, .copyShareLink, .stopSharing, .copyInvitation, .cancelCall,
+             .confirmBrowserTabClosed, .dismissBanner:
             return .stay
         case .finishSetup, .showCall, .startCall, .joinCall, .endCall, .openWindow:
             return .window
@@ -111,6 +117,9 @@ struct PopoverContent: Equatable {
     let lines: [String]
     /// The console's one message, with at most its first fix.
     let banner: ConsoleBanner?
+    /// The window's prompt to close the call tab, after a call hosted in the
+    /// browser ends while the browser may still hold the camera and microphone.
+    let showsBrowserTabPrompt: Bool
     let picture: Picture
     /// The console's prominent action for this state.
     let primary: PopoverButton?
@@ -126,7 +135,8 @@ extension CameraModel {
         var message = banner
         if let first = message?.actions.first { message?.actions = [first] }
         let starts = welcomeShown == nil && stage.isOff
-        return PopoverContent(pill: statusPill, lines: activity.lines, banner: message, picture: popoverPicture(stage),
+        return PopoverContent(pill: statusPill, lines: activity.lines, banner: message,
+                              showsBrowserTabPrompt: browserCaptureNeedsConfirmation, picture: popoverPicture(stage),
                               primary: popoverPrimary(stage), primaryNote: starts ? startCameraBlockedReason : nil,
                               actions: popoverActions)
     }
@@ -216,6 +226,7 @@ extension CameraModel {
         case .joinCall: showingJoin = true
         case .copyInvitation: copyConversationInvitation()
         case .cancelCall, .endCall: endCall()
+        case .confirmBrowserTabClosed: confirmBrowserCallClosed()
         case .dismissBanner: dismissBanner()
         case .settings: showSettings(nil)
         case .quit: break
@@ -257,6 +268,7 @@ struct MenuBarPopoverView: View {
             }
             picture(content.picture)
             activity(content.lines)
+            if content.showsBrowserTabPrompt { browserTabPrompt }
             if let banner = content.banner { PopoverBannerView(banner: banner, perform: perform) }
             if let primary = content.primary { primaryButton(primary, note: content.primaryNote) }
             if !content.actions.isEmpty { actionGrid(content.actions) }
@@ -353,6 +365,24 @@ struct MenuBarPopoverView: View {
         .accessibilityIdentifier("popover-activity")
     }
 
+    /// The window's prompt after a call hosted in the browser ends: the
+    /// camera and microphone stay reserved until the call tab is closed.
+    private var browserTabPrompt: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "globe").foregroundStyle(.secondary).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(CameraModel.browserTabPrompt).font(.callout).fixedSize(horizontal: false, vertical: true)
+                Button(PopoverAction.confirmBrowserTabClosed.title) { perform(.confirmBrowserTabClosed) }
+                    .controlSize(.small)
+                    .accessibilityIdentifier(PopoverAction.confirmBrowserTabClosed.identifier)
+            }
+            Spacer(minLength: 4)
+        }
+        .popoverNotice(problem: false)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("popover-browser-tab")
+    }
+
     private func primaryButton(_ primary: PopoverButton, note: String?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Button { perform(primary.action) } label: {
@@ -422,11 +452,7 @@ private struct PopoverBannerView: View {
                     .accessibilityIdentifier(PopoverAction.dismissBanner.identifier)
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(banner.problem ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(banner.problem ? Color.orange.opacity(0.8) : Color.secondary.opacity(0.25),
-                          style: StrokeStyle(lineWidth: 1, dash: banner.problem ? [5, 3] : [])))
+        .popoverNotice(problem: banner.problem)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("popover-banner")
     }
@@ -435,6 +461,18 @@ private struct PopoverBannerView: View {
     private var message: Text {
         guard let title = banner.title else { return Text(banner.text) }
         return Text("\(Text(title + ".").bold()) \(banner.text)")
+    }
+}
+
+private extension View {
+    /// The box around the banner and the browser-tab prompt: dashed orange
+    /// for a problem, a quiet outline otherwise.
+    func popoverNotice(problem: Bool) -> some View {
+        padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(problem ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(problem ? Color.orange.opacity(0.8) : Color.secondary.opacity(0.25),
+                              style: StrokeStyle(lineWidth: 1, dash: problem ? [5, 3] : [])))
     }
 }
 

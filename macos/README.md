@@ -66,9 +66,10 @@ badge.
 
 Click the icon for a popover with the status pill, the same activity lines, a
 16:9 preview while the camera is live (**Preview starting…** until the first
-frame), any banner message with its first fix, and the window's main action:
-**Start Camera** or **Stop Camera**, **Show Call** during a call, or **Finish
-Setup** while the welcome guide shows. The share and call actions follow, then
+frame), any banner message with its first fix, the **Browser Tab Closed** prompt
+after a call hosted in the browser ends, and the window's main action: **Start
+Camera** or **Stop Camera**, **Show Call** during a call, or **Finish Setup**
+while the welcome guide shows. The share and call actions follow, then
 **Open Camstream Camera**, **Settings…** and **Quit**. The window and the popover
 draw the same preview, which runs while either shows it, so the camera service
 keeps one preview subscriber. Actions that need a sheet or a confirmation (**Start
@@ -228,7 +229,10 @@ Join and asks for a new invitation. A guest whose call ends is told to ask the
 host for a new invitation. A browser guest who leaves can **Rejoin** while the
 host keeps the call open. A host whose call stops starts a new one from the
 app's banner with **Start New Call**. While hosting in the browser, the stage
-shows the room state and the Call card offers **Copy Invitation**. To test Chrome → Mac with a single camera and microphone, keep
+shows the room state and the Call card offers **Copy Invitation**. If the call
+ends while the browser may still hold the camera and microphone, the window and
+the menu-bar popover ask you to close the call tab; choose **Browser Tab Closed**
+once it is closed. To test Chrome → Mac with a single camera and microphone, keep
 the Mac inputs off. Under the stage, **End Call** ends the call for both people
 and **Leave Call** leaves a guest's seat; both ask first.
 
