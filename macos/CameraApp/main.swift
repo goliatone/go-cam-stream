@@ -22,17 +22,13 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.terminate(nil)
             return
         }
-        settings = SettingsWindowController(model: model, server: server) { [weak self] in
-            self?.model.screen = .call
-            self?.showWindow()
-        }
+        settings = SettingsWindowController(model: model, server: server) { [weak self] in self?.showWindow() }
         settings.visibilityChanged = { [weak self] in self?.updateWindowVisibility() }
         model.showSettings = { [weak self] pane in self?.settings.show(pane) }
+        model.confirm = { [weak self] confirmation, confirmed in self?.present(confirmation, then: confirmed) }
         menus = AppMenus(model: model)
-        menus.show = { [weak self] screen in self?.model.screen = screen; self?.showWindow() }
         menus.openSettings = { [weak self] pane in self?.settings.show(pane) }
         menus.showWindow = { [weak self] in self?.showWindow() }
-        menus.confirmEnd = { [weak self] in self?.confirmEnd(closingWindow: false) }
         menus.openHelp = { NSWorkspace.shared.open(CameraApp.guide) }
         NSApp.mainMenu = menus.main
         NSApp.windowsMenu = menus.windowMenu
@@ -89,15 +85,12 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         server.setVisible((visible || (settings?.isShowing == true && !NSApp.isHidden)) && !quitting)
     }
 
-    /// Asks before a conversation ends or the guest leaves. Keep Call and
-    /// Cancel are the default for Return and Escape; End and Leave use the
-    /// existing teardown once.
-    private func confirmEnd(closingWindow: Bool) {
-        guard let confirmation = model.endConfirmation else {
-            if closingWindow { window.close() }
-            return
-        }
-        if !closingWindow { showWindow() }
+    /// Asks on the main window before a step that cuts something off:
+    /// ending or leaving a call, or stopping the stream to start one. Keep
+    /// Call and Cancel answer Return and Escape; the other choice runs
+    /// `confirmed` once.
+    private func present(_ confirmation: Confirmation, then confirmed: @escaping () -> Void) {
+        showWindow()
         guard window.attachedSheet == nil else { return }
         let alert = confirmation.alert()
         let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak alert] event in
@@ -105,23 +98,25 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             sheet.sheetParent?.endSheet(sheet, returnCode: .alertFirstButtonReturn)
             return nil
         }
-        alert.beginSheetModal(for: window) { [weak self] response in
+        alert.beginSheetModal(for: window) { response in
             if let escape { NSEvent.removeMonitor(escape) }
-            guard let self, EndConfirmation.confirmed(response) else { return }
-            self.model.closeConversation()
-            if closingWindow { self.window.close() }
+            guard Confirmation.confirmed(response) else { return }
+            confirmed()
         }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard model.endConfirmation != nil else { return true }
-        confirmEnd(closingWindow: true)
+        guard let confirmation = model.endConfirmation else { return true }
+        present(confirmation) { [weak self] in
+            self?.model.closeConversation()
+            self?.window.close()
+        }
         return false
     }
     func windowWillClose(_ notification: Notification) {
         setWindowVisible(false)
-        // Ordinary closes keep the stream and share. A conversation reaches
-        // here only after confirmation, or while one is still opening.
+        // Ordinary closes keep the stream and share. A call reaches here
+        // only after confirmation, or while one is still opening.
         model.closeConversation()
     }
     func windowDidMiniaturize(_ notification: Notification) { setWindowVisible(false) }

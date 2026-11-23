@@ -21,7 +21,7 @@ struct Feedback: Equatable {
             case .openSetupGuide: return "Open Setup Guide"
             case .showSettingsFolder: return "Show Settings Folder"
             case .retryConversation: return "Try Again"
-            case .startNewConversation: return "Start New Conversation"
+            case .startNewConversation: return "Start New Call"
             case .checkConversationRoute: return "Check Connection"
             case .testLocalConversation: return "Test on This Mac"
             case .retryRelay: return "Test Relay and Retry"
@@ -41,7 +41,7 @@ struct Feedback: Equatable {
 }
 
 extension CameraModel {
-    static let setupGuide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md#conversations")!
+    static let setupGuide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md#calls")!
     static let installGuide = URL(string: "https://github.com/goliatone/go-cam-stream/blob/main/macos/README.md#install-update-and-rollback")!
 
     /// All tabs share one service failure and recovery action.
@@ -121,13 +121,13 @@ extension CameraModel {
     /// missing or invalid setup and a failure worth retrying.
     var conversationFeedback: Feedback? {
         if canRetryConversationClose {
-            return Feedback(tone: .problem, title: "Couldn't close the previous conversation",
+            return Feedback(tone: .problem, title: "Couldn't close the previous call",
                             message: "Finish closing the call to open another invitation or start a new call.",
                             actions: [.retryConversationClose])
         }
         if ready, !conversationsSupported {
             return Feedback(tone: .unavailable, title: "Calls aren't available in this build",
-                            message: "This version of the camera service can't host or join conversations. Use a current Camstream Camera app.",
+                            message: "This version of the camera service can't host or join calls. Use a current Camstream Camera app.",
                             actions: [])
         }
         guard let notice = conversationNotice, notice.problem else { return nil }
@@ -166,12 +166,12 @@ extension CameraModel {
                             actions: [.showSettingsFolder, .openSetupGuide])
         case nil:
             if notice.opening {
-                return Feedback(tone: .problem, title: host ? "Calls couldn't start" : "Couldn't join the conversation",
+                return Feedback(tone: .problem, title: host ? "Calls couldn't start" : "Couldn't join the call",
                                 message: notice.text,
                                 actions: host ? (canStartConversation ? [.retryConversation] : []) + [.openSetupGuide]
                                     : (canRetryConversationInvitation ? [.retryConversationInvitation] : []))
             }
-            return Feedback(tone: .problem, title: "The conversation stopped", message: notice.text,
+            return Feedback(tone: .problem, title: "The call stopped", message: notice.text,
                             actions: host && canStartConversation ? [.startNewConversation] : [])
         }
     }
@@ -211,103 +211,14 @@ extension CameraModel {
         case .retryConversation, .retryRelay: retryConversation()
         case .retryConversationClose: retryConversationClose()
         case .retryConversationInvitation: retryConversationInvitation()
-        case .startNewConversation: startConversation()
+        // As the Call card does: the Settings → Calls choice, asking before
+        // it stops a stream.
+        case .startNewConversation: startCall()
         case .checkConversationRoute: checkConversationRoute()
         case .testLocalConversation: testConversationLocally()
         case .openInstallGuide: openCallInstallGuide()
         case .reconnectCallConnector: reconnectCallConnector()
         }
-    }
-}
-
-/// Renders a `Feedback` at the top of the affected section and announces it.
-struct FeedbackCard: View {
-    let feedback: Feedback
-    let perform: (Feedback.Action) -> Void
-    var identifier = "feedback"
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: feedback.tone == .problem ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                .font(.title2).foregroundStyle(feedback.tone == .problem ? Color.orange : Color.secondary)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(feedback.title).font(.headline)
-                Text(feedback.message).fixedSize(horizontal: false, vertical: true)
-                if !feedback.actions.isEmpty {
-                    HStack {
-                        ForEach(Array(feedback.actions.enumerated()), id: \.offset) { index, action in
-                            if index == 0 {
-                                Button(action.title) { perform(action) }.buttonStyle(.borderedProminent)
-                            } else {
-                                Button(action.title) { perform(action) }
-                            }
-                        }
-                    }.padding(.top, 2)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(feedback.tone == .problem ? 0.12 : 0)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.3)))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(feedback.title)
-        .accessibilityIdentifier(identifier)
-        .onAppear { announce() }
-        .onChange(of: feedback) { announce() }
-    }
-
-    private func announce() {
-        AccessibilityNotification.Announcement(feedback.announcement).post()
-    }
-}
-
-/// Replaces every tab while the camera service starts, reconnects or is
-/// down: one message and its fix instead of a window of disabled controls.
-struct ServiceStateView: View {
-    /// The failure and its recovery actions; nil while the service starts.
-    let feedback: Feedback?
-    /// What the app is waiting for when nothing has failed.
-    let progress: String
-    let perform: (Feedback.Action) -> Void
-
-    var body: some View {
-        VStack(spacing: 12) {
-            if let feedback {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 34)).foregroundStyle(.orange).accessibilityHidden(true)
-                Text(feedback.title).font(.title3.weight(.semibold))
-                Text(feedback.message).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !feedback.actions.isEmpty {
-                    HStack {
-                        ForEach(Array(feedback.actions.enumerated()), id: \.offset) { index, action in
-                            if index == 0 {
-                                Button(action.title) { perform(action) }.buttonStyle(.borderedProminent)
-                            } else {
-                                Button(action.title) { perform(action) }
-                            }
-                        }
-                    }.controlSize(.large).padding(.top, 6)
-                }
-            } else {
-                ProgressView()
-                Text(progress).foregroundStyle(.secondary)
-            }
-        }
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 440)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(feedback == nil ? "camera-service-progress" : "camera-service-error")
-        .onAppear { announce() }
-        .onChange(of: feedback) { announce() }
-    }
-
-    /// Failures are announced, as the feedback card did; startup is not.
-    private func announce() {
-        guard let feedback else { return }
-        AccessibilityNotification.Announcement(feedback.announcement).post()
     }
 }
 

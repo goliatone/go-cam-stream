@@ -110,11 +110,11 @@ final class ConversationMediaSurface: NSObject, WKNavigationDelegate, WKUIDelega
         if ready, let payload = message.body as? [String: String], let reason = payload["closed"] {
             let problem: String?
             switch reason {
-            case "ended": problem = text(guest: "The host ended the conversation.", host: "The conversation ended.")
+            case "ended": problem = text(guest: "The host ended the call.", host: "The call ended.")
             case "expired": problem = text(guest: "The invitation expired. Ask the host for a new one.",
-                                           host: "The conversation expired. Start a new one to talk again.")
+                                           host: "The call expired. Start a new one to talk again.")
             case "failed": problem = text(guest: "The connection failed. Check your network and reopen the invitation.",
-                                          host: "The connection failed. Check your network, then start a new conversation.")
+                                          host: "The connection failed. Check your network, then start a new call.")
             default: problem = nil
             }
             reply(true, nil)
@@ -199,21 +199,21 @@ final class ConversationMediaSurface: NSObject, WKNavigationDelegate, WKUIDelega
         decisionHandler(!closed && ready && lease != nil && trustedFrame(frame) ? .prompt : .deny)
     }
 
-    /// Guests recover with the invitation; hosts start a new conversation.
+    /// Guests recover with the invitation; hosts start a new call.
     private func text(guest: String, host: String) -> String { role == .host ? host : guest }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        close(problem: text(guest: "The conversation page could not be loaded. Check the server and open the invitation again.",
-                            host: "The call page couldn't load. Start a new conversation to try again."))
+        close(problem: text(guest: "The call page couldn't load. Check the server and open the invitation again.",
+                            host: "The call page couldn't load. Start a new call to try again."))
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        close(problem: text(guest: "The conversation page was interrupted. Open the invitation again to reconnect.",
-                            host: "The call page was interrupted. Start a new conversation to try again."))
+        close(problem: text(guest: "The call page was interrupted. Open the invitation again to reconnect.",
+                            host: "The call page was interrupted. Start a new call to try again."))
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        close(problem: text(guest: "The conversation view closed. Open the invitation again to reconnect.",
-                            host: "The call view closed unexpectedly. Start a new conversation to try again."))
+        close(problem: text(guest: "The call page closed. Open the invitation again to reconnect.",
+                            host: "The call page closed unexpectedly. Start a new call to try again."))
     }
 }

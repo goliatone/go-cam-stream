@@ -12,6 +12,7 @@ final class FixturePermissions: CameraPermissions {
         requests.append(media); self.completion = completion
     }
     func resolveAudio(_ status: String) { audio = status; let done = completion; completion = nil; done?() }
+    func resolveVideo(_ status: String) { video = status; let done = completion; completion = nil; done?() }
 }
 
 final class FixtureCameraHelper: CameraHelper {

@@ -18,6 +18,15 @@ The window is a console: the camera stage with **Start Camera** under it, a
 status pill in the toolbar, and cards for the server stream, the share link and
 calls. One-time setup lives in **Settings** (⌘, or the gear in the toolbar), in
 five panes: **Camera**, **Network**, **Server**, **Sharing** and **Calls**.
+
+On first launch, while no settings are saved, a welcome guide takes three steps:
+**Allow Camera**, then the webcam and camera name (prefilled), then the optional
+microphone. **Done** applies them and ends on the console at **Start Camera**,
+so a first launch reaches Live in four steps without seeing network settings.
+**Set Up Later** goes to the console at once and keeps the choices as a draft
+that **Start Camera** applies. Starting the camera from the menus also ends the
+guide, and an invitation opened on first launch shows its call first.
+
 To stream, allow camera access and choose **Start Camera**. To pick another
 webcam or camera name (stream ID), open **Settings → Camera**. Camera and network
 settings apply as soon as they are valid: when you pick a value, leave a field,
@@ -44,23 +53,25 @@ problems first, and × dismisses it. If the helper stops, the app offers only
 
 The menu-bar icon, its menu, its tooltip and the toolbar status pill share one
 status summary: the camera stream, any share link (public or tailnet, end time
-and viewers) and any open conversation (role, phase and local camera/mic when
+and viewers) and any open call (role, phase and local camera/mic when
 known). The pill adds elapsed time while live or in a call, for example
-**Live · 12:04 · 2 viewers**, and its tooltip lists each activity. The icon is
-outlined while stopped, filled while live, crossed out after a stream error and a
-phone during a call; an active share link adds a link badge. The menu offers
-Start/Stop Camera, Copy Share Link and Stop Sharing while a link exists, Start
-Conversation, or Show Call and End/Leave Conversation… during a call, plus Show
-Camstream Camera, Settings… and Quit. The app menus include About, Settings…
-(⌘,), Hide (⌘H), Close Window (⌘W), Undo/Redo, the Camera and Call views (⌘1,
-⌘2), Start/Stop Camera (⇧⌘S), connection-file export, the Call actions, Minimize
-(⌘M), Zoom and a Help link to this guide.
+**Live · 12:04 · 2 viewers** or **In call · 04:12**, and its tooltip lists each
+activity. The icon is outlined while stopped, filled while live, crossed out
+after a stream error and a phone during a call; an active share link adds a link
+badge. The menu offers Start/Stop Camera, Copy Share Link and Stop Sharing while
+a link exists, **Start Call** and **Join Call…**, or Copy Invitation and **End
+Call…** (**Leave Call…** for a guest) during a call, plus Show Camstream Camera,
+Settings… and Quit. The app menus include About, Settings… (⌘,), Hide (⌘H), Close
+Window (⌘W), Undo/Redo, Start/Stop Camera (⇧⌘S), connection-file export, the
+**Call** menu (Start Call, Join Call…, Copy Invitation, End Call…), Minimize
+(⌘M), Zoom and a Help link to this guide. A call shows on the main window's
+stage, so there is no separate call view to switch to.
 
 Closing the window leaves the menu-bar app, the camera stream and any share
-running. During a conversation it asks first: a host chooses **End
-Conversation** or **Keep Call**, a guest **Leave** or **Cancel**. Return and
-Escape keep the call. The Dock entry and app menus also provide access to the
-controls. Quit waits for helper-owned capture cleanup. Reopening starts stopped.
+running. During a call it asks first: a host chooses **End Call** or **Keep
+Call**, a guest **Leave** or **Cancel**. Return and Escape keep the call. The
+Dock entry and app menus also provide access to the controls. Quit waits for
+helper-owned capture cleanup. Reopening starts stopped.
 
 If the camera service stops, use **Reconnect Camera Service** in the window.
 It becomes available after the previous service exits. The app gives an
@@ -82,8 +93,7 @@ In **Settings → Network**, **Only this Mac** binds loopback for local testing.
 computer, choose **Private network** and enter this Mac’s reachable private IP or
 hostname. The listener uses all IPv4 interfaces, with authenticated readers; use
 a trusted LAN/VPN and keep the port off the public internet. Settings are locked
-while capture is starting, live or stopping, and while a conversation uses the
-camera. Each Settings pane says why at the top, with **Stop Camera** while the
+while capture is starting, live or stopping, and while a call uses the camera. Each Settings pane says why at the top, with **Stop Camera** while the
 camera is on.
 
 **Settings → Server** leads with a numbered server checklist. Step 1, **Export
@@ -153,15 +163,20 @@ checks production microphone usage text/entitlement selection through mocked
 assembly, preserving the camera-only proof identity. Production builds select
 `CameraApp/entitlements.plist`; no permission grant is requested by packaging.
 
-### Conversations
+<a id="conversations"></a>
+
+### Calls
 
 For a same-Mac development call, set `"loopback": true` in the private
 `conversation-settings.json` in `~/Library/Application Support/camstream-camera-app`.
-Use mode `0600` and restart the app after changing host settings. In
-**Conversations**, choose **Start Conversation**. The Mac enters the room with
-its camera and microphone off. While it waits, the call area offers **Copy
-invitation**; the app copies the link and the call page never sees it. **Copy
-Invitation** is also in the Call menu, the menu-bar menu and the call's **More**
+Use mode `0600` and restart the app after changing host settings. On the main
+window's **Call** card, choose **Start Call**. The call takes the stage, and the
+Mac enters the room with its camera and microphone off. **Settings → Calls →
+Starting calls** chooses what **Start Call** does instead: **Start with camera
+and mic off** (the default), **Check camera and mic before starting** or **Host
+in your browser**. While it waits, the call area offers **Copy invitation**; the
+app copies the link and the call page never sees it. **Copy Invitation** is also
+on the Call card, in the Call menu, the menu-bar menu and the call's **More**
 menu. Open the link in Chrome on the same Mac. The page shows your preview with
 **Microphone** and **Camera** toggles, which start on for a browser guest, and
 one **Join** button. The line under **Join** says which inputs it will use.
@@ -176,7 +191,7 @@ floats in a corner. Drag it, or focus it and use the arrow keys, to move it to
 another corner. It can also swap with the other video, shrink to a **You** pill,
 or be hidden from **More**. The dock holds **Microphone** and **Camera**, each
 with a device menu, then **More** and **End** (host) or **Leave** (guest). A
-host confirms **End conversation** or chooses **Keep call**, because End closes
+host confirms **End call** or chooses **Keep call**, because End closes
 the room for both people. The top bar shows the call time or status and, once
 the other person joins, **Sound** for incoming audio. Controls fade after three
 seconds without input and return on pointer movement, a tap, a key press or
@@ -189,25 +204,34 @@ camera** or **Choose microphone**. Bars beside the other person's name show when
 their microphone sends sound, and VoiceOver announces the first incoming audio.
 
 A browser guest who finds the room full sees **Someone else is already in this
-conversation**, and **Join** becomes **Try again**. Turning both toggles off
+call**, and **Join** becomes **Try again**. Turning both toggles off
 joins without devices. An ended, expired or invalid link says so, stops offering
 Join and asks for a new invitation. A guest whose call ends is told to ask the
 host for a new invitation. A browser guest who leaves can **Rejoin** while the
-host keeps the conversation open. A host whose call stops starts a new one from
-the app. While hosting in the
-browser, the app shows the room state and keeps **Copy Invitation** as the main
-action until the guest arrives. To test Chrome → Mac with a single camera and
-microphone, keep the Mac inputs off. **More start options** offers a Mac prejoin or browser host.
-Stop the existing camera stream before enabling Mac call devices or hosting in the browser.
+host keeps the call open. A host whose call stops starts a new one from the
+app's banner with **Start New Call**. While hosting in the browser, the stage
+shows the room state and the Call card offers **Copy Invitation**. To test Chrome → Mac with a single camera and microphone, keep
+the Mac inputs off. Under the stage, **End Call** ends the call for both people
+and **Leave Call** leaves a guest's seat; both ask first.
+
+The camera streams or takes a call, not both. While the camera streams, **Start
+Call** asks **Stop the stream and start a call?**: **Stop Stream** stops it and
+then starts the call, **Cancel** keeps the stream. To join someone else's call,
+open its `camstream://` link, or choose **Join…** on the Call card (or **Call →
+Join Call…**) and paste the invitation into the field, which names the server
+that issued it. While streaming, that sheet's button reads **Stop Stream and
+Join**. An invitation opened from a link while the camera streams opens the call
+without stopping the stream; the stage says so and offers **Stop Camera**.
 After a stream stops or fails, call devices become available once the helper confirms
 that capture was released. If that confirmation is missing, the call device action asks
 the helper to confirm cleanup first and never stops a live stream. The stream error stays
-on the camera screen until an explicit Start or Save succeeds.
+on the stage until **Start Camera** succeeds or settings apply.
 
-During startup the app shows which call check is running. Free a conflicting port,
+During startup the stage shows which call check is running. Call problems show
+in the banner above the stage with their fixes. Free a conflicting port,
 then choose **Try Again**. For a public link failure, check the tunnel or choose
 **Test on This Mac** and open the resulting invitation in a browser on this Mac.
-You can also start a local test from **More start options**. **Show Settings Folder**
+You can also start a local test from **Settings → Calls → Test on This Mac**. **Show Settings Folder**
 opens the private settings for configuration failures. **Test Relay and Retry**
 rechecks the configured TURN relay and retries the original start. **Open Install
 Guide** points to app replacement when bundled call files are missing. **Copy
@@ -215,12 +239,12 @@ Diagnostics** copies the app version, reason and conflicting port when applicabl
 A waiting host can choose **Check Connection** after correcting a public route
 outage. Copying becomes available again once the check passes.
 
-After **End**, guests opening the old invitation see **This conversation has
-ended** during the 30-second grace period. The helper then frees the port if no
+After **End**, guests opening the old invitation see **This call has ended**
+during the 30-second grace period. The helper then frees the port if no
 other room is active. While the listener is down, the public tunnel has no
 local call page to serve.
 
-A pasted invitation shows the server that issued it while its secret stays masked.
+The Join sheet keeps a pasted invitation only while it is open.
 The call page reports its phase and local
 camera/mic state through the trusted bridge as
 `{"state":{"version":1,"room":…,"role":…,"phase":…,"camera":…,"microphone":…}}`
@@ -251,7 +275,7 @@ Mac app listener `127.0.0.1:18894`. The T06 harnesses use
 forward to its own loopback port with its own connector.
 
 **Settings → Calls** shows the dedicated Mac connector status when enrolled.
-**Start Conversation** starts that connector if necessary, then verifies the
+**Start Call** starts that connector if necessary, then verifies the
 guest URL. **Reconnect** restarts the enrolled job and rechecks an open room's
 guest route. The job runs under the logged-in macOS user and stays available
 when the app quits. End still frees the call listener after its grace period.

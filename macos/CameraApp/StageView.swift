@@ -1,31 +1,35 @@
 import SwiftUI
 
 /// The camera at 16:9 with one overlay per state, and that state's actions
-/// under it. Start or Stop Camera is the window's one prominent button.
+/// under it. Start or Stop Camera is the window's one prominent button. A
+/// call takes the stage while it opens, runs or ends, with End Call under it.
 struct StageView: View {
     @ObservedObject var model: CameraModel
     @ObservedObject var preview: PreviewController
+    /// Beside the cards, the call page takes the column's height. Stacked
+    /// above them, it keeps a fixed shape.
+    var fillsHeight = false
 
     var body: some View {
         let state = model.stage
         VStack(spacing: 12) {
-            ZStack {
-                Color.black
-                overlay(state)
-            }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .environment(\.colorScheme, .dark)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Camera")
-            .accessibilityIdentifier("camera-stage")
-            .frame(maxWidth: .infinity)
-            // The stage takes the column's height first; the controls keep theirs.
-            .layoutPriority(1)
+            screen(state)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(Self.isCall(state) ? "Call" : "Camera")
+                .accessibilityIdentifier(Self.isCall(state) ? "call-stage" : "camera-stage")
+                .frame(maxWidth: .infinity)
+                // The stage takes the column's height first; the controls keep theirs.
+                .layoutPriority(1)
             controls(state)
         }
         .onAppear { announce(Self.announced(state)) }
         .onChange(of: Self.announced(state)) { _, new in announce(new) }
+    }
+
+    private static func isCall(_ state: StageState) -> Bool {
+        if case .call = state { return true }
+        return false
     }
 
     /// Failures are announced, as the recovery cards were; other states show
@@ -40,6 +44,30 @@ struct StageView: View {
     private func announce(_ feedback: Feedback?) {
         guard let feedback else { return }
         AccessibilityNotification.Announcement(feedback.announcement).post()
+    }
+
+    @ViewBuilder private func screen(_ state: StageState) -> some View {
+        if case .call(.page) = state, let surface = model.conversationSurface {
+            callPage(surface)
+        } else {
+            ZStack {
+                Color.black
+                overlay(state)
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .environment(\.colorScheme, .dark)
+        }
+    }
+
+    /// The call page lays out its own video and controls.
+    @ViewBuilder private func callPage(_ surface: ConversationMediaSurface) -> some View {
+        let page = CallPageView(surface: surface).id(ObjectIdentifier(surface))
+            .accessibilityIdentifier("conversation-media")
+        if fillsHeight {
+            page.frame(minHeight: 300, maxHeight: .infinity)
+        } else {
+            page.aspectRatio(4 / 3, contentMode: .fit)
+        }
     }
 
     @ViewBuilder private func overlay(_ state: StageState) -> some View {
@@ -64,9 +92,28 @@ struct StageView: View {
             message(progress: true, title: "Stopping camera…")
         case .live:
             live
-        case .inCall:
-            message(symbol: "phone.fill", title: "Your camera is in a call",
-                    detail: "End the call to stream from this Mac again.")
+        case .call(let call):
+            callOverlay(call)
+        }
+    }
+
+    @ViewBuilder private func callOverlay(_ call: CallStage) -> some View {
+        switch call {
+        case .opening(let text):
+            message(progress: true, title: text)
+                .accessibilityIdentifier("call-progress")
+        case .page:
+            // The page replaces this as soon as its view exists.
+            message(progress: true, title: "Opening the call…")
+        case .ready(let host):
+            message(symbol: "phone", title: host ? "Your call is ready" : "The call didn’t open here",
+                    detail: host ? "Join it here, or host it from your browser." : "Join again to open it here.")
+        case .browser(let status):
+            message(symbol: "safari", title: status,
+                    detail: "The host controls are open in your browser. Turn on your camera and mic there.")
+                .accessibilityIdentifier("browser-room")
+        case .ending:
+            message(progress: true, title: "Ending the call…")
         }
     }
 
@@ -168,8 +215,8 @@ struct StageView: View {
                 if preview.phase == .unavailable { Button("Retry Preview", action: preview.retry) }
             case .stopping:
                 Button("Stop Camera") {}.buttonStyle(.borderedProminent).disabled(true)
-            case .inCall:
-                Button("Show Call") { model.screen = .call }.buttonStyle(.borderedProminent)
+            case .call(let call):
+                callControls(call)
             }
         }
         .controlSize(.large)
@@ -197,6 +244,39 @@ struct StageView: View {
                 Button("Open \(pane.title) Settings…") { model.showSettings(pane) }.buttonStyle(.link).controlSize(.regular)
             }
         }
+    }
+
+    /// End Call is the call's one prominent action; a call that isn't open
+    /// yet offers Join Here first.
+    @ViewBuilder private func callControls(_ call: CallStage) -> some View {
+        switch call {
+        case .opening:
+            Button("Cancel", action: model.endCall)
+        case .page, .browser:
+            endButton.buttonStyle(.borderedProminent).tint(.red)
+        case .ready(let host):
+            Button("Join Here", action: model.joinConversationHere).buttonStyle(.borderedProminent)
+            if host {
+                Button("Open in Browser", action: model.hostConversationInBrowser)
+                    .help("Opens the host controls in your default browser, which then uses your camera and mic.")
+            }
+            endButton
+        case .ending:
+            endButton.disabled(true)
+        }
+        // A stream that was already running keeps the camera from the call.
+        if model.capture.active, call != .ending {
+            Label("Your camera is streaming to your server. Stop Camera to use it in this call.", systemImage: "info.circle")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("call-camera-busy")
+            Button("Stop Camera", action: model.stop).disabled(!model.canStop)
+        }
+    }
+
+    private var endButton: some View {
+        let guest = model.conversationActivity?.role == .guest
+        return Button(guest ? "Leave Call" : "End Call", action: model.endCall)
+            .help(guest ? "Leave the call. The host stays in it." : "End the call for everyone in it.")
     }
 
     @ViewBuilder private func actions(_ actions: [Feedback.Action]) -> some View {

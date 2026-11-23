@@ -46,15 +46,16 @@ struct ActivitySummary: Equatable {
     }
 }
 
-/// Text for confirming that a conversation ends or that the guest leaves.
-/// Window close and the explicit menu actions share it.
-struct EndConfirmation: Equatable {
+/// Text for confirming a step that cuts something off: ending or leaving a
+/// call, or stopping the stream to start one. Window close, the menus and
+/// the main window share it.
+struct Confirmation: Equatable {
     let title: String
     let detail: String
     let confirm: String
     let cancel: String
 
-    /// The safe choice is first and answers Return; the end action is
+    /// The safe choice is first and answers Return; the confirming action is
     /// destructive and has no key equivalent.
     func alert() -> NSAlert {
         let alert = NSAlert()
@@ -68,7 +69,7 @@ struct EndConfirmation: Equatable {
         return alert
     }
 
-    /// Only the second button ends or leaves the conversation.
+    /// Only the second button confirms.
     static func confirmed(_ response: NSApplication.ModalResponse) -> Bool { response == .alertSecondButtonReturn }
 }
 
@@ -118,21 +119,21 @@ extension CameraModel {
         return parts.joined(separator: " · ")
     }
 
-    /// Nil when no conversation is open. Hosts are asked before the room
-    /// ends for both people; guests before they leave.
-    var endConfirmation: EndConfirmation? {
+    /// Nil when no call is open. Hosts are asked before the call ends for
+    /// both people; guests before they leave.
+    var endConfirmation: Confirmation? {
         guard let call = conversationActivity else { return nil }
         if call.role == .guest {
-            return EndConfirmation(title: "Leave this conversation?", detail: "The host stays in the conversation.",
-                                   confirm: "Leave", cancel: "Cancel")
+            return Confirmation(title: "Leave this call?", detail: "The host stays in the call.",
+                                confirm: "Leave", cancel: "Cancel")
         }
         let guestPresent = [.connecting, .connected, .reconnecting].contains(call.phase) ||
             browserRoom?.participants.contains { $0.role == .guest && $0.joined } == true
         return guestPresent
-            ? EndConfirmation(title: "End this conversation for both of you?", detail: "Your guest will be disconnected.",
-                              confirm: "End Conversation", cancel: "Keep Call")
-            : EndConfirmation(title: "End this conversation?", detail: "The invitation will stop working.",
-                              confirm: "End Conversation", cancel: "Keep Call")
+            ? Confirmation(title: "End this call for both of you?", detail: "Your guest will be disconnected.",
+                           confirm: "End Call", cancel: "Keep Call")
+            : Confirmation(title: "End this call?", detail: "The invitation will stop working.",
+                           confirm: "End Call", cancel: "Keep Call")
     }
 }
 

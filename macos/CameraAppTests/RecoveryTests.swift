@@ -274,7 +274,7 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         let feedback = model.conversationFeedback
         check(feedback?.title == "Calls aren't available in this build" && feedback?.tone == .unavailable &&
               feedback?.actions == [] && !model.canStartConversation &&
-              model.conversationBlockedReason == "This version of the camera service can't host or join conversations.",
+              model.conversationBlockedReason == "This version of the camera service can't host or join calls.",
               "an unsupported build is distinguished from missing setup")
     }
 
@@ -288,8 +288,8 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
               feedback?.actions == [.openSetupGuide, .showSettingsFolder],
               "a host without call setup is told so with the guide and the settings folder")
         model.perform(.openSetupGuide)
-        check(opened.last == CameraModel.setupGuide && CameraModel.setupGuide.fragment == "conversations",
-              "Open Setup Guide opens the conversation setup section")
+        check(opened.last == CameraModel.setupGuide && CameraModel.setupGuide.fragment == "calls",
+              "Open Setup Guide opens the call setup section")
 
         helper.conversationReply = setupFailure("not_configured")
         model.openConversationInvitation(invitation)
@@ -313,7 +313,7 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         model.perform(.retryConversation)
         check(helper.methods.filter { $0 == "conversation_create" }.count == creates + 1 &&
               model.conversationFeedback?.title == "Calls couldn't start",
-              "Try Again starts the conversation through the normal action")
+              "Try Again starts the call through the normal action")
 
         helper.conversationReply = ["error": ["code": "media_unreachable", "setup": "listener_in_use", "port": 18894]]
         model.startConversation()
@@ -345,6 +345,10 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         model.perform(.checkConversationRoute)
         check(!model.canCopyConversation && model.conversationRouteFeedback?.actions.first == .checkConversationRoute,
               "an unavailable public route suspends copying and offers a connection check")
+        model.dismissBanner()
+        check(model.banner?.title == "Guests can't reach this Mac" && model.banner?.dismissible == false &&
+              model.banner?.actions == [.checkConversationRoute, .openSetupGuide],
+              "the banner keeps an unreachable guest link, with its fixes, until it clears")
         helper.conversationReply = ["result": true]
         model.perform(.checkConversationRoute)
         check(model.canCopyConversation && model.conversationRouteFeedback == nil,
@@ -361,7 +365,7 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
               "a host start failure without a cause offers Try Again, never a stopped call")
         helper.conversationReply = ["error": ["code": "room_full", "retryable": true]]
         model.openConversationInvitation(invitation)
-        check(model.conversationFeedback?.title == "Couldn't join the conversation" &&
+        check(model.conversationFeedback?.title == "Couldn't join the call" &&
               model.conversationFeedback?.message.contains("already has a guest") == true &&
               model.conversationFeedback?.actions == [.retryConversationInvitation],
               "a full room leaves the invitation available for explicit retry")
@@ -408,20 +412,27 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         let (model, helper) = launched()
         helper.conversationReply = prejoin("host")
         model.startConversation()
-        check(model.conversationBlockedReason == "End the current conversation first.", "an open call blocks another start with a reason")
+        check(model.conversationBlockedReason == "End the current call first.", "an open call blocks another start with a reason")
         model.copyConversationInvitation()
         check(model.conversationNotice?.problem == false && model.conversationFeedback == nil, "an informational note is not a problem")
-        model.conversationSurface?.close(problem: "The connection failed. Check your network, then start a new conversation.")
+        model.conversationSurface?.close(problem: "The connection failed. Check your network, then start a new call.")
         var feedback = model.conversationFeedback
-        check(model.conversationSurface == nil && feedback?.title == "The conversation stopped" &&
-              feedback?.message.contains("start a new conversation") == true && feedback?.actions == [.startNewConversation],
-              "a host whose call fails is offered Start New Conversation")
+        check(model.conversationSurface == nil && feedback?.title == "The call stopped" &&
+              feedback?.message.contains("start a new call") == true && feedback?.actions == [.startNewConversation] &&
+              feedback?.actions.first?.title == "Start New Call",
+              "a host whose call fails is offered Start New Call")
+        check(model.banner?.title == "The call stopped" && model.banner?.actions == [.startNewConversation] && model.banner?.dismissible == true,
+              "with no call on the stage, the banner carries the problem and Start New Call")
+        helper.conversationReply = prejoin("host")
+        model.perform(.startNewConversation)
+        check(model.conversationSurface != nil, "Start New Call starts a call as the Call card does")
+        model.closeConversation()
 
         helper.conversationReply = prejoin("guest")
         model.openConversationInvitation(invitation)
         model.conversationSurface?.close(problem: "The connection failed. Check your network and reopen the invitation.")
         feedback = model.conversationFeedback
-        check(feedback?.title == "The conversation stopped" && feedback?.actions == [], "a guest whose call fails gets guest advice only")
+        check(feedback?.title == "The call stopped" && feedback?.actions == [], "a guest whose call fails gets guest advice only")
 
         model.start()
         model.capture.status("streaming", frames: 12)
@@ -441,11 +452,11 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
     let browser = ActivitySummary(stream: idle.stream, share: "Shared publicly · until 18:48 · 1 of 3 viewers",
                                   call: "Call hosted in browser · Connected", icon: .call, shared: true)
     check(CameraView.announcement(from: idle, to: browser) == "Shared publicly · until 18:48 · 1 of 3 viewers. Call hosted in browser · Connected" &&
-          CameraView.announcement(from: browser, to: idle) == "Share link ended. Conversation ended" &&
+          CameraView.announcement(from: browser, to: idle) == "Share link ended. Call ended" &&
           CameraView.announcement(from: idle, to: idle) == nil,
           "status changes are announced, including a browser-hosted call ending")
 
-    let host = ConversationView.invitationHost
+    let host = JoinCallView.invitationHost
     check(host("https://call.example.test/r/room-1#secret") == "call.example.test" &&
           host(" camstream://conversation/join?v=1&origin=https%3A%2F%2Fcall.example.test#secret ") == "call.example.test",
           "the invitation host is shown for web and app links")

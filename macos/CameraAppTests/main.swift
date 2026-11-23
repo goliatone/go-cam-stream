@@ -415,7 +415,7 @@ do {
     check(fixtureCamera.incomingInvitations == [invitation], "ready helper receives the pending invitation once")
     check(app.conversationPrejoin?.admission.role == .guest && app.conversationPrejoin?.pageURL.fragment == nil,
           "invitation returns a clean prejoin URL and scoped guest admission")
-    check(app.screen == .call && app.conversationSurface != nil, "incoming invitation opens the native conversation panel")
+    check(app.stage == .call(.page) && app.conversationSurface != nil, "incoming invitation opens the call on the stage")
     check(!ConversationMediaSurface.validPage(URL(string: "https://call.example.test/r/other")!, room: sampleRoomID),
           "native prejoin rejects another room")
     check(!ConversationMediaSurface.validPage(URL(string: "http://call.example.test/r/" + sampleRoomID)!, room: sampleRoomID),

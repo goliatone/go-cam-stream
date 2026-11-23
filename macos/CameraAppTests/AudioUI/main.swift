@@ -25,7 +25,7 @@ final class FixtureUI: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 1000, height: 700))
         // The microphone controls are in Settings → Camera, opened at launch.
-        settings = SettingsWindowController(model: model, server: server) { [weak self] in self?.model.screen = .call }
+        settings = SettingsWindowController(model: model, server: server) { [weak self] in self?.window.makeKeyAndOrderFront(nil) }
         model.showSettings = { [weak self] pane in self?.settings.show(pane) }
         window.center(); window.makeKeyAndOrderFront(nil)
         let menu = NSMenu(), item = NSMenuItem(), appMenu = NSMenu()

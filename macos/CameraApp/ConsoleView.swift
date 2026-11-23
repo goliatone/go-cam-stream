@@ -16,7 +16,7 @@ struct ConsoleView: View {
                 GeometryReader { proxy in
                     if proxy.size.width >= Self.twoColumnWidth {
                         HStack(alignment: .top, spacing: 20) {
-                            StageView(model: model, preview: model.preview)
+                            StageView(model: model, preview: model.preview, fillsHeight: true)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                             ScrollView { cards }.frame(width: Self.cardsWidth)
                         }
@@ -288,6 +288,8 @@ struct ShareOptionsView: View {
     }
 }
 
+/// Start Call or Join… without a call, and the invitation while hosting.
+/// The call itself is on the stage, with End Call under it.
 struct CallCard: View {
     @ObservedObject var model: CameraModel
 
@@ -295,23 +297,60 @@ struct CallCard: View {
         ActivityCard(title: "Call", symbol: model.conversationActivity == nil ? "phone" : "phone.fill",
                      tint: model.conversationActivity == nil ? .secondary : .green,
                      state: model.callCardLine, stateIdentifier: "call-summary") {
-            HStack(spacing: 8) {
-                if model.conversationPrejoin != nil {
-                    Button("Show Call") { model.screen = .call }
-                    if model.canCopyConversation {
-                        Button("Copy Invitation", action: model.copyConversationInvitation)
-                    }
-                } else {
-                    Button("Start or Join…") { model.screen = .call }
-                        .disabled(!model.conversationsSupported)
-                        .accessibilityHint("Opens the call view, where you start a call or paste an invitation.")
-                }
+            if let note = localNote { CardDetail(text: note) }
+            if model.checkingConversationRoute {
+                ProgressView("Checking the guest link…").controlSize(.small)
+            }
+            actions
+            if model.hasConversationDiagnostics {
+                Button("Copy Diagnostics", action: model.copyConversationDiagnostics).buttonStyle(.link)
+                    .accessibilityHint("Copies the app version and setup reason.")
             }
         }
     }
+
+    /// A call started with Test on This Mac can be joined only here.
+    private var localNote: String? {
+        guard let prejoin = model.conversationPrejoin, prejoin.admission.role == .host,
+              prejoin.pageURL.scheme == "http" else { return nil }
+        return "This call works only on this Mac. Open the invitation in a browser on this Mac."
+    }
+
+    @ViewBuilder private var actions: some View {
+        if model.conversationPrejoin != nil {
+            if model.canCopyConversation {
+                Button("Copy Invitation", action: model.copyConversationInvitation)
+                    .help("Copies the link your guest opens to join.")
+                    .accessibilityIdentifier("copy-invitation")
+            }
+        } else if model.conversationsSupported, model.callStage == nil {
+            // A call that is opening or ending has its controls on the stage.
+            HStack(spacing: 8) {
+                Button("Start Call", action: model.startCall)
+                    .help(model.conversationBlockedReason ?? startHelp)
+                    .accessibilityHint(model.conversationBlockedReason ?? startHelp)
+                    .accessibilityIdentifier("start-call")
+                Button("Join…") { model.showingJoin = true }
+                    .help(model.conversationBlockedReason ?? "Paste an invitation link to join someone’s call.")
+                    .accessibilityIdentifier("open-join-call")
+            }
+            .disabled(!model.canStartConversation)
+        }
+    }
+
+    /// What Start Call does, from Settings → Calls.
+    private var startHelp: String {
+        let start: String
+        switch model.callStart {
+        case .cameraOff: start = "Starts a call with your camera and mic off."
+        case .setup: start = "Starts a call that opens on your camera and mic setup."
+        case .browser: start = "Starts a call with the host controls in your browser."
+        }
+        return model.canStop ? start + " It asks before stopping the stream." : start
+    }
 }
 
-/// The console's one message: a problem with its fix, or the last result.
+/// The console's one message: a problem with its fixes, or the last result.
 struct BannerView: View {
     let banner: ConsoleBanner
     @ObservedObject var model: CameraModel
@@ -320,11 +359,19 @@ struct BannerView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: banner.problem ? "exclamationmark.triangle.fill" : "info.circle")
                 .foregroundStyle(banner.problem ? Color.orange : Color.secondary).accessibilityHidden(true)
-            Text(banner.text).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier(identifier)
+            message.fixedSize(horizontal: false, vertical: true).accessibilityIdentifier(identifier)
             Spacer(minLength: 8)
-            if banner.showsCall { Button("Show Call") { model.screen = .call } }
-            Button { model.dismissBanner() } label: { Image(systemName: "xmark") }
-                .buttonStyle(.borderless).help("Dismiss").accessibilityLabel("Dismiss")
+            ForEach(Array(banner.actions.enumerated()), id: \.offset) { index, action in
+                if index == 0 {
+                    Button(action.title) { model.perform(action) }.buttonStyle(.borderedProminent)
+                } else {
+                    Button(action.title) { model.perform(action) }
+                }
+            }
+            if banner.dismissible {
+                Button { model.dismissBanner() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless).help("Dismiss").accessibilityLabel("Dismiss")
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(RoundedRectangle(cornerRadius: 8).fill(banner.problem ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.08)))
@@ -344,7 +391,15 @@ struct BannerView: View {
         }
     }
 
-    private func announce() { AccessibilityNotification.Announcement(banner.text).post() }
+    /// A problem's name in bold, then its cause.
+    private var message: Text {
+        guard let title = banner.title else { return Text(banner.text) }
+        return Text("\(Text(title + ".").bold()) \(banner.text)")
+    }
+
+    private func announce() {
+        AccessibilityNotification.Announcement(banner.title.map { $0 + ". " + banner.text } ?? banner.text).post()
+    }
 }
 
 /// State, elapsed time and any share link, in the toolbar. Shape and color

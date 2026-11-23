@@ -80,7 +80,7 @@ const failure = (code: string, status = 409) => ({ status, body: { error: { code
 test("an ended link shows its terminal state immediately without offering Join", () => {
   const fetcher = redemptions(failure("ended", 410));
   render(<Conversation invitation={null} native={undefined} initialBlocked="ended" />);
-  expect(screen.getByRole("heading", { name: "This conversation has ended" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "This call has ended" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
   expect(fetcher).not.toHaveBeenCalled();
 });
@@ -120,7 +120,7 @@ test("a waiting Mac host copies the invitation from the waiting card without see
   expect(screen.queryByRole("button", { name: "Sound" })).toBeNull();
   const controls = screen.getByRole("group", { name: "Call controls" });
   expect(within(controls).getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent))
-    .toEqual(["Microphone", "Microphone options", "Camera", "Camera options", "More options", "End conversation"]);
+    .toEqual(["Microphone", "Microphone options", "Camera", "Camera options", "More options", "End call"]);
 });
 
 test("a connected host sees the guest first, with incoming audio announced once", async () => {
@@ -156,9 +156,9 @@ test("a connected host sees the guest first, with incoming audio announced once"
 
 test("the host confirms End, and Keep call returns to the call", async () => {
   await connectedHost();
-  const end = screen.getByRole("button", { name: "End conversation" });
+  const end = screen.getByRole("button", { name: "End call" });
   fireEvent.click(end);
-  const confirm = screen.getByRole("dialog", { name: "End the conversation for both of you?" });
+  const confirm = screen.getByRole("dialog", { name: "End this call for both of you?" });
   expect(confirm.textContent).toContain("Your guest leaves too, and the invitation stops working.");
   const keep = within(confirm).getByRole("button", { name: "Keep call" });
   expect(document.activeElement).toBe(keep);
@@ -167,8 +167,8 @@ test("the host confirms End, and Keep call returns to the call", async () => {
   expect(document.activeElement).toBe(end);
   expect(sessions.at(-1)!.leave).not.toHaveBeenCalled();
   fireEvent.click(end);
-  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "End conversation" }));
-  await screen.findByRole("heading", { name: "Conversation closed" });
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "End call" }));
+  await screen.findByRole("heading", { name: "Call closed" });
   expect(sessions.at(-1)!.leave).toHaveBeenCalledWith(true);
 });
 
@@ -215,7 +215,7 @@ test("a Mac page says it is opening from its first frame", () => {
   const frame = document.body.appendChild(document.createElement("div"));
   const native = { ...nativeHost(), admission: () => new Promise<never>(() => {}) };
   renderNow(<Conversation invitation={null} native={native} />, frame);
-  expect(frame.querySelector("h1")?.textContent).toBe("Opening the conversation…");
+  expect(frame.querySelector("h1")?.textContent).toBe("Opening the call…");
   expect(frame.textContent).not.toContain("Open the invitation link");
   renderNow(null, frame);
   frame.remove();
@@ -235,9 +235,9 @@ test("prejoin menus and the host's End confirmation open outside the scrolling p
   // Scrolling the page leaves the menu behind its button, so it closes.
   fireEvent.scroll(page);
   expect(screen.queryByRole("menu")).toBeNull();
-  const end = screen.getByRole("button", { name: "End conversation" });
+  const end = screen.getByRole("button", { name: "End call" });
   fireEvent.click(end);
-  const confirm = screen.getByRole("dialog", { name: "End this conversation?" });
+  const confirm = screen.getByRole("dialog", { name: "End this call?" });
   expect(page.contains(confirm)).toBe(false);
   expect(document.activeElement).toBe(within(confirm).getByRole("button", { name: "Keep call" }));
   // Escape closes it even with focus elsewhere, and focus returns to End.
@@ -314,7 +314,7 @@ test("a full room keeps an explicit retry that joins once the seat frees", async
   // Opening the link keeps admission and capture idle.
   expect(fetcher.mock.calls.some(([path]) => /\/(redeem|join)$/.test(path))).toBe(false);
   joinWithoutDevices();
-  await screen.findByRole("heading", { name: "Someone else is already in this conversation" });
+  await screen.findByRole("heading", { name: "Someone else is already in this call" });
   expect(screen.getByRole("alert").textContent).toBe("Only one guest can join at a time. Try again after they leave.");
   expect(screen.getByRole("link", { name: "Open in Camstream" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -325,7 +325,7 @@ test("a full room keeps an explicit retry that joins once the seat frees", async
 });
 
 test("ended, expired and invalid invitations stop offering Join and release a preview", async () => {
-  for (const [code, heading] of [["ended", "This conversation has ended"], ["expired", "This invitation has expired"],
+  for (const [code, heading] of [["ended", "This call has ended"], ["expired", "This invitation has expired"],
     ["invitation_invalid", "This invitation no longer works"]] as const) {
     redemptions(failure(code, 410));
     const track = { kind: "video", readyState: "live", enabled: true, label: "", stop: vi.fn(),
@@ -353,7 +353,7 @@ test("a guest whose room ends is told to ask for a new invitation", async () => 
   joinWithoutDevices();
   await screen.findByRole("heading", { name: "Waiting for the host" });
   report({ ...waiting, state: "ended" });
-  await screen.findByRole("heading", { name: "Conversation ended" });
+  await screen.findByRole("heading", { name: "Call ended" });
   expect(screen.getByText("You can close this page. Ask the host for a new invitation to talk again.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /Join/ })).toBeNull();
 });
@@ -366,10 +366,10 @@ test("a browser host is told to share and restart from the Mac app", async () =>
   const stage = screen.getByRole("region", { name: "Guest" });
   expect(within(stage).getByText("Copy the invitation in Camstream on your Mac and send it to your guest.")).toBeTruthy();
   expect(within(stage).queryByRole("button")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "End conversation" }));
-  const confirm = screen.getByRole("dialog", { name: "End this conversation?" });
-  fireEvent.click(within(confirm).getByRole("button", { name: "End conversation" }));
-  await screen.findByText("To talk again, start a new conversation in Camstream on your Mac.");
+  fireEvent.click(screen.getByRole("button", { name: "End call" }));
+  const confirm = screen.getByRole("dialog", { name: "End this call?" });
+  fireEvent.click(within(confirm).getByRole("button", { name: "End call" }));
+  await screen.findByText("To talk again, start a new call in Camstream on your Mac.");
   expect(sessions.at(-1)!.leave).toHaveBeenCalledWith(true);
 });
 

@@ -16,7 +16,7 @@ const roomStatus: Record<RoomView["state"], string> = {
   joining: "Connecting",
   connected: "Connected",
   reconnecting: "Reconnecting",
-  ended: "Conversation ended",
+  ended: "Call ended",
   expired: "Invitation expired",
   failed: "Connection failed",
 };
@@ -33,8 +33,8 @@ const blockedBy: Partial<Record<string, Blocked>> = {
 };
 const newInvitation = "Ask the host for a new invitation to talk again.";
 const blockedCopy: Record<Blocked, { heading: string; detail: string }> = {
-  full: { heading: "Someone else is already in this conversation", detail: "Only one guest can join at a time. Try again after they leave." },
-  ended: { heading: "This conversation has ended", detail: newInvitation },
+  full: { heading: "Someone else is already in this call", detail: "Only one guest can join at a time. Try again after they leave." },
+  ended: { heading: "This call has ended", detail: newInvitation },
   expired: { heading: "This invitation has expired", detail: newInvitation },
   invalid: { heading: "This invitation no longer works", detail: newInvitation },
 };
@@ -46,15 +46,15 @@ function describe(error: unknown): string {
     case "NotFoundError":
     case "OverconstrainedError": return "The selected input is unavailable. Choose another device or turn that input off.";
     case "NotReadableError": return "A device is busy. Close the app using it and try again.";
-    case "room_full": return "Someone else is already in this conversation. Try again after they leave.";
+    case "room_full": return "Someone else is already in this call. Try again after they leave.";
     case "expired": return "This invitation has expired. Ask the host for a new one.";
-    case "ended": return "The host ended this conversation.";
+    case "ended": return "The host ended this call.";
     case "invitation_invalid":
     case "permission_denied": return "This invitation is invalid or no longer grants access.";
     case "incompatible_client": return "Update Camstream or ask the host for a new invitation.";
     case "capture_busy": return "Stop camera streaming in Camstream before enabling call devices.";
-    case "capture_unavailable": return "Camstream couldn't hand over the camera and mic. Check the Camera tab, then try again.";
-    default: return "The conversation could not connect. Check your connection and try again.";
+    case "capture_unavailable": return "Camstream couldn't hand over the camera and mic. Check the camera in the Camstream window, then try again.";
+    default: return "The call could not connect. Check your connection and try again.";
   }
 }
 
@@ -544,14 +544,14 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
   const visibleCall = (admission !== null && !finished) || (browserInvitation && !terminal && !stopped);
   const loading = busy && !admission && !finished && opening;
   const waiting = role === "host" ? "Waiting for your guest" : "Waiting for the host";
-  const headline = loading ? "Opening the conversation…" :
+  const headline = loading ? "Opening the call…" :
     !admission && blocked ? blockedCopy[blocked].heading : terminal ? roomStatus[room.state] :
-    left ? "You left the conversation" :
+    left ? "You left the call" :
     joined && room ? (room.state === "waiting" || room.state === "joining" && !peer?.joined ? waiting : roomStatus[room.state]) :
-    visibleCall ? "Ready to join" : finished ? "Conversation closed" :
-    error ? "Couldn't open the conversation" : "Conversation invitation";
+    visibleCall ? "Ready to join" : finished ? "Call closed" :
+    error ? "Couldn't open the call" : "Call invitation";
   // What to do once this page can no longer join or host.
-  const nextStep = stopped ? "" : finished && host ? "To talk again, start a new conversation in Camstream on your Mac." :
+  const nextStep = stopped ? "" : finished && host ? "To talk again, start a new call in Camstream on your Mac." :
     terminal && browserInvitation ? "You can close this page. " + newInvitation : "";
   const callPhase: CallPhase | null = !admission || finished ? null : !joined ? "prejoin" :
     room?.state === "waiting" || room?.state === "joining" && !peer?.joined ? "waiting" :
@@ -630,7 +630,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
     const common = { title: headline, native: native !== undefined };
     if (loading) return <StateCard icon="spinner" {...common} />;
     if (!admission && blocked) return <StateCard icon={blockedIcons[blocked]} {...common} alert={blockedCopy[blocked].detail} />;
-    if (left) return <StateCard icon="leave" {...common} meta={meta} detail="You can rejoin while the host keeps the conversation open.">
+    if (left) return <StateCard icon="leave" {...common} meta={meta} detail="You can rejoin while the host keeps the call open.">
       <button id="rejoin" class="btn primary" type="button" onClick={rejoin}>Rejoin</button>
     </StateCard>;
     if (terminal || finished) {
