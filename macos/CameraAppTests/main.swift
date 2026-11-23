@@ -434,14 +434,24 @@ do {
     check(!app.conversationCapture, "media teardown releases the lease")
     app.closeConversation()
     check(fixtureCamera.methods.contains("conversation_leave"), "closing native guest prejoin releases its seat via the owner pipe")
-    fixtureCamera.heldConversationMethods = [.openLink]
+    fixtureCamera.heldConversationMethods = [.openLink, .leave]
     app.openConversationInvitation(invitation)
     app.closeConversation()
+    let oldOpens = fixtureCamera.incomingInvitations.count
+    app.openConversationInvitation(invitation)
+    check(fixtureCamera.incomingInvitations.count == oldOpens, "reopening waits while the first admission reply is outstanding")
     let oldLeaves = fixtureCamera.methods.filter { $0 == "conversation_leave" }.count
     fixtureCamera.pendingConversation.removeValue(forKey: .openLink)?(fixtureCamera.conversationReply)
+    check(app.conversationSurface == nil && fixtureCamera.incomingInvitations.count == oldOpens &&
+          fixtureCamera.methods.filter { $0 == "conversation_leave" }.count == oldLeaves + 1,
+          "late redemption releases its seat before reopening the invitation")
     fixtureCamera.heldConversationMethods = []
-    check(app.conversationSurface == nil && fixtureCamera.methods.filter { $0 == "conversation_leave" }.count == oldLeaves + 1,
-          "late redemption after close releases the seat without reopening the panel")
+    fixtureCamera.pendingConversation.removeValue(forKey: .leave)?(["result": [:]])
+    let reopenDeadline = Date().addingTimeInterval(1)
+    while app.conversationSurface == nil && Date() < reopenDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    check(app.conversationSurface != nil && fixtureCamera.incomingInvitations.count == oldOpens + 1,
+          "the queued invitation reopens after late Leave succeeds")
+    app.closeConversation()
     fixtureCamera.conversationReply = ["result": [
         "page_url": "https://call.example.test/r/" + sampleRoomID,
         "invitation_url": "https://call.example.test/r/" + sampleRoomID + "#fixture",

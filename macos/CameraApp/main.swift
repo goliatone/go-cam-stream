@@ -56,7 +56,7 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         status.button?.imagePosition = .imageOnly
         status.menu = menus.status
         model.didChange = { [weak self] in self?.updateMenu() }
-        model.didExit = { [weak self] in if self?.quitting == true { NSApp.reply(toApplicationShouldTerminate: true) } }
+        model.didFinishQuit = { [weak self] in if self?.quitting == true { NSApp.reply(toApplicationShouldTerminate: true) } }
         hostPower = HostPowerMonitor(onSleep: { [model] acknowledge in
             model.prepareForSleep(acknowledge: acknowledge)
         }, onWake: { [model] in model.wakeFromSleep() })
@@ -141,6 +141,7 @@ final class CameraApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard window != nil else { return .terminateNow }
         quitting = true
         server.setVisible(false)
+        if model.hasBrowserCaptureLease { showWindow() }
         return model.quit() ? .terminateNow : .terminateLater
     }
 }

@@ -73,7 +73,11 @@ through real H.264/WebRTC. No camera is opened. The task downloads and verifies
 the pinned macOS go2rtc into `.cache/dev-tools`; FFmpeg must be on PATH
 (`brew install ffmpeg`) or selected with `CAMSTREAM_DEV_FFMPEG=/absolute/path/to/ffmpeg`.
 Use Go with CGO enabled and Xcode command-line tools for native socket inspection.
-The default binds `127.0.0.1:8081`.
+The web viewer and worker control bind to loopback. For Firefox playback, the
+bundled Mac configuration selects a private IPv4 from an active Wi-Fi or
+Ethernet interface for WebRTC media at startup, including in webcam mode.
+In the Mac app, choose **Open in Browser** on the **Server stream** card or in
+**Settings → Server** for the default `http://127.0.0.1:8081/` URL.
 The task renders the config to ignored `.cache/dev/config.yaml`, expanding its
 runtime path to this checkout's `.cache/dev/runtime`; no privileged directory is
 needed. Check startup with `curl http://127.0.0.1:8081/healthz`.
@@ -171,33 +175,34 @@ unchanged. The first patch from the current baseline is v0.1.4.
 
 ## Browser camera onboarding
 
-Camera managers can use **Add Camera → Test connection → Save Camera → Watch
-Camera** to register RTSP cameras without restarting the server. The form accepts
-manual settings or the Mac app's exact YAML/credentials export. A successful test
-requires decoded video and confirmed preview cleanup. Additions belong to their
-creator, and existing playback continues through Save.
+Camera managers can use **Add Camera → Continue → Check connection → Save
+camera → Watch now** to register RTSP cameras without restarting the server. The
+form accepts manual settings or the Mac app's exact YAML/credentials export;
+Continue starts the check for manual settings, and an imported export waits for
+**Check connection**. A successful check requires decoded video and confirmed
+preview cleanup. Additions belong to their creator, and existing playback
+continues through Save.
 
 The Mac companion requires credentials even for `rtsp://localhost:18556/macbook`.
-Open **Connection Details → Export Connection Files → Show Files in Finder**
-while capture runs, then use **Import Mac files** with both files in the web app.
+Open **Settings → Server → Export Connection Files → Show Files in Finder**
+while capture runs, then choose **Add Camera → Camstream Mac app** in the web
+app and add both files.
 For manual entry, use the username/password from the private `.env` file.
 Anonymous access receives RTSP `401 Unauthorized`;
 changing browsers or adding a STUN server does not supply camera credentials.
 
-For Firefox on the same Mac, start the development host with an explicit private
-media address (use your Mac's current private IPv4):
+To select a different media interface or use Firefox with a custom configuration,
+pass an explicit private IPv4 assigned to this Mac:
 
 ```sh
-./taskfile dev:serve 8087 --media-address 192.168.1.70
+./taskfile dev:serve --media-address 192.168.1.70
 ```
 
-Open `http://127.0.0.1:8087/`. Keep the camera RTSP address on localhost when the
-camera and server share the Mac. Only WebRTC media binds to the selected private
-interface and the configured media ports; HTTP and worker control stay loopback.
-The address must be assigned to this Mac; wildcard/public addresses are rejected.
-Omit the flag to retain the loopback-only default. The Firefox failure occurs
-between server and browser, separately from RTSP credentials; the loopback browser
-preference alone did not fix it. See [browser compatibility](docs/browser-client-compatibility.md).
+Keep the camera RTSP address on localhost when the camera and server share the Mac.
+Use `--media-address 127.0.0.1` to force loopback-only WebRTC. Custom development
+runs use loopback media unless you specify another address. The bundled
+configuration also uses loopback when no suitable private IPv4 is available.
+See [browser compatibility](docs/browser-client-compatibility.md).
 
 Enable exact manager principals and persistent private state in
 [management configuration](config/README.md#managed-camera-state). The tagged

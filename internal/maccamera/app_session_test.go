@@ -218,14 +218,65 @@ func TestAppSessionConversationListenerOutlivesCreateRequest(t *testing.T) {
 	if err := json.NewEncoder(probe.in).Encode(open); err != nil {
 		t.Fatal(err)
 	}
-	if reply := probe.receive(t); reply.Error != nil {
+	second := probe.receive(t)
+	if second.Error != nil {
 		t.Fatal("native leave retained the guest slot")
 	}
+	var admission api.NativeConversationPrejoin
+	encoded, err := json.Marshal(second.Result)
+	if err != nil || json.Unmarshal(encoded, &admission) != nil || admission.Admission.Role != api.RoomGuest {
+		t.Fatal("missing scoped prior guest admission")
+	}
+	replacement := testService(t)
+	if err := writeJSON(filepath.Join(replacement.Dir, "conversation-settings.json"), settings); err != nil {
+		t.Fatal(err)
+	}
+	retry := newSessionProbe(t, replacement, nil)
+	retry.receive(t)
+	if err := json.NewEncoder(retry.in).Encode(open); err != nil {
+		t.Fatal(err)
+	}
+	if reply := retry.receive(t); reply.Error == nil || reply.Error.Code != string(api.RoomFull) {
+		t.Fatal("the prior owner's admission did not hold the seat")
+	}
+	leave.GuestDeparture = &api.NativeGuestDeparture{PageURL: admission.PageURL, Token: admission.Admission.Token}
+	if err := json.NewEncoder(retry.in).Encode(leave); err != nil {
+		t.Fatal(err)
+	}
+	if reply := retry.receive(t); reply.Error != nil {
+		t.Fatal("replacement could not release the old scoped seat")
+	}
+	if err := json.NewEncoder(retry.in).Encode(open); err != nil {
+		t.Fatal(err)
+	}
+	if reply := retry.receive(t); reply.Error != nil {
+		t.Fatal("the recovered seat could not be redeemed")
+	}
+	_ = retry.in.Close()
+	retry.finished(t)
 	_ = probe.in.Close()
 	probe.finished(t)
-	if _, err := conversations.RedeemLoopbackLink(t.Context(), room.InvitationURL, []string{origin}); err != nil {
+	const lostToken = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"
+	if _, err := conversations.RedeemRecoverableLink(t.Context(), room.InvitationURL, []string{origin}, true, lostToken); err != nil {
 		t.Fatal("guest owner EOF retained the slot")
 	}
+	// Simulate a grant committed by the host whose reply never reached the
+	// native app. A fresh owner has only the invitation and chosen token.
+	lost := newSessionProbe(t, replacement, nil)
+	lost.receive(t)
+	cancelled := AppRequest{Version: 1, ID: "cancelled", Method: api.ConversationNativeLeave,
+		InvitationURL: room.InvitationURL, GuestToken: lostToken}
+	if err := json.NewEncoder(lost.in).Encode(cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if reply := lost.receive(t); reply.Error != nil || reply.ID != cancelled.ID {
+		t.Fatal("replacement could not release an admission whose reply was lost")
+	}
+	if _, err := conversations.RedeemLoopbackLink(t.Context(), room.InvitationURL, []string{origin}); err != nil {
+		t.Fatal("the cancelled admission retained the guest slot")
+	}
+	_ = lost.in.Close()
+	lost.finished(t)
 	if _, fault := a.dispatch(t.Context(), AppRequest{Method: api.ConversationNativeEnd, RoomID: room.Admission.Room.RoomID}); fault != nil {
 		t.Fatal("owner could not end the room")
 	}

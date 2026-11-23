@@ -9,7 +9,7 @@ struct Feedback: Equatable {
         case allowCamera, openCameraSettings, chooseWebcam, startCamera, retryHelper
         case openSetupGuide, showSettingsFolder, retryConversation, startNewConversation
         case checkConversationRoute, testLocalConversation, retryRelay, openInstallGuide
-        case reconnectCallConnector, retryConversationClose
+        case reconnectCallConnector, retryConversationClose, retryConversationInvitation
 
         var title: String {
             switch self {
@@ -28,6 +28,7 @@ struct Feedback: Equatable {
             case .openInstallGuide: return "Open Install Guide"
             case .reconnectCallConnector: return "Reconnect"
             case .retryConversationClose: return "Finish Closing Call"
+            case .retryConversationInvitation: return "Try Invitation Again"
             }
         }
     }
@@ -167,7 +168,8 @@ extension CameraModel {
             if notice.opening {
                 return Feedback(tone: .problem, title: host ? "Calls couldn't start" : "Couldn't join the conversation",
                                 message: notice.text,
-                                actions: host ? (canStartConversation ? [.retryConversation] : []) + [.openSetupGuide] : [])
+                                actions: host ? (canStartConversation ? [.retryConversation] : []) + [.openSetupGuide]
+                                    : (canRetryConversationInvitation ? [.retryConversationInvitation] : []))
             }
             return Feedback(tone: .problem, title: "The conversation stopped", message: notice.text,
                             actions: host && canStartConversation ? [.startNewConversation] : [])
@@ -208,6 +210,7 @@ extension CameraModel {
         case .showSettingsFolder: revealSettingsFolder()
         case .retryConversation, .retryRelay: retryConversation()
         case .retryConversationClose: retryConversationClose()
+        case .retryConversationInvitation: retryConversationInvitation()
         case .startNewConversation: startConversation()
         case .checkConversationRoute: checkConversationRoute()
         case .testLocalConversation: testConversationLocally()

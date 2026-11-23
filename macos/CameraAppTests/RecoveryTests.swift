@@ -202,13 +202,46 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         waitFor { firstAttempt != nil }
         check(firstAttempt == .some(nil) && !fresh.capture.releasedForCall, "the packaged helper denies a cold call-device lease while capture is locked")
         check(close(instance) == 0, "the simulated old supervisor releases its lock")
+
+        let contender = open(directory.appendingPathComponent("instance.lock").path, O_RDWR | O_CLOEXEC)
+        check(contender >= 0, "a competing supervisor can open the shared lock file")
+        var tookLockAfterProbe = false
+        let takeLockBeforeGrant = fresh.$capture.sink { state in
+            if state.releasedForCall && !tookLockAfterProbe {
+                tookLockAfterProbe = flock(contender, LOCK_EX | LOCK_NB) == 0
+            }
+        }
+        var racedAttempt: UUID??
+        fresh.requestConversationCapture(stop: {}) { racedAttempt = .some($0) }
+        waitFor { racedAttempt != nil }
+        takeLockBeforeGrant.cancel()
+        check(tookLockAfterProbe && racedAttempt == .some(nil), "another owner taking the lock after Stop prevents the first lease")
+        check(flock(contender, LOCK_UN) == 0, "the competing supervisor makes capture available again")
+
         fresh.requestConversationCapture(stop: {}) { lease = $0 }
         waitFor { lease != nil }
         check(fresh.capture.releasedForCall && lease != nil, "a fresh request grants the call lease after capture release")
+        fresh.releaseConversationCapture(UUID())
+        check(flock(contender, LOCK_EX | LOCK_NB) == -1 && errno == EWOULDBLOCK,
+              "a stale release cannot unlock the active call")
         if let lease { fresh.releaseConversationCapture(lease) }
-        _ = fresh.quit()
+        check(flock(contender, LOCK_EX | LOCK_NB) == 0, "ending the lease releases the shared lock")
+        fresh.requestConversationCapture(stop: {}) { lease = $0 }
+        check(lease == nil, "a subsequent call checks for a new capture owner even after confirmed release")
+        check(flock(contender, LOCK_UN) == 0, "the contender releases its second lock")
+        fresh.requestConversationCapture(stop: {}) { lease = $0 }
+        check(lease != nil, "a call can reserve the lock again")
+        var quitReplies = 0
+        fresh.didFinishQuit = { quitReplies += 1 }
+        check(!fresh.quit(), "Quit waits for helper exit and native media teardown")
         waitFor { freshExited }
-        check(freshExited, "the fresh packaged helper exits cleanly")
+        check(freshExited && flock(contender, LOCK_EX | LOCK_NB) == -1 && errno == EWOULDBLOCK,
+              "helper exit cannot unlock devices while native call teardown is pending")
+        check(quitReplies == 0 && !fresh.quit(), "Quit after helper exit still awaits native media teardown")
+        if let lease { fresh.releaseConversationCapture(lease) }
+        check(quitReplies == 1 && flock(contender, LOCK_EX | LOCK_NB) == 0,
+              "native media teardown releases capture and completes Quit once")
+        check(close(contender) == 0, "the competing capture probe exits")
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -329,8 +362,11 @@ func runRecoveryTests(conversations: [String: Any], check: (Bool, String) -> Voi
         helper.conversationReply = ["error": ["code": "room_full", "retryable": true]]
         model.openConversationInvitation(invitation)
         check(model.conversationFeedback?.title == "Couldn't join the conversation" &&
-              model.conversationFeedback?.message.contains("already has a guest") == true && model.conversationFeedback?.actions == [],
-              "a guest who cannot join is told why without a host action")
+              model.conversationFeedback?.message.contains("already has a guest") == true &&
+              model.conversationFeedback?.actions == [.retryConversationInvitation],
+              "a full room leaves the invitation available for explicit retry")
+        model.perform(.retryConversationInvitation)
+        check(helper.incomingInvitations == [invitation, invitation], "the retry action uses the same invitation")
     }
 
     do { // New helpers report each setup stage while a start is pending.

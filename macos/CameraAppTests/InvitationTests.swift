@@ -152,4 +152,186 @@ func runInvitationTests(conversations: [String: Any], check: (Bool, String) -> V
     repeated.wakeFromSleep()
     check(newSleepAcknowledged && repeated.conversationAvailable && repeated.sharing.shareBlockedReason != sleepPause,
           "the current sleep reply and wake restore Sharing and calls")
+
+    let departingHelper = FixtureSharingCamera()
+    departingHelper.conversationReply = prejoin("guest")
+    let departing = CameraModel(client: departingHelper, permissions: FixturePermissions(), directory: directory)
+    departing.launch()
+    defer { _ = departing.quit() }
+    departing.openConversationInvitation(newInvitation)
+    check(departing.conversationPrejoin?.admission.role == .guest, "the previous guest seat is open")
+    departingHelper.heldConversationMethods = [.leave]
+    departing.closeConversation()
+    departing.openConversationInvitation(newInvitation)
+    let leaveFailed = ["error": ["code": "media_unreachable"]]
+    departingHelper.pendingConversation.removeValue(forKey: .leave)?(leaveFailed)
+    let closeDeadline = Date().addingTimeInterval(1)
+    while !departing.canRetryConversationClose && Date() < closeDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(departingHelper.incomingInvitations == [newInvitation] && !departing.canStartConversation &&
+          departing.conversationFeedback?.actions == [.retryConversationClose],
+          "a failed Leave preserves the same-room invitation and offers cleanup retry")
+    departing.perform(.retryConversationClose)
+    check(departingHelper.pendingConversation[.leave] != nil && departingHelper.incomingInvitations == [newInvitation],
+          "retry sends Leave again before redeeming the queued link")
+    departingHelper.pendingConversation.removeValue(forKey: .leave)?(leaveFailed)
+    let retryDeadline = Date().addingTimeInterval(1)
+    while !departing.canRetryConversationClose && Date() < retryDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(departing.canRetryConversationClose && departingHelper.incomingInvitations == [newInvitation],
+          "another failed cleanup keeps the invitation queued")
+    departing.perform(.retryConversationClose)
+    departingHelper.pendingConversation.removeValue(forKey: .leave)?(["result": [:]])
+    let invitationDeadline = Date().addingTimeInterval(1)
+    while departing.conversationPrejoin == nil && Date() < invitationDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(departingHelper.incomingInvitations == [newInvitation, newInvitation] && departing.conversationPrejoin?.admission.role == .guest,
+          "successful cleanup redeems the queued link exactly once without reopening it")
+    departingHelper.heldConversationMethods = []
+
+    let endedHelper = FixtureSharingCamera()
+    endedHelper.conversationReply = prejoin("host")
+    let ended = CameraModel(client: endedHelper, permissions: FixturePermissions(), directory: directory, openBrowser: { _ in true })
+    ended.launch()
+    defer { _ = ended.quit() }
+    ended.startConversationInBrowser()
+    check(ended.hostInBrowser && ended.conversationCapture, "the browser host holds its device lease")
+    endedHelper.conversationReply = ["result": [:]]
+    endedHelper.browserCapturePending = true
+    ended.closeConversation()
+    check(ended.conversationCapture && !ended.canStartConversation && ended.browserCaptureNeedsConfirmation,
+          "End keeps the lease while the browser still owns capture")
+    endedHelper.browserCapturePending = false
+    let browserDeadline = Date().addingTimeInterval(4)
+    while ended.conversationCapture && Date() < browserDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    check(!ended.conversationCapture && ended.canStartConversation, "browser stop acknowledgement releases the lease")
+
+    endedHelper.conversationReply = prejoin("host")
+    ended.startConversationInBrowser()
+    endedHelper.onFailure?(.disconnected)
+    endedHelper.onExit?()
+    check(ended.conversationCapture && ended.browserCaptureNeedsConfirmation && !ended.quit(),
+          "owner loss and Quit keep the lease until the browser tab is closed")
+    var browserQuit = false
+    ended.didFinishQuit = { browserQuit = true }
+    ended.confirmBrowserCallClosed()
+    check(!ended.conversationCapture && browserQuit, "confirming the closed browser tab releases capture and completes Quit")
+
+    let sleepLeaveHelper = FixtureSharingCamera()
+    sleepLeaveHelper.conversationReply = prejoin("guest")
+    let sleepLeave = CameraModel(client: sleepLeaveHelper, permissions: FixturePermissions(), directory: directory)
+    sleepLeave.launch()
+    defer { _ = sleepLeave.quit() }
+    sleepLeave.openConversationInvitation(newInvitation)
+    sleepLeaveHelper.heldConversationMethods = [.leave]
+    sleepLeave.closeConversation()
+    sleepLeave.openConversationInvitation(newInvitation)
+    sleepLeaveHelper.pendingConversation.removeValue(forKey: .leave)?(leaveFailed)
+    let failedCloseDeadline = Date().addingTimeInterval(1)
+    while !sleepLeave.canRetryConversationClose && Date() < failedCloseDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    sleepLeave.prepareForSleep {}
+    sleepLeave.wakeFromSleep()
+    sleepLeaveHelper.pendingConversation.removeValue(forKey: .leave)?(leaveFailed)
+    let sleepExitDeadline = Date().addingTimeInterval(1)
+    while !sleepLeave.canRetryHelper && Date() < sleepExitDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    check(sleepLeave.canRetryHelper, "failed Leave during sleep has reaped the original helper")
+    sleepLeave.retryHelper()
+    check(sleepLeaveHelper.guestRecoveryRequests == 1 && sleepLeaveHelper.incomingInvitations == [newInvitation],
+          "replacement helper uses the original guest grant before submitting the queued invitation")
+    sleepLeaveHelper.pendingConversation.removeValue(forKey: .leave)?(leaveFailed)
+    let recoveryDeadline = Date().addingTimeInterval(1)
+    while !sleepLeave.canRetryConversationClose && Date() < recoveryDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    check(sleepLeave.canRetryConversationClose && sleepLeaveHelper.incomingInvitations == [newInvitation],
+          "a failed recovery still preserves the invitation after reconnect")
+    sleepLeave.retryConversationClose()
+    sleepLeaveHelper.heldConversationMethods = []
+    sleepLeaveHelper.pendingConversation.removeValue(forKey: .leave)?(["result": [:]])
+    let recoveredInviteDeadline = Date().addingTimeInterval(1)
+    while sleepLeave.conversationPrejoin == nil && Date() < recoveredInviteDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(sleepLeaveHelper.incomingInvitations == [newInvitation, newInvitation] && sleepLeave.conversationPrejoin != nil,
+          "recovered Leave opens the queued invitation once")
+
+    let lostAdmissionHelper = FixtureSharingCamera()
+    lostAdmissionHelper.guestAdmissionVersion = 1
+    lostAdmissionHelper.heldConversationMethods = [.openLink, .leave]
+    let lostAdmission = CameraModel(client: lostAdmissionHelper, permissions: FixturePermissions(), directory: directory)
+    lostAdmission.launch()
+    defer { _ = lostAdmission.quit() }
+    lostAdmission.openConversationInvitation(newInvitation)
+    let originalToken = lostAdmissionHelper.guestAdmissionTokens.first
+    check(originalToken?.utf8.count == 43, "the app has a scoped guest token before receiving the admission")
+    lostAdmission.closeConversation()
+    lostAdmission.openConversationInvitation(newInvitation)
+    lostAdmission.prepareForSleep {}
+    lostAdmission.wakeFromSleep()
+    lostAdmissionHelper.pendingConversation.removeValue(forKey: .openLink)
+    lostAdmissionHelper.onFailure?(.sleepInterrupted)
+    lostAdmissionHelper.onExit?()
+    lostAdmission.retryHelper()
+    let lostRecoveryDeadline = Date().addingTimeInterval(1)
+    while lostAdmissionHelper.recoveredGuestToken == nil && Date() < lostRecoveryDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(lostAdmissionHelper.recoveredGuestToken == originalToken && lostAdmissionHelper.recoveredGuestInvitation == newInvitation &&
+          lostAdmissionHelper.incomingInvitations == [newInvitation],
+          "replacement helper releases the cancelled attempt before reopening the link, even without the first admission reply")
+    lostAdmissionHelper.heldConversationMethods = []
+    lostAdmissionHelper.conversationReply = prejoin("guest")
+    lostAdmissionHelper.pendingConversation.removeValue(forKey: .leave)?(["result": [:]])
+    let lostInviteDeadline = Date().addingTimeInterval(1)
+    while lostAdmission.conversationPrejoin == nil && Date() < lostInviteDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    check(lostAdmission.conversationPrejoin != nil && lostAdmissionHelper.incomingInvitations == [newInvitation, newInvitation] &&
+          lostAdmissionHelper.guestAdmissionTokens.last != originalToken, "reopening uses a fresh grant after cleaning up the lost admission")
+
+    let browserHelper = FixtureSharingCamera()
+    browserHelper.conversationReply = prejoin("host")
+    let browser = CameraModel(client: browserHelper, permissions: FixturePermissions(), directory: directory, openBrowser: { _ in true })
+    browser.launch()
+    defer { _ = browser.quit() }
+    browser.startConversationInBrowser()
+    browserHelper.heldConversationMethods = [.status]
+    browserHelper.conversationReply = ["result": [:]]
+    browser.closeConversation()
+    let staleStatus = browserHelper.pendingConversation.removeValue(forKey: .status)
+    check(browser.browserCaptureNeedsConfirmation && staleStatus != nil, "manual release can overlap a pending browser status poll")
+    browser.confirmBrowserCallClosed()
+    browserHelper.conversationReply = prejoin("host")
+    browser.startConversationInBrowser()
+    browser.tick()
+    let currentStatus = browserHelper.pendingConversation.removeValue(forKey: .status)
+    var terminal = waiting
+    terminal["state"] = "ended"
+    staleStatus?(["result": terminal])
+    check(browser.hostInBrowser && browser.conversationCapture && currentStatus != nil,
+          "an old status reply cannot block the new lease's poll or release the new lease")
+    browserHelper.heldConversationMethods = []
+    currentStatus?(["result": terminal])
+    check(!browser.conversationCapture, "the current browser's terminal status releases its capture lease")
+
+    let quitHelper = FixtureSharingCamera()
+    quitHelper.conversationReply = prejoin("host")
+    let browserQuitModel = CameraModel(client: quitHelper, permissions: FixturePermissions(), directory: directory, openBrowser: { _ in true })
+    browserQuitModel.launch()
+    var quitObserved = false
+    browserQuitModel.didFinishQuit = { quitObserved = true }
+    browserQuitModel.startConversationInBrowser()
+    quitHelper.browserCapturePending = true
+    quitHelper.conversationReply = ["result": [:]]
+    check(!browserQuitModel.quit() && browserQuitModel.conversationCapture, "Quit waits for browser acknowledgement")
+    quitHelper.browserCapturePending = false
+    let modalDeadline = Date().addingTimeInterval(4)
+    while !quitObserved && Date() < modalDeadline {
+        RunLoop.current.run(mode: .modalPanel, before: min(modalDeadline, Date().addingTimeInterval(0.1)))
+    }
+    check(quitObserved && !browserQuitModel.conversationCapture && quitHelper.shutdowns == 1,
+          "the AppKit termination run-loop mode polls the acknowledgement and completes Quit")
 }

@@ -76,14 +76,34 @@ func parseNativeLink(raw string, trusted []string, loopback bool) (NativeLink, e
 }
 
 func RedeemNativeLink(ctx context.Context, raw string, trusted []string, client *http.Client) (api.NativeConversationPrejoin, error) {
-	return redeemNativeLink(ctx, raw, trusted, client, false)
+	return redeemNativeLink(ctx, raw, trusted, client, false, "")
 }
 
 func RedeemLoopbackLink(ctx context.Context, raw string, trusted []string) (api.NativeConversationPrejoin, error) {
-	return redeemNativeLink(ctx, raw, trusted, nil, true)
+	return redeemNativeLink(ctx, raw, trusted, nil, true, "")
 }
 
-func redeemNativeLink(ctx context.Context, raw string, trusted []string, client *http.Client, loopback bool) (api.NativeConversationPrejoin, error) {
+func RedeemRecoverableLink(ctx context.Context, raw string, trusted []string, loopback bool, token string) (api.NativeConversationPrejoin, error) {
+	value, err := redeemNativeLink(ctx, raw, trusted, nil, loopback, token)
+	if token != "" && err == Fault(api.RoomInvalidRequest) {
+		// Earlier room hosts reject the new field before taking a seat.
+		return redeemNativeLink(ctx, raw, trusted, nil, loopback, "")
+	}
+	return value, err
+}
+
+func ReleaseNativeAttempt(ctx context.Context, raw string, trusted []string, loopback bool, token string) error {
+	link, err := parseNativeLink(raw, trusted, loopback)
+	if err != nil {
+		return err
+	}
+	return ReleaseNativeSeat(ctx, api.NativeConversationPrejoin{
+		PageURL:   link.Origin + "/r/" + link.Room.RoomID,
+		Admission: api.RoomAdmission{Room: api.RoomView{RoomRef: link.Room}, Role: api.RoomGuest, Token: token},
+	})
+}
+
+func redeemNativeLink(ctx context.Context, raw string, trusted []string, client *http.Client, loopback bool, token string) (api.NativeConversationPrejoin, error) {
 	link, err := parseNativeLink(raw, trusted, loopback)
 	if err != nil {
 		return api.NativeConversationPrejoin{}, err
@@ -94,7 +114,7 @@ func redeemNativeLink(ctx context.Context, raw string, trusted []string, client 
 	strict := privateConversationClient(client)
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	input := api.RoomRedeemRequest{Version: api.ConversationVersion, Invitation: link.Invitation}
+	input := api.RoomRedeemRequest{Version: api.ConversationVersion, Invitation: link.Invitation, GuestToken: token}
 	body, err := json.Marshal(input)
 	if err != nil {
 		return api.NativeConversationPrejoin{}, Fault(api.RoomInvitationInvalid)
@@ -116,6 +136,10 @@ func redeemNativeLink(ctx context.Context, raw string, trusted []string, client 
 		var failure api.RoomErrorResponse
 		if decoder.Decode(&failure) == nil {
 			switch failure.Error.Code {
+			case api.RoomInvalidRequest:
+				if response.StatusCode == http.StatusBadRequest && decoder.Decode(new(any)) == io.EOF {
+					return api.NativeConversationPrejoin{}, Fault(api.RoomInvalidRequest)
+				}
 			case api.RoomFull, api.RoomInvitationInvalid, api.RoomAccessExpired, api.RoomAccessEnded,
 				api.RoomPermissionDenied, api.RoomIncompatibleClient:
 				return api.NativeConversationPrejoin{}, Fault(failure.Error.Code)
@@ -169,10 +193,23 @@ func ReleaseNativeSeat(ctx context.Context, guest api.NativeConversationPrejoin)
 		return Fault(api.RoomMediaUnreachable)
 	}
 	defer response.Body.Close()
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 16*1024))
 	switch response.StatusCode {
-	case http.StatusOK, http.StatusForbidden, http.StatusGone:
-		return nil
-	default:
-		return Fault(api.RoomMediaUnreachable)
+	case http.StatusOK:
+		var room api.RoomView
+		if decoder.Decode(&room) == nil && decoder.Decode(new(any)) == io.EOF && room.RoomRef == guest.Admission.Room.RoomRef &&
+			room.Version == api.ConversationVersion && room.Generation.Validate() == nil {
+			return nil
+		}
+	case http.StatusForbidden, http.StatusGone:
+		var failure api.RoomErrorResponse
+		if decoder.Decode(&failure) == nil && decoder.Decode(new(any)) == io.EOF {
+			code := failure.Error.Code
+			if (response.StatusCode == http.StatusForbidden && code == api.RoomPermissionDenied) ||
+				(response.StatusCode == http.StatusGone && (code == api.RoomAccessEnded || code == api.RoomAccessExpired)) {
+				return nil
+			}
+		}
 	}
+	return Fault(api.RoomMediaUnreachable)
 }

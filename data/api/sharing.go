@@ -331,13 +331,14 @@ type ShareSavedSettings struct {
 }
 
 type NativeShareReady struct {
-	Protocol      int `json:"protocol"`
-	Preview       int `json:"preview,omitempty"`
-	Audio         int `json:"audio,omitempty"`
-	Sharing       int `json:"sharing,omitempty"`
-	Conversations int `json:"conversations,omitempty"`
-	CallRecovery  int `json:"call_recovery,omitempty"`
-	CallConnector int `json:"call_connector,omitempty"`
+	Protocol       int `json:"protocol"`
+	Preview        int `json:"preview,omitempty"`
+	Audio          int `json:"audio,omitempty"`
+	Sharing        int `json:"sharing,omitempty"`
+	Conversations  int `json:"conversations,omitempty"`
+	CallRecovery   int `json:"call_recovery,omitempty"`
+	CallConnector  int `json:"call_connector,omitempty"`
+	GuestAdmission int `json:"guest_admission,omitempty"`
 }
 
 type NativeShareEvent[T any] struct {

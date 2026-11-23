@@ -95,6 +95,8 @@ type RoomView struct {
 	Generation   RoomGeneration        `json:"generation"`
 	ExpiresAt    time.Time             `json:"expires_at"`
 	Participants []RoomParticipantView `json:"participants"`
+	// Present only in the local owner's status projection.
+	BrowserCapturePending *bool `json:"browser_capture_pending,omitempty"`
 }
 
 type RoomError struct {
@@ -109,10 +111,12 @@ type RoomErrorResponse struct {
 type RoomRedeemRequest struct {
 	Version    int    `json:"version"`
 	Invitation string `json:"invitation"`
+	GuestToken string `json:"guest_token,omitempty"`
 }
 
 func (r RoomRedeemRequest) Validate() error {
-	if len(r.Invitation) > ShareInvitationMax || !compactInvitation.MatchString(r.Invitation) {
+	if len(r.Invitation) > ShareInvitationMax || !compactInvitation.MatchString(r.Invitation) ||
+		(r.GuestToken != "" && !ValidShareID(r.GuestToken)) {
 		return ErrInvalidConversationRequest
 	}
 	return nil
@@ -186,17 +190,27 @@ type RoomConnectionRequest struct {
 func (r RoomConnectionRequest) Validate() error { return r.Generation.Validate() }
 
 type NativeConversationRequest struct {
-	Version       int    `json:"version"`
-	ID            string `json:"id"`
-	Method        string `json:"method"`
-	RoomID        string `json:"room_id,omitempty"`
-	InvitationURL string `json:"invitation_url,omitempty"`
-	SetupProgress bool   `json:"setup_progress,omitempty"`
+	Version        int                   `json:"version"`
+	ID             string                `json:"id"`
+	Method         string                `json:"method"`
+	RoomID         string                `json:"room_id,omitempty"`
+	InvitationURL  string                `json:"invitation_url,omitempty"`
+	SetupProgress  bool                  `json:"setup_progress,omitempty"`
+	GuestDeparture *NativeGuestDeparture `json:"guest_departure,omitempty"`
+	GuestToken     string                `json:"guest_token,omitempty"`
+}
+
+type NativeGuestDeparture struct {
+	PageURL string `json:"page_url"`
+	Token   string `json:"token"`
 }
 
 func (r NativeConversationRequest) Validate() error {
 	if r.Version != 1 || len(r.ID) == 0 || len(r.ID) > 64 ||
-		(r.SetupProgress && r.Method != ConversationNativeCreate && r.Method != ConversationNativeLocal) {
+		(r.SetupProgress && r.Method != ConversationNativeCreate && r.Method != ConversationNativeLocal) ||
+		(r.GuestToken != "" && (!ValidShareID(r.GuestToken) || (r.Method != ConversationNativeOpen && r.Method != ConversationNativeLeave))) ||
+		(r.GuestDeparture != nil && (r.Method != ConversationNativeLeave ||
+			len(r.GuestDeparture.PageURL) == 0 || len(r.GuestDeparture.PageURL) > 2048 || !ValidShareID(r.GuestDeparture.Token))) {
 		return ErrInvalidConversationRequest
 	}
 	switch r.Method {
@@ -212,7 +226,15 @@ func (r NativeConversationRequest) Validate() error {
 		if r.RoomID == "" && r.InvitationURL != "" && len(r.InvitationURL) <= 8192 {
 			return nil
 		}
-	case ConversationNativeStatus, ConversationNativeEnd, ConversationNativeLeave, ConversationNativeCheckRoute:
+	case ConversationNativeLeave:
+		if r.GuestToken != "" {
+			if r.GuestDeparture == nil && r.RoomID == "" && r.InvitationURL != "" && len(r.InvitationURL) <= 8192 {
+				return nil
+			}
+		} else if r.InvitationURL == "" {
+			return (RoomRef{RoomID: r.RoomID}).Validate()
+		}
+	case ConversationNativeStatus, ConversationNativeEnd, ConversationNativeCheckRoute:
 		if r.InvitationURL == "" {
 			return (RoomRef{RoomID: r.RoomID}).Validate()
 		}

@@ -29,6 +29,7 @@ type Workflows interface {
 	End(context.Context, EndRoom) (api.RoomView, error)
 	Poll(context.Context, api.RoomRef) (api.RoomPoll, error)
 	HostView(context.Context, api.RoomRef) (api.RoomView, error)
+	BrowserCaptureStopped(context.Context, api.RoomRef) error
 }
 
 type Fault api.RoomErrorCode
@@ -187,8 +188,13 @@ func (s *Service) Redeem(_ context.Context, m RedeemRoom) (api.RoomAdmission, er
 	if r.guest != nil {
 		return api.RoomAdmission{}, Fault(api.RoomFull)
 	}
-	guest, token := newParticipant(now)
-	r.guest = guest
+	token := m.GuestToken
+	if token == "" {
+		token = handle()
+	} else if equalDigest(token, r.host.digest) {
+		return api.RoomAdmission{}, Fault(api.RoomInvalidRequest)
+	}
+	r.guest = &participant{digest: sha256.Sum256([]byte(token)), lastSeen: now}
 	return api.RoomAdmission{Room: r.view(), Role: api.RoomGuest, Token: token}, nil
 }
 
@@ -285,7 +291,10 @@ func (s *Service) OwnerStatus(ctx context.Context, ref api.RoomRef) (api.RoomVie
 		return api.RoomView{}, Fault(api.RoomInvitationInvalid)
 	}
 	r.refresh(s.options.Clock())
-	return r.view(), nil
+	view := r.view()
+	pending := r.browserCapturePending
+	view.BrowserCapturePending = &pending
+	return view, nil
 }
 
 func (s *Service) HostView(ctx context.Context, ref api.RoomRef) (api.RoomView, error) {
@@ -301,11 +310,33 @@ func (s *Service) HostView(ctx context.Context, ref api.RoomRef) (api.RoomView, 
 	if err := r.active(); err != nil {
 		return api.RoomView{}, err
 	}
+	// A single browser page can redeem the host handoff. Its later stop
+	// acknowledgement must account for every device opened by that handoff.
+	if r.browserHandoffUsed {
+		return api.RoomView{}, Fault(api.RoomPermissionDenied)
+	}
+	r.browserHandoffUsed = true
+	r.browserCapturePending = true
 	if !r.hostTracking {
 		r.hostTracking = true
 		host.lastSeen = s.options.Clock()
 	}
 	return r.view(), nil
+}
+
+func (s *Service) BrowserCaptureStopped(ctx context.Context, ref api.RoomRef) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, _, role, err := s.lookup(ctx, ref.RoomID)
+	if err != nil || role != api.RoomHost || !r.browserHandoffUsed {
+		return Fault(api.RoomPermissionDenied)
+	}
+	r.finish(api.RoomEnded)
+	r.browserCapturePending = false
+	return nil
 }
 
 func (s *Service) Close() {

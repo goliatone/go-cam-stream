@@ -25,6 +25,36 @@ export async function redeemHost({ room, token }: HostHandoff, signal: AbortSign
   return { role: "host", token, room: body };
 }
 
+// A permission prompt can finish after the call has closed. Wait for every
+// input operation to dispose of any late tracks before acknowledging stop.
+export class BrowserCaptureStop {
+  private readonly pending = new Set<Promise<unknown>>();
+  private stopping = false;
+
+  constructor(private readonly acknowledge: () => Promise<unknown>) {}
+
+  track<T>(operation: Promise<T>): Promise<T> {
+    this.pending.add(operation);
+    const remove = () => { this.pending.delete(operation); };
+    void operation.then(remove, remove);
+    return operation;
+  }
+
+  stopped() {
+    if (this.stopping) return;
+    this.stopping = true;
+    void Promise.allSettled(this.pending).then(this.acknowledge).catch(() => {});
+  }
+}
+
+export function acknowledgeBrowserStop({ room, token }: HostHandoff): Promise<Response> {
+  return fetch(`${CONVERSATION_API_PREFIX}/${room}/browser-stopped`, {
+    method: "POST", headers: { Authorization: "Bearer " + token }, keepalive: true,
+    credentials: "omit", mode: "same-origin", cache: "no-store", redirect: "error",
+    referrerPolicy: "origin", signal: AbortSignal.timeout(5000),
+  });
+}
+
 export function readInvitation(location: URL): Invitation | null {
   const room = location.pathname.slice(3);
   const token = location.hash.slice(1);

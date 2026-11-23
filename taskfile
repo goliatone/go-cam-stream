@@ -323,7 +323,8 @@ function dev:serve {
                 echo "Port defaults to the config listen port (bundled: 8081). Example: $0 dev:serve 8087"
                 echo "Mac bundled config: --webcam uses video device 0; --webcam=INDEX selects another. No audio."
                 echo "List camera indices with: $0 dev:webcams"
-                echo "Mac Firefox: --media-address IPv4 opts WebRTC media into one private local interface; HTTP/control stay loopback."
+                echo "Mac bundled config: WebRTC selects a private IPv4 automatically; HTTP/control stay loopback."
+                echo "Use --media-address IPv4 to select an address explicitly or 127.0.0.1 for loopback-only media."
                 return 0
                 ;;
             *) echo "Unknown dev:serve argument: $1" >&2; return 2 ;;
@@ -365,6 +366,9 @@ function dev:serve {
                 return 1
             }
             export CAMSTREAM_DEV_SOURCE_FFMPEG
+            if [ "${media_set}" = false ]; then
+                media_address="auto"
+            fi
             if [ -n "${webcam}" ]; then
                 export CAMSTREAM_DEV_WEBCAM_DEVICE="${webcam}"
                 echo "Webcam ${webcam} selected (video only). Allow Camera access for your launching app if macOS prompts."
@@ -392,7 +396,7 @@ NODE
         config="${SCRIPT_DIR}/.cache/dev/config.yaml"
     fi
     "${SCRIPT_DIR}/bin/camstream" config validate --config "${config}" || return "$?"
-    if [ -n "${media_address}" ]; then
+    if [ "${media_set}" = true ]; then
         echo "WebRTC media will bind ${media_address} on the configured media ports (TCP/UDP as configured). HTTP and worker control remain loopback."
     fi
     echo "Starting local development server..."

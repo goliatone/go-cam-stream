@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -77,6 +78,7 @@ type serviceSource struct {
 	fault                           ErrorCode
 	state                           StreamState
 	unknown, resetting, resetFailed bool
+	stale                           bool // unknown only because an observation is older than ObservationMaxAge
 }
 
 type serviceSession struct {
@@ -85,6 +87,7 @@ type serviceSession struct {
 	stream                     StreamID
 	state                      SessionState
 	reserved, pending, closing bool
+	stale                      bool // unknown because its last consistent observation is too old
 	cancel                     context.CancelFunc
 }
 
@@ -169,6 +172,9 @@ func (s *Service) createSession(ctx context.Context, camera Camera, stream Strea
 		return SessionState{}, NewError(CodeInvalidArgument, nil)
 	}
 	v, err := s.reserve(spec, camera.ID, stream, cancel, transient)
+	if errors.Is(err, errObservationStale) {
+		v, err = s.reserveObserved(ctx, spec, camera.ID, stream, cancel, transient)
+	}
 	if err != nil {
 		return SessionState{}, err
 	}
@@ -220,11 +226,8 @@ func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, can
 	if transient && existing == nil {
 		src.transient = camera
 	}
-	if src.fault != "" {
-		return nil, NewError(src.fault, nil)
-	}
-	if src.unknown || src.resetting {
-		return nil, NewError(CodeCleanupIncomplete, nil)
+	if err = src.admissionError(); err != nil {
+		return nil, err
 	}
 	if s.active >= s.options.MaxViewers || len(src.live) >= s.options.PerSourceViewers || len(s.sessions) >= s.options.MaxSessionRecords || s.sessions[id] != nil {
 		return nil, NewError(CodeCapacityExceeded, nil)
@@ -236,6 +239,54 @@ func (s *Service) reserve(spec StreamSpec, camera CameraID, stream StreamID, can
 	s.active++
 	s.devices[src.device] = src.key
 	return v, nil
+}
+
+// errObservationStale refuses a reservation only because the source's or a
+// viewer's latest observation is older than ObservationMaxAge. It never leaves
+// the package: createSession waits for a newer observation instead.
+var errObservationStale = errors.New("camstream: source observation is stale")
+
+// admissionError reports why the source's state refuses a new viewer, if it
+// does. Caller holds mu.
+func (src *serviceSource) admissionError() error {
+	switch {
+	case src.fault != "":
+		return NewError(src.fault, nil)
+	case src.resetting || src.resetFailed || src.unknown && !src.stale:
+		return NewError(CodeCleanupIncomplete, nil)
+	case src.unknown:
+		return errObservationStale
+	}
+	return nil
+}
+
+// reserveObserved retries a reservation refused for staleness alone. A backend
+// normally observes again within a poll or two, for example once an operation
+// that held the source ends, so a newcomer waits up to ObservationMaxAge for a
+// current observation rather than being refused for a state nothing has shown
+// to be wrong. It holds no reservation while waiting, and a stale state never
+// admits it. A source still unobserved after that wait is refused with the
+// retryable backend_unavailable, not cleanup_incomplete: no cleanup is in doubt.
+func (s *Service) reserveObserved(ctx context.Context, spec StreamSpec, camera CameraID, stream StreamID, cancel context.CancelFunc, transient bool) (*serviceSession, error) {
+	started := time.Now()
+	tick := time.NewTicker(s.options.PollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-s.runtime.Done():
+			return nil, NewError(CodeBackendUnavailable, nil)
+		case <-tick.C:
+		}
+		v, err := s.reserve(spec, camera, stream, cancel, transient)
+		if !errors.Is(err, errObservationStale) {
+			return v, err
+		}
+		if time.Since(started) >= s.options.ObservationMaxAge {
+			return nil, NewError(CodeBackendUnavailable, nil)
+		}
+	}
 }
 
 // Caller holds mu. The backend checks opaque concrete definitions in EnsureStream.

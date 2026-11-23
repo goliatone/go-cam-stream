@@ -7,7 +7,13 @@ struct CameraView: View {
     @ObservedObject var server: ServerMonitor
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 12) {
+            if model.browserCaptureNeedsConfirmation {
+                HStack {
+                    Text("Close the call tab in your browser to release the camera and microphone.")
+                    Button("Browser Tab Closed", action: model.confirmBrowserCallClosed)
+                }
+            }
             switch model.screen {
             case .camera:
                 ConsoleView(model: model, server: server)

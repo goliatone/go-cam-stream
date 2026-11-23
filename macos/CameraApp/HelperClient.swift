@@ -80,6 +80,7 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
     private(set) var conversationVersion = 0
     private(set) var callRecoveryVersion = 0
     private(set) var callConnectorVersion = 0
+    private(set) var guestAdmissionVersion = 0
     var idle: Bool { ready && current == nil && queue.isEmpty && !closing }
 
     init(responseTimeout: TimeInterval = 30, shutdownGrace: TimeInterval = 12, terminateGrace: TimeInterval = 3,
@@ -97,7 +98,7 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
         closing = false
         buffer.removeAll()
         previewVersion = 0; audioVersion = 0; sharingVersion = 0
-        conversationVersion = 0; callRecoveryVersion = 0; callConnectorVersion = 0
+        conversationVersion = 0; callRecoveryVersion = 0; callConnectorVersion = 0; guestAdmissionVersion = 0
         let task = Process(), stdinPipe = makeInputPipe(), stdoutPipe = Pipe()
         let writer = stdinPipe.fileHandleForWriting
         task.executableURL = executable
@@ -192,6 +193,25 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
     }
 
     func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?, completion: @escaping (Reply) -> Void) {
+        requestConversation(method, roomID: roomID, invitation: invitation, guestDeparture: nil, completion: completion)
+    }
+
+    func recoverGuestDeparture(_ guest: NativeGuestDeparture, roomID: String, completion: @escaping (Reply) -> Void) {
+        requestConversation(.leave, roomID: roomID, invitation: nil, guestDeparture: guest, completion: completion)
+    }
+
+    func requestGuestAdmission(_ invitation: String, token: String, completion: @escaping (Reply) -> Void) {
+        requestConversation(.openLink, roomID: nil, invitation: invitation, guestDeparture: nil, guestToken: token, completion: completion)
+    }
+
+    func recoverGuestAdmission(_ invitation: String, token: String, completion: @escaping (Reply) -> Void) {
+        guard guestAdmissionVersion == 1 else { completion(["error": ["code": "incompatible_client"]]); return }
+        requestConversation(.leave, roomID: nil, invitation: invitation, guestDeparture: nil, guestToken: token, completion: completion)
+    }
+
+    private func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?,
+                                     guestDeparture: NativeGuestDeparture?, guestToken: String? = nil,
+                                     completion: @escaping (Reply) -> Void) {
         guard ready, !closing, queue.count < 8, conversationVersion == 1 else {
             completion(["error": ["code": "incompatible_client"]])
             return
@@ -204,7 +224,8 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
         let id = "request-\(sequence)"
         let wantsProgress = callRecoveryVersion == 1 && (method == .create || method == .createLocal)
         let request = NativeConversationRequest(id: id, method: method, roomID: roomID, invitationURL: invitation,
-                                                setupProgress: wantsProgress ? true : nil)
+                                                setupProgress: wantsProgress ? true : nil, guestDeparture: guestDeparture,
+                                                guestToken: guestToken)
         guard let data = try? JSONEncoder().encode(request) else {
             completion(["error": ["code": "invitation_invalid"]])
             return
@@ -261,6 +282,7 @@ final class HelperClient: CameraHelper, SharingHelper, ConversationHelper {
                     conversationVersion = (reply["result"] as? Reply)?["conversations"] as? Int ?? 0
                     callRecoveryVersion = (reply["result"] as? Reply)?["call_recovery"] as? Int ?? 0
                     callConnectorVersion = (reply["result"] as? Reply)?["call_connector"] as? Int ?? 0
+                    guestAdmissionVersion = (reply["result"] as? Reply)?["guest_admission"] as? Int ?? 0
                     deadline?.cancel(); ready = true; onReady?()
                 } else if event == "session_error", !ready {
                     // Exit supplies the classification. Old helpers that only

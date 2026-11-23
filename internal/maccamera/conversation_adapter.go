@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net/url"
 	"path/filepath"
 
 	"github.com/goliatone/go-cam-stream/config"
@@ -48,13 +49,26 @@ func (a *appSession) dispatchConversation(ctx context.Context, request AppReques
 	case api.ConversationNativeConnector, api.ConversationNativeReconnect:
 		return a.dispatchCallConnector(ctx, request.Method == api.ConversationNativeReconnect)
 	case api.ConversationNativeOpen:
-		value, err := a.openConversationLink(ctx, request.InvitationURL)
+		if err := a.releaseConversationGuest(ctx, ""); err != nil {
+			return nil, conversationAppError(err)
+		}
+		value, err := a.openConversationLink(ctx, request.InvitationURL, request.GuestToken)
 		if err == nil {
-			_ = a.releaseConversationGuest(ctx, "")
 			a.conversationGuest = &value
 		}
 		return value, conversationAppError(err)
 	case api.ConversationNativeLeave:
+		if request.GuestToken != "" {
+			settings, setup, err := a.conversationSettings()
+			if err != nil {
+				return nil, conversationAppError(setupFault(setup, api.RoomPermissionDenied, err))
+			}
+			return nil, conversationAppError(conversations.ReleaseNativeAttempt(ctx, request.InvitationURL,
+				trustedConversationOrigins(settings), settings.Loopback, request.GuestToken))
+		}
+		if request.GuestDeparture != nil {
+			return nil, conversationAppError(a.releaseGuestFromPreviousOwner(ctx, request))
+		}
 		err := a.releaseConversationGuest(ctx, request.RoomID)
 		return nil, conversationAppError(err)
 	case api.ConversationNativeCreate, api.ConversationNativeLocal:
@@ -99,6 +113,31 @@ func (a *appSession) dispatchConversation(ctx context.Context, request AppReques
 		}
 	}
 	return nil, conversationAppError(conversations.Fault(api.RoomInvitationInvalid))
+}
+
+func (a *appSession) releaseGuestFromPreviousOwner(ctx context.Context, request AppRequest) error {
+	settings, setup, err := a.conversationSettings()
+	if err != nil {
+		return setupFault(setup, api.RoomPermissionDenied, err)
+	}
+	page, err := url.Parse(request.GuestDeparture.PageURL)
+	if err != nil {
+		return conversations.Fault(api.RoomInvitationInvalid)
+	}
+	origin, err := config.ConversationOrigin(page.Scheme+"://"+page.Host, settings.Loopback)
+	if err != nil {
+		return conversations.Fault(api.RoomPermissionDenied)
+	}
+	for _, candidate := range trustedConversationOrigins(settings) {
+		if trusted, err := config.ConversationOrigin(candidate, settings.Loopback); err == nil && origin == trusted {
+			return conversations.ReleaseNativeSeat(ctx, api.NativeConversationPrejoin{
+				PageURL: page.String(),
+				Admission: api.RoomAdmission{Role: api.RoomGuest, Token: request.GuestDeparture.Token,
+					Room: api.RoomView{RoomRef: api.RoomRef{RoomID: request.RoomID}}},
+			})
+		}
+	}
+	return conversations.Fault(api.RoomPermissionDenied)
 }
 
 func (a *appSession) dispatchCallConnector(ctx context.Context, reconnect bool) (any, *AppError) {
@@ -206,19 +245,19 @@ func (a *appSession) conversationSettings() (config.Conversations, api.Conversat
 	return settings, "", nil
 }
 
-func (a *appSession) openConversationLink(ctx context.Context, link string) (api.NativeConversationPrejoin, error) {
+func (a *appSession) openConversationLink(ctx context.Context, link, token string) (api.NativeConversationPrejoin, error) {
 	settings, setup, err := a.conversationSettings()
 	if err != nil {
 		return api.NativeConversationPrejoin{}, setupFault(setup, api.RoomPermissionDenied, err)
 	}
-	trusted := settings.TrustedOrigins
+	return conversations.RedeemRecoverableLink(ctx, link, trustedConversationOrigins(settings), settings.Loopback, token)
+}
+
+func trustedConversationOrigins(settings config.Conversations) []string {
 	if settings.Ingress.Mode == config.SharingIngressExternal {
-		trusted = append(trusted, settings.Ingress.PublicBaseURL)
+		return append(settings.TrustedOrigins, settings.Ingress.PublicBaseURL)
 	}
-	if settings.Loopback {
-		return conversations.RedeemLoopbackLink(ctx, link, trusted)
-	}
-	return conversations.RedeemNativeLink(ctx, link, trusted, nil)
+	return settings.TrustedOrigins
 }
 
 func (a *appSession) startConversationHost(ctx context.Context, local bool) (*conversationhost.Runtime, error) {

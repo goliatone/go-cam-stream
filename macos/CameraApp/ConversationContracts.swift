@@ -19,6 +19,8 @@ struct NativeConversationRequest: Encodable, CustomStringConvertible, CustomDebu
     var roomID: String?
     var invitationURL: String?
     var setupProgress: Bool? = nil
+    var guestDeparture: NativeGuestDeparture? = nil
+    var guestToken: String? = nil
 
     var description: String { "[conversation request redacted]" }
     var debugDescription: String { description }
@@ -28,6 +30,21 @@ struct NativeConversationRequest: Encodable, CustomStringConvertible, CustomDebu
         case roomID = "room_id"
         case invitationURL = "invitation_url"
         case setupProgress = "setup_progress"
+        case guestDeparture = "guest_departure"
+        case guestToken = "guest_token"
+    }
+}
+
+struct NativeGuestDeparture: Encodable, CustomStringConvertible, CustomDebugStringConvertible {
+    let pageURL: URL
+    let token: String
+
+    var description: String { "[guest departure redacted]" }
+    var debugDescription: String { description }
+
+    enum CodingKeys: String, CodingKey {
+        case pageURL = "page_url"
+        case token
     }
 }
 
@@ -55,11 +72,13 @@ struct ConversationRoomView: Codable, Equatable {
     let generation: UInt32
     let expiresAt: String
     let participants: [ConversationParticipant]
+    var browserCapturePending: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case roomID = "room_id"
         case version, state, generation, participants
         case expiresAt = "expires_at"
+        case browserCapturePending = "browser_capture_pending"
     }
 }
 
@@ -91,13 +110,27 @@ protocol ConversationHelper: AnyObject {
     var conversationVersion: Int { get }
     var callRecoveryVersion: Int { get }
     var callConnectorVersion: Int { get }
+    var guestAdmissionVersion: Int { get }
     func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?,
                              completion: @escaping ([String: Any]) -> Void)
+    func recoverGuestDeparture(_ guest: NativeGuestDeparture, roomID: String, completion: @escaping ([String: Any]) -> Void)
+    func requestGuestAdmission(_ invitation: String, token: String, completion: @escaping ([String: Any]) -> Void)
+    func recoverGuestAdmission(_ invitation: String, token: String, completion: @escaping ([String: Any]) -> Void)
 }
 
 extension ConversationHelper {
     var callRecoveryVersion: Int { 0 }
     var callConnectorVersion: Int { 0 }
+    var guestAdmissionVersion: Int { 0 }
+    func recoverGuestDeparture(_ guest: NativeGuestDeparture, roomID: String, completion: @escaping ([String: Any]) -> Void) {
+        requestConversation(.leave, roomID: roomID, invitation: nil, completion: completion)
+    }
+    func requestGuestAdmission(_ invitation: String, token: String, completion: @escaping ([String: Any]) -> Void) {
+        requestConversation(.openLink, roomID: nil, invitation: invitation, completion: completion)
+    }
+    func recoverGuestAdmission(_ invitation: String, token: String, completion: @escaping ([String: Any]) -> Void) {
+        completion(["error": ["code": "incompatible_client"]])
+    }
 }
 
 enum ConversationSetupStage: String {

@@ -397,15 +397,47 @@ func runSharingTests(repo: URL, check: @escaping (Bool, String) -> Void) throws 
         let camera = FixtureSharingCamera()
         camera.sharing.replies[.setup] = ["result": modes["core"]!]
         camera.sharing.replies[.status] = ["result": stoppedView]
-        camera.sharing.replies[.hostSleep] = ["error": ["code": "media_unreachable"]]
+        camera.sharing.hold = [.hostSleep]
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let app = CameraModel(client: camera, permissions: FixturePermissions(), directory: directory)
         app.launch()
         defer { _ = app.quit() }
-        var acknowledged = false
-        app.prepareForSleep { acknowledged = true }
-        check(acknowledged && !app.ready && !app.sharing.connected,
+        app.prepareForSleep {}
+        app.wakeFromSleep()
+        check(!app.canCreateShareLink && !app.sharing.canEditOptions, "wake keeps the combined Sharing action disabled until revocation finishes")
+        app.createShareLink()
+        check(!camera.methods.contains("start") && !camera.sharing.methods.contains(.create),
+              "attempting the combined action during wake cleanup cannot start only the camera")
+        camera.sharing.deliver(["result": [:]])
+        check(app.canCreateShareLink && !camera.methods.contains("start"), "cleanup restores the action without restarting capture")
+        app.createShareLink()
+        camera.status = ["state": "streaming", "frames": 3]
+        app.tick()
+        check(camera.methods.filter { $0 == "start" }.count == 1 && camera.sharing.methods.filter { $0 == .create }.count == 1,
+              "an explicit combined action after cleanup starts capture and requests a link")
+    }
+
+    do {
+        let camera = FixtureSharingCamera()
+        camera.sharing.replies[.setup] = ["result": modes["core"]!]
+        camera.sharing.replies[.status] = ["result": stoppedView]
+        camera.sharing.replies[.hostSleep] = ["error": ["code": "media_unreachable"]]
+        camera.defersExit = true
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let app = CameraModel(client: camera, permissions: FixturePermissions(), directory: directory)
+        app.launch()
+        defer { _ = app.quit() }
+        var firstAcknowledged = false, nextAcknowledged = false
+        app.prepareForSleep { firstAcknowledged = true }
+        check(!firstAcknowledged && camera.shutdowns == 1 && !app.ready && !app.sharing.connected,
               "a failed sleep command closes the owner and waits for its exit")
+        app.wakeFromSleep()
+        app.prepareForSleep { nextAcknowledged = true }
+        check(firstAcknowledged && !nextAcknowledged && camera.shutdowns == 1,
+              "the next sleep still waits for the already-closing helper")
+        camera.onExit?()
+        check(nextAcknowledged, "helper exit acknowledges the current sleep after revocation failed")
+        app.wakeFromSleep()
     }
 }
 

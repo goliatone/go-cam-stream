@@ -41,6 +41,9 @@ func newAPI(origin string, loopback bool, service conversations.Workflows, bus *
 		value, err := service.HostView(participant(r).Context(), roomRef(r))
 		project(w, value, err)
 	})
+	mux.HandleFunc("POST "+path+"/browser-stopped", func(w http.ResponseWriter, r *http.Request) {
+		project(w, struct{}{}, service.BrowserCaptureStopped(participant(r).Context(), roomRef(r)))
+	})
 	mux.HandleFunc("POST "+path+"/redeem", func(w http.ResponseWriter, r *http.Request) {
 		if !limit.Allow() {
 			w.Header().Set("Retry-After", "1")

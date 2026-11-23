@@ -19,15 +19,17 @@ type participant struct {
 }
 
 type room struct {
-	id           string
-	expiresAt    time.Time
-	inviteDigest [sha256.Size]byte
-	generation   api.RoomGeneration
-	host         *participant
-	hostTracking bool
-	guest        *participant
-	terminal     api.RoomState
-	relay        *RoomRelay
+	id                    string
+	expiresAt             time.Time
+	inviteDigest          [sha256.Size]byte
+	generation            api.RoomGeneration
+	host                  *participant
+	hostTracking          bool
+	browserHandoffUsed    bool
+	browserCapturePending bool
+	guest                 *participant
+	terminal              api.RoomState
+	relay                 *RoomRelay
 }
 
 // Room transactions run under Service.mu. The memory store keeps only live

@@ -24,6 +24,7 @@ class DevPortTests(unittest.TestCase):
         for name, body in {
             "camstream": 'printf "VALIDATE:%s\\n" "$*"',
             "camstream-dev": 'printf "PORT:%s\\nMEDIA:%s\\nARGS:%s\\n" "$CAMSTREAM_DEV_PORT" "$CAMSTREAM_DEV_MEDIA_ADDRESS" "$*"',
+            "ffmpeg": ":",
         }.items():
             path = self.root / "bin" / name
             path.write_text("#!/bin/bash\n" + body + "\n")
@@ -32,7 +33,8 @@ class DevPortTests(unittest.TestCase):
     def task(self, *args, platform="Linux"):
         return subprocess.run(
             ["bash", "-c", 'source "$1"; SCRIPT_DIR="$2"; shift 2; '
-             'uname() { echo "$TEST_PLATFORM"; }; go() { echo 1; }; dev:build() { echo BUILD; }; dev:serve "$@"',
+             'uname() { echo "$TEST_PLATFORM"; }; go() { echo 1; }; dev:build() { echo BUILD; }; '
+             'CAMSTREAM_DEV_FFMPEG="$SCRIPT_DIR/bin/ffmpeg"; dev:serve "$@"',
              "test", str(ROOT / "taskfile"), str(self.root), *args],
             cwd=self.root, text=True, capture_output=True,
             env={**os.environ, "CAMSTREAM_CONFIG": "", "CAMSTREAM_DEV_PORT": "9999", "CAMSTREAM_DEV_MEDIA_ADDRESS": "192.168.99.99", "TEST_PLATFORM": platform},
@@ -64,6 +66,22 @@ class DevPortTests(unittest.TestCase):
             self.assertIn("MEDIA:192.168.1.70\n", result.stdout)
             self.assertIn("HTTP and worker control remain loopback", result.stdout)
             self.assertEqual(self.custom.read_text(), "listen: 127.0.0.1:9000\n")
+
+    def test_mac_auto_media_applies_only_to_the_bundled_config(self):
+        for args, expected in [
+            ((), "auto"),
+            (("8087",), "auto"),
+            (("--config", str(self.custom)), ""),
+            (("--webcam",), "auto"),
+            (("--webcam=1",), "auto"),
+            (("--media-address=127.0.0.1",), "127.0.0.1"),
+            (("--webcam", "--media-address=127.0.0.1"), "127.0.0.1"),
+            (("--webcam=1", "--media-address", "192.168.1.70"), "192.168.1.70"),
+        ]:
+            with self.subTest(args=args):
+                result = self.task(*args, platform="Darwin")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"MEDIA:{expected}\n", result.stdout)
 
     def test_invalid_or_non_mac_media_address_fails_before_build(self):
         for args in [("--media-address",), ("--media-address=",),

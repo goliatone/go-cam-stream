@@ -29,6 +29,8 @@ type AppRequest struct {
 	RoomID            string                    `json:"room_id,omitempty"`
 	InvitationURL     string                    `json:"invitation_url,omitempty"`
 	SetupProgress     bool                      `json:"setup_progress,omitempty"`
+	GuestDeparture    *api.NativeGuestDeparture `json:"guest_departure,omitempty"`
+	GuestToken        string                    `json:"guest_token,omitempty"`
 }
 
 func (AppRequest) String() string   { return "[native app request redacted]" }
@@ -79,13 +81,13 @@ func decodeAppRequest(b []byte) (AppRequest, error) {
 	}
 	if strings.HasPrefix(r.Method, "conversation_") {
 		request := api.NativeConversationRequest{Version: r.Version, ID: r.ID, Method: r.Method,
-			RoomID: r.RoomID, InvitationURL: r.InvitationURL, SetupProgress: r.SetupProgress}
+			RoomID: r.RoomID, InvitationURL: r.InvitationURL, SetupProgress: r.SetupProgress, GuestDeparture: r.GuestDeparture, GuestToken: r.GuestToken}
 		if r.Config != nil || r.PreviewGeneration != "" || r.Sharing != nil || request.Validate() != nil {
 			return r, api.ErrInvalidConversationRequest
 		}
 		return r, nil
 	}
-	if r.RoomID != "" || r.InvitationURL != "" || r.SetupProgress {
+	if r.RoomID != "" || r.InvitationURL != "" || r.SetupProgress || r.GuestDeparture != nil || r.GuestToken != "" {
 		return r, errors.New("unexpected conversation payload")
 	}
 	if strings.HasPrefix(r.Method, "sharing_") {
@@ -177,7 +179,8 @@ func (a *appSession) serve(ctx context.Context, in io.ReadCloser) error {
 	defer func() { _ = a.releaseConversationGuest(context.WithoutCancel(ctx), "") }()
 	defer a.stopOwned()
 	requests := readRequests(ctx, in, cancel)
-	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion, CallRecovery: 1, CallConnector: 1}
+	ready := api.NativeShareReady{Protocol: 1, Preview: 1, Audio: 1, Conversations: api.ConversationVersion,
+		CallRecovery: 1, CallConnector: 1, GuestAdmission: 1}
 	var updates <-chan time.Time
 	if a.sharing != nil {
 		ready.Sharing = api.ShareNativeVersion

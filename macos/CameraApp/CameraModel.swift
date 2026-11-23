@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CryptoKit
+import Security
 
 final class CameraModel: ObservableObject {
     @Published var capture = CaptureState()
@@ -87,24 +88,58 @@ final class CameraModel: ObservableObject {
     @Published private(set) var browserRoom: ConversationRoomView?
     private var openingBrowserHost = false
     private var nextHostStatus = Date.distantPast
-    private var hostStatusPending = false
+    private var hostStatusRequest: UUID?
     private var nextRouteCheck = Date.distantPast
     private var nextConnectorCheck = Date.distantPast
     private var connectorStatusPending = false
-    private var browserCaptureLease: UUID?
+    private var browserCaptureLease: (id: UUID, roomID: String)?
+    @Published private(set) var browserCaptureNeedsConfirmation = false
+    var hasBrowserCaptureLease: Bool { browserCaptureLease != nil }
     private var conversationCloseWaiters: [(Bool) -> Void] = []
     private var closingAdmission: ((Bool) -> Void)?
-    private struct ConversationDeparture {
-        let roomID: String
-        let method: ConversationMethod
+    private var cancelledAdmission: ((ConversationDeparture?) -> Void)?
+    private var helperGeneration = 0
+    private var guestRecoveryAttempt: Int?
+    private struct GuestAdmissionAttempt {
+        let invitation: String
+        let token: String
 
-        init(_ prejoin: ConversationPrejoin) {
+        init?(invitation: String) {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
+            token = Data(bytes).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+            self.invitation = invitation
+        }
+    }
+    private var openingGuestAttempt: GuestAdmissionAttempt?
+    private struct ConversationDeparture {
+        let roomID: String?
+        let method: ConversationMethod
+        let guest: NativeGuestDeparture?
+        let attempt: GuestAdmissionAttempt?
+        let helperGeneration: Int
+        var isGuest: Bool { method == .leave }
+
+        init(_ prejoin: ConversationPrejoin, helperGeneration: Int) {
             roomID = prejoin.admission.room.roomID
             method = prejoin.admission.role == .host ? .end : .leave
+            guest = method == .leave ? NativeGuestDeparture(pageURL: prejoin.pageURL, token: prejoin.admission.token) : nil
+            attempt = nil
+            self.helperGeneration = helperGeneration
+        }
+
+        init(_ attempt: GuestAdmissionAttempt, helperGeneration: Int) {
+            roomID = nil
+            method = .leave
+            guest = nil
+            self.attempt = attempt
+            self.helperGeneration = helperGeneration
         }
     }
     @Published private var failedDeparture: ConversationDeparture?
     private var pendingConversationURL: String?
+    private var retryInvitationURL: String?
     private var openedInvitation: SHA256.Digest?
     private var invitationRevision = 0
     private var sleepRevision = 0
@@ -134,10 +169,13 @@ final class CameraModel: ObservableObject {
     private let openBrowser: (URL) -> Bool
     private var timer: Timer?
     private var quitting = false
+    private var quitReplyPending = false
+    private var quitShutdownStarted = false
     @Published private var exited = false
     private var loadedConfiguration = false
     var didChange: (() -> Void)?
     var didExit: (() -> Void)?
+    var didFinishQuit: (() -> Void)?
     // Separate from the diagnostic CLI/proof, stable across app replacements.
     let directory: URL
     init(client: CameraHelper = HelperClient(), permissions: CameraPermissions = SystemCameraPermissions(),
@@ -218,6 +256,7 @@ final class CameraModel: ObservableObject {
         current.unlock()
         conversationCapture = false
         changed()
+        advanceQuit()
     }
 
     func openConversationInvitation(_ value: String) {
@@ -236,13 +275,14 @@ final class CameraModel: ObservableObject {
         openedInvitation = nil
         conversationPrejoin = nil
         openingConversation = false
+        openingGuestAttempt = nil
         conversationProgress = nil
         conversationRouteReachable = true
         checkingConversationRoute = false
         nextRouteCheck = .distantPast
         hostInBrowser = false
         nextHostStatus = .distantPast
-        hostStatusPending = false
+        hostStatusRequest = nil
         callReport = nil
         browserRoom = nil
     }
@@ -335,8 +375,14 @@ final class CameraModel: ObservableObject {
     }
 
     private func redeemPendingConversation() {
-        guard canStartConversation,
-              let url = pendingConversationURL else { return }
+        guard let url = pendingConversationURL else { return }
+        if let departure = failedDeparture, departure.isGuest,
+           departure.helperGeneration != helperGeneration, guestRecoveryAttempt != helperGeneration, canRetryConversationClose {
+            guestRecoveryAttempt = helperGeneration
+            retryConversationClose()
+            return
+        }
+        guard canStartConversation else { return }
         pendingConversationURL = nil
         presentConversation(.openLink, invitation: url)
     }
@@ -354,9 +400,16 @@ final class CameraModel: ObservableObject {
         conversationRouteReachable && conversationPrejoin?.admission.role == .host && conversationPrejoin?.invitationURL != nil
     }
     var canStartConversation: Bool {
-        conversationAvailable && !openingConversation && !closingConversation && failedDeparture == nil && conversationPrejoin == nil
+        conversationAvailable && !openingConversation && !closingConversation && failedDeparture == nil &&
+            browserCaptureLease == nil && conversationPrejoin == nil
     }
     var canRetryConversationClose: Bool { conversationAvailable && !closingConversation && failedDeparture != nil }
+    var canRetryConversationInvitation: Bool { canStartConversation && retryInvitationURL != nil }
+
+    func retryConversationInvitation() {
+        guard canRetryConversationInvitation, let invitation = retryInvitationURL else { return }
+        openConversationInvitation(invitation)
+    }
 
     private enum HostStart { case muted, prejoin, browser }
     private var lastHostStart: (method: ConversationMethod, mode: HostStart) = (.create, .muted)
@@ -384,24 +437,35 @@ final class CameraModel: ObservableObject {
         conversationProgress = role == .host ? .listener : nil
         conversationNotice = nil
         conversationFault = nil
+        retryInvitationURL = nil
         invitationRevision += 1
         let revision = invitationRevision
-        helper.requestConversation(method, roomID: nil, invitation: invitation) { [weak self] reply in
-            guard let self else { return }
+        let generation = helperGeneration
+        let attempt = helper.guestAdmissionVersion == 1 ? invitation.flatMap(GuestAdmissionAttempt.init(invitation:)) : nil
+        openingGuestAttempt = attempt
+        let receive: ([String: Any]) -> Void = { [weak self] reply in
+            guard let self, self.helperGeneration == generation else { return }
             let prejoin: ConversationPrejoin? = self.decode(reply["result"])
+            let code = self.errorCode(reply)
             guard !self.quitting, self.invitationRevision == revision else {
-                if let prejoin { self.releaseAdmission(ConversationDeparture(prejoin)) { _ in } }
+                if let resolve = self.cancelledAdmission {
+                    self.cancelledAdmission = nil
+                    let uncertain = (code == "media_unreachable" || code == "incompatible_client") ? attempt : nil
+                    resolve(prejoin.map(self.departure(for:)) ?? uncertain.map { ConversationDeparture($0, helperGeneration: generation) })
+                } else if let prejoin { self.releaseAdmission(self.departure(for: prejoin)) { _ in } }
                 return
             }
             self.openingConversation = false
+            self.openingGuestAttempt = nil
             self.conversationProgress = nil
             guard let prejoin, prejoin.admission.role == role,
                   ConversationMediaSurface.validPage(prejoin.pageURL, room: prejoin.admission.room.roomID) else {
-                if let prejoin { self.releaseAdmission(ConversationDeparture(prejoin)) { _ in } }
+                if let prejoin { self.releaseAdmission(self.departure(for: prejoin)) { _ in } }
                 let fault: ConversationFault? = self.decode(reply["error"])
                 self.conversationFault = fault
+                if code == "room_full" { self.retryInvitationURL = invitation }
                 self.conversationNotice = ConversationNotice(
-                    text: Self.conversationProblem(code: fault?.code ?? self.errorCode(reply), setup: fault?.setup, role: role),
+                    text: Self.conversationProblem(code: fault?.code ?? code, setup: fault?.setup, role: role),
                     problem: true, role: role, opening: true)
                 return
             }
@@ -414,12 +478,14 @@ final class CameraModel: ObservableObject {
             case .browser: self.hostConversationInBrowser()
             }
         }
+        if let attempt { helper.requestGuestAdmission(attempt.invitation, token: attempt.token, completion: receive) }
+        else { helper.requestConversation(method, roomID: nil, invitation: invitation, completion: receive) }
     }
 
     func joinConversationHere() { showConversation(startMuted: false) }
 
     private func showConversation(startMuted: Bool) {
-        guard let prejoin = conversationPrejoin, conversationSurface == nil, !hostInBrowser else { return }
+        guard let prejoin = conversationPrejoin, conversationSurface == nil, !hostInBrowser, !openingBrowserHost else { return }
         let revision = invitationRevision
         conversationSurface = ConversationMediaSurface(prejoin: prejoin, camera: self, startMuted: startMuted) { [weak self] problem in
             guard let self, self.invitationRevision == revision else { return }
@@ -452,7 +518,7 @@ final class CameraModel: ObservableObject {
                 return
             }
             if self.openBrowser(browserURL) {
-                self.browserCaptureLease = lease
+                self.browserCaptureLease = (lease, prejoin.admission.room.roomID)
                 self.hostInBrowser = true
                 self.conversationNotice = nil
             } else {
@@ -465,6 +531,7 @@ final class CameraModel: ObservableObject {
 
     func closeConversation() {
         pendingConversationURL = nil
+        retryInvitationURL = nil
         closeActiveConversation()
     }
 
@@ -484,9 +551,26 @@ final class CameraModel: ObservableObject {
             completion(false)
             return
         }
-        helper.requestConversation(departure.method, roomID: departure.roomID, invitation: nil) {
-            completion($0["error"] == nil)
+        if let attempt = departure.attempt {
+            helper.recoverGuestAdmission(attempt.invitation, token: attempt.token) { completion($0["error"] == nil) }
+            return
         }
+        if departure.helperGeneration != helperGeneration {
+            if let guest = departure.guest, let room = departure.roomID {
+                helper.recoverGuestDeparture(guest, roomID: room) { completion($0["error"] == nil) }
+            } else { completion(true) }
+            return
+        }
+        helper.requestConversation(departure.method, roomID: departure.roomID, invitation: nil) {
+            let code = ($0["error"] as? [String: Any])?["code"] as? String
+            // End reports an invalid invitation when the owner no longer has
+            // that room. There is nothing left to end in that case.
+            completion($0["error"] == nil || (departure.method == .end && code == "invitation_invalid"))
+        }
+    }
+
+    private func departure(for prejoin: ConversationPrejoin) -> ConversationDeparture {
+        ConversationDeparture(prejoin, helperGeneration: helperGeneration)
     }
 
     private func closeConversation(completion: @escaping (Bool) -> Void) {
@@ -494,7 +578,10 @@ final class CameraModel: ObservableObject {
         guard !closingConversation else { return }
         closingConversation = true
         let surface = conversationSurface
-        let departure = conversationPrejoin.map(ConversationDeparture.init) ?? failedDeparture
+        var departure = conversationPrejoin.map(self.departure(for:)) ?? failedDeparture
+        let uncertain = openingGuestAttempt.map { ConversationDeparture($0, helperGeneration: helperGeneration) }
+        let awaitingAdmission = openingConversation && ready
+        if !awaitingAdmission && departure == nil { departure = uncertain }
         conversationSurface = nil
         clearConversationPrejoin()
 
@@ -504,32 +591,48 @@ final class CameraModel: ObservableObject {
             group.enter()
             surface.close { group.leave() }
         } else if browserCaptureLease == nil { conversationLease?.stop() }
-        if let departure {
+        if departure != nil || awaitingAdmission {
             group.enter()
             closingAdmission = { [weak self] success in
                 released = success
                 if let self {
-                    self.failedDeparture = !success && self.ready && !self.quitting ? departure : nil
+                    let unfinished = departure ?? uncertain
+                    self.failedDeparture = !success && !self.quitting && (self.ready || unfinished?.isGuest == true) ? unfinished : nil
                 }
                 group.leave()
             }
-            releaseAdmission(departure) { [weak self] success in self?.finishClosingAdmission(success) }
+            if let departure {
+                releaseAdmission(departure) { [weak self] success in self?.finishClosingAdmission(success) }
+            } else {
+                cancelledAdmission = { [weak self] lateDeparture in
+                    guard let self else { return }
+                    guard let lateDeparture else { self.finishClosingAdmission(true); return }
+                    departure = lateDeparture
+                    self.releaseAdmission(lateDeparture) { [weak self] success in self?.finishClosingAdmission(success) }
+                }
+            }
         }
         let finish = { [weak self] in
             guard let self else { return }
-            if released && self.ready { self.releaseBrowserCapture() }
+            if released && self.browserCaptureLease != nil {
+                self.browserCaptureNeedsConfirmation = true
+                self.nextHostStatus = .distantPast
+            }
             self.closingConversation = false
             let waiters = self.conversationCloseWaiters
             self.conversationCloseWaiters.removeAll()
             waiters.forEach { $0(released) }
             self.changed()
+            self.refreshBrowserHost()
             self.redeemPendingConversation()
+            self.advanceQuit()
         }
         if group.wait(timeout: .now()) == .success { finish() }
         else { group.notify(queue: .main, execute: finish) }
     }
 
     private func finishClosingAdmission(_ success: Bool) {
+        cancelledAdmission = nil
         let completion = closingAdmission
         closingAdmission = nil
         completion?(success)
@@ -538,27 +641,39 @@ final class CameraModel: ObservableObject {
     private func releaseBrowserCapture() {
         guard let lease = browserCaptureLease else { return }
         browserCaptureLease = nil
-        releaseConversationCapture(lease)
+        hostStatusRequest = nil
+        nextHostStatus = .distantPast
+        browserCaptureNeedsConfirmation = false
+        releaseConversationCapture(lease.id)
+        redeemPendingConversation()
+    }
+
+    func confirmBrowserCallClosed() {
+        guard browserCaptureNeedsConfirmation else { return }
+        releaseBrowserCapture()
     }
 
     private func refreshBrowserHost() {
-        guard hostInBrowser, !hostStatusPending, Date() >= nextHostStatus, ready,
-              let room = conversationPrejoin?.admission.room.roomID, let helper = client as? ConversationHelper else { return }
-        let revision = invitationRevision
+        guard let lease = browserCaptureLease, hostStatusRequest == nil, Date() >= nextHostStatus, ready,
+              let helper = client as? ConversationHelper else { return }
         nextHostStatus = Date().addingTimeInterval(2)
-        hostStatusPending = true
-        helper.requestConversation(.status, roomID: room, invitation: nil) { [weak self] reply in
-            guard let self, self.invitationRevision == revision else { return }
-            self.hostStatusPending = false
+        let request = UUID()
+        hostStatusRequest = request
+        helper.requestConversation(.status, roomID: lease.roomID, invitation: nil) { [weak self] reply in
+            guard let self, self.hostStatusRequest == request, self.browserCaptureLease?.id == lease.id else { return }
+            self.hostStatusRequest = nil
             let current: ConversationRoomView? = self.decode(reply["result"])
-            if let current, current.state != .ended, current.state != .expired, current != self.browserRoom {
+            if let current, self.hostInBrowser, current.state != .ended, current.state != .expired, current != self.browserRoom {
                 self.browserRoom = current
                 self.changed()
             }
             if current?.state == .ended || current?.state == .expired || self.errorCode(reply) == "invitation_invalid" {
-                self.releaseBrowserCapture()
-                self.clearConversationPrejoin()
-                self.conversationNotice = ConversationNotice(text: current?.state == .expired ? "The conversation expired." : "Conversation closed.")
+                if self.hostInBrowser {
+                    self.clearConversationPrejoin()
+                    self.conversationNotice = ConversationNotice(text: current?.state == .expired ? "The conversation expired." : "Conversation closed.")
+                }
+                if current?.browserCapturePending == false { self.releaseBrowserCapture() }
+                else { self.browserCaptureNeedsConfirmation = true }
             }
         }
     }
@@ -663,6 +778,7 @@ final class CameraModel: ObservableObject {
         if openingConversation { return "Wait for the conversation to open." }
         if closingConversation { return "Wait for the previous conversation to close." }
         if failedDeparture != nil { return "Finish closing the previous conversation first." }
+        if browserCaptureLease != nil { return "Close the previous browser call first." }
         if conversationPrejoin != nil { return "End the current conversation first." }
         return nil
     }
@@ -791,6 +907,7 @@ final class CameraModel: ObservableObject {
         refreshPermission()
         client.onReady = { [weak self] in
             guard let self, !self.quitting else { return }
+            self.helperGeneration += 1
             self.reconnectingHelper = false
             self.audioSupported = self.client.audioVersion == 1
             self.ready = true; self.working = true
@@ -828,12 +945,19 @@ final class CameraModel: ObservableObject {
         client.onExit = { [weak self] in
             guard let self = self else { return }
             self.ready = false; self.exited = true
-            self.releaseBrowserCapture()
+            self.hostStatusRequest = nil
+            self.finishClosingAdmission(false)
+            self.browserCaptureNeedsConfirmation = self.browserCaptureLease != nil
             self.acknowledgeSleep()
             self.changed(); self.didExit?()
+            self.advanceQuit()
         }
         client.launch(executable: helper, directory: directory)
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        // AppKit switches to this mode while waiting for a deferred Quit.
+        // The browser lease still needs status polling in that interval.
+        RunLoop.current.add(timer, forMode: .modalPanel)
+        self.timer = timer
     }
 
     func retryHelper() {
@@ -858,7 +982,7 @@ final class CameraModel: ObservableObject {
         if capture.active { capture.stopped() }
         capture.ownershipLost()
         sharing.disconnect()
-        failedDeparture = nil
+        if failedDeparture?.isGuest != true { failedDeparture = nil }
         finishClosingAdmission(false)
         closeActiveConversation()
         abandonCaptureRelease()
@@ -1108,14 +1232,40 @@ final class CameraModel: ObservableObject {
         notice = "RTSP address copied. The password is only in the exported .env file."
     }
     func quit() -> Bool {
-        quitting = true
-        syncPreview()
-        sharing.disconnect()
-        closeConversation()
+        if !quitting {
+            quitting = true
+            syncPreview()
+            sharing.disconnect()
+            pendingConversationURL = nil
+            closeConversation { [weak self] released in
+                guard let self, !released, self.browserCaptureLease != nil else { return }
+                self.shutdownForQuit()
+            }
+            capture.stop()
+            advanceQuit()
+        }
+        if canFinishQuit { return true }
+        quitReplyPending = true
+        return false
+    }
+
+    private var canFinishQuit: Bool { exited && !closingConversation && conversationLease == nil }
+
+    private func shutdownForQuit() {
+        guard !exited, !quitShutdownStarted else { return }
+        quitShutdownStarted = true
+        client.shutdown()
+    }
+
+    private func advanceQuit() {
+        guard quitting else { return }
+        if browserCaptureLease == nil { shutdownForQuit() }
+        guard canFinishQuit else { return }
         timer?.invalidate()
-        capture.stop()
-        if !exited { client.shutdown() }
-        return exited
+        if quitReplyPending {
+            quitReplyPending = false
+            didFinishQuit?()
+        }
     }
     func prepareForSleep(acknowledge: @escaping () -> Void) {
         hostSleeping = true
@@ -1131,14 +1281,13 @@ final class CameraModel: ObservableObject {
         // Close the owner pipe if the request stalls. The helper's exit then
         // acknowledges sleep after its owned sharing media has been reaped.
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
-        let pendingAdmission = openingConversation
         sharing.pauseForSleep()
         closeConversation { [weak self] released in
             guard let self, self.sleepRevision == revision, self.sleepAcknowledgement != nil else { return }
             // Disconnecting Sharing can precede the helper's actual exit.
             // Its onExit callback owns the acknowledgement during shutdown.
             guard !self.waitingForHelperExit else { return }
-            guard released, !pendingAdmission else { self.closeHelperForSleep(); return }
+            guard released else { self.closeHelperForSleep(); return }
             self.sharing.revokeForSleep { [weak self] revoked in
                 guard let self, self.sleepRevision == revision, self.sleepAcknowledgement != nil else { return }
                 if revoked { self.acknowledgeSleep() }
@@ -1173,9 +1322,9 @@ final class CameraModel: ObservableObject {
     }
 
     func tick() {
+        refreshBrowserHost()
         guard !quitting else { return }
         sharing.tick()
-        refreshBrowserHost()
         let phase = conversationActivity?.phase
         if client.idle, Date() >= nextRouteCheck, phase == .waiting || phase == .prejoin {
             checkConversationRoute()

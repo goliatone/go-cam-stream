@@ -52,6 +52,7 @@ type memoryBackend struct {
 	faults                                             map[cs.SourceKey]cs.ErrorCode
 	create                                             func(context.Context, cs.SessionSpec) error
 	closeFailure, sourceUnknown, sessionUnknown, stale bool
+	sessionStale                                       bool // only session observations are old
 	failedSource                                       cs.SourceKey
 	creates, closes, resets                            int
 	statuses                                           map[cs.SourceKey]int // StreamStatus calls
@@ -152,7 +153,7 @@ func (b *memoryBackend) SessionStatus(ctx context.Context, id cs.SessionID) (cs.
 	if b.sessionUnknown {
 		v.State, v.Resources = cs.StateUnknown, cs.PresenceUnknown
 	}
-	if b.stale {
+	if b.stale || b.sessionStale {
 		v.ObservedAt = time.Now().Add(-time.Hour)
 	}
 	return v, nil
@@ -209,7 +210,7 @@ func testService(t *testing.T, b *memoryBackend, options cs.ServiceOptions) *cs.
 	}
 	t.Cleanup(func() {
 		b.mu.Lock()
-		b.closeFailure, b.sourceUnknown, b.sessionUnknown, b.stale = false, false, false, false
+		b.closeFailure, b.sourceUnknown, b.sessionUnknown, b.stale, b.sessionStale = false, false, false, false, false
 		b.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

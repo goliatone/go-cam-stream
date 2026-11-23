@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
 import { render as renderNow } from "preact";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ConversationMediaUpdate } from "../services/conversation-media";
+import { captureConversation, type ConversationMediaUpdate } from "../services/conversation-media";
 import type { RoomAdmission, RoomView } from "../services/contracts";
 import { Conversation } from "./conversation";
 import { readInvitation } from "./invitation";
@@ -371,4 +371,23 @@ test("a browser host is told to share and restart from the Mac app", async () =>
   fireEvent.click(within(confirm).getByRole("button", { name: "End conversation" }));
   await screen.findByText("To talk again, start a new conversation in Camstream on your Mac.");
   expect(sessions.at(-1)!.leave).toHaveBeenCalledWith(true);
+});
+
+test("browser stop acknowledgement waits for a pending input to dispose of its late track", async () => {
+  const fetcher = vi.fn(async (_path: string) => new Response(JSON.stringify(waiting)));
+  vi.stubGlobal("fetch", fetcher);
+  const track = { kind: "video", readyState: "live", stop: vi.fn() };
+  let finishCapture!: (stream: MediaStream) => void;
+  vi.mocked(captureConversation).mockImplementationOnce(() => new Promise((resolve) => { finishCapture = resolve; }));
+  render(<Conversation invitation={null} native={undefined} host={{ room: roomID, token: "C".repeat(43) }} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Camera" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+  await waitFor(() => expect(finishCapture).toBeTypeOf("function"));
+  const acknowledgements = () => fetcher.mock.calls.filter(([path]) => path.endsWith("/browser-stopped")).length;
+  const before = acknowledgements();
+  report({ ...waiting, state: "ended" });
+  expect(acknowledgements()).toBe(before);
+  finishCapture({ getTracks: () => [track] } as unknown as MediaStream);
+  await waitFor(() => expect(acknowledgements()).toBe(before + 1));
+  expect(track.stop).toHaveBeenCalledOnce();
 });

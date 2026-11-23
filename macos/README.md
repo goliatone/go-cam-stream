@@ -743,13 +743,17 @@ queue overflow, EOF/read failure, signal or output failure ends the session.
 | `status` | `{state,url?,frames?,audio:{enabled,state,packets}}`; URL never contains credentials. Audio-on `streaming` requires video frames and actual audio packets. |
 | `stop` | Cancels and reaps capture owned by this session, then replies `stopped`. Does not stop another CLI owner's capture. |
 | `export` | Recreates private connection files while stopped or live, preserving capture and credentials; returns `{configuration,environment}` file paths, never their contents. |
-| `quit` | Same owned cleanup as stop, replies, then exits. Closing stdin may end the session before the queued reply; helper exit is the Quit completion boundary. |
+| `quit` | Same owned cleanup as stop, replies, then exits. Closing stdin may end the session before the queued reply. The Mac app waits for both helper exit and call media teardown before completing Quit. |
 
 On open, the helper emits `{"version":1,"event":"ready","result":{"protocol":1,"preview":1,"audio":1}}`.
 Unexpected capture exit emits `capture_stopped` with `state: stopped` and an
 optional classified error. No automatic restart. A second session using the same
 state directory emits `session_error` / `busy` and exits without disturbing the
 owner. The session lock lasts until owned cleanup finishes.
+
+The owner-only `conversation_status` reports `browser_capture_pending`. A browser handoff is single-use, and the browser acknowledges release after its tracks and pending device requests have stopped. The app keeps polling while AppKit waits for Quit.
+
+Helpers advertising `guest_admission: 1` accept a scoped `guest_token` with `conversation_open_link`. If the response is lost, `conversation_leave` can use the same `invitation_url` and `guest_token` to release the seat. After a failed Leave with a known admission, the replacement helper can also accept a `guest_departure` object containing the original `page_url` and `token`. Both recovery paths check the saved trusted origins. A legacy room host can still accept an Open without the client-supplied token.
 
 Errors are `{code,message}` with fixed messages: `invalid_request`, `busy`,
 `not_configured`, `configuration_failed`, `device_unavailable`, `capture_failed`,

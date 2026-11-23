@@ -53,6 +53,11 @@ observation and drain work so slow/failing cameras do not hold a global I/O lock
 Only failed cleanup is retried; the backend alone owns media health/retry deadlines.
 Source faults persist until explicit successful reset; failed reset remains blocked
 until a successful reset retry. Neither viewer retry nor polling clears faults.
+A source in unknown state refuses new viewers with `cleanup_incomplete`. When the
+only unknown is an observation, of the source or a viewer, older than the maximum
+observation age, a new viewer instead waits up to that age, within its negotiation
+deadline and holding no slot, for a current one, then joins or is refused with the
+retryable `backend_unavailable`.
 
 Defaults: 32 viewers total, 8 per source (across aliases), 16 source definitions,
 10,000 session records; 10 s negotiation, 5 s cleanup, 250 ms observation, 5 s maximum

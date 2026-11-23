@@ -30,9 +30,19 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
     var conversationVersion = 1
     var callRecoveryVersion = 1
     var callConnectorVersion = 0
+    var guestAdmissionVersion = 0
     var incomingInvitations: [String] = []
+    private(set) var guestAdmissionTokens: [String] = []
+    private(set) var recoveredGuestToken: String?
+    private(set) var recoveredGuestInvitation: String?
     var conversationReply: [String: Any] = [:]
+    var browserCapturePending: Bool? = false
+    private var hostedRoom: [String: Any]?
+    private var hostEnded = false
+    private(set) var guestRecoveryRequests = 0
     var launchFailure: HelperFailure?
+    var defersExit = false
+    private(set) var shutdowns = 0
     var heldConversationMethods: Set<ConversationMethod> = []
     var pendingConversation: [ConversationMethod: ([String: Any]) -> Void] = [:]
     var idle: Bool { true }
@@ -69,12 +79,45 @@ final class FixtureSharingCamera: CameraHelper, SharingHelper, ConversationHelpe
     func requestConversation(_ method: ConversationMethod, roomID: String?, invitation: String?, completion: @escaping ([String: Any]) -> Void) {
         methods.append(method.rawValue)
         if let invitation { incomingInvitations.append(invitation) }
+        let respond: ([String: Any]) -> Void = { [self] reply in
+            if method == .create || method == .createLocal,
+               let result = reply["result"] as? [String: Any], let admission = result["admission"] as? [String: Any] {
+                hostedRoom = admission["room"] as? [String: Any]
+                hostEnded = false
+            }
+            if method == .end, reply["error"] == nil { hostEnded = true }
+            if method == .status {
+                if var room = hostEnded ? hostedRoom : reply["result"] as? [String: Any] {
+                    if hostEnded { room["state"] = "ended" }
+                    room["browser_capture_pending"] = browserCapturePending
+                    completion(["result": room])
+                    return
+                }
+            }
+            completion(reply)
+        }
         if heldConversationMethods.contains(method) {
-            pendingConversation[method] = completion
+            pendingConversation[method] = respond
             return
         }
-        completion(conversationReply)
+        respond(conversationReply)
+    }
+    func recoverGuestDeparture(_ guest: NativeGuestDeparture, roomID: String, completion: @escaping ([String: Any]) -> Void) {
+        guestRecoveryRequests += 1
+        requestConversation(.leave, roomID: roomID, invitation: nil, completion: completion)
+    }
+    func requestGuestAdmission(_ invitation: String, token: String, completion: @escaping ([String: Any]) -> Void) {
+        guestAdmissionTokens.append(token)
+        requestConversation(.openLink, roomID: nil, invitation: invitation, completion: completion)
+    }
+    func recoverGuestAdmission(_ invitation: String, token: String, completion: @escaping ([String: Any]) -> Void) {
+        recoveredGuestToken = token
+        recoveredGuestInvitation = invitation
+        requestConversation(.leave, roomID: nil, invitation: nil, completion: completion)
     }
     func reserveCallCapture(in directory: URL) -> (() -> Void)? { {} }
-    func shutdown() { onExit?() }
+    func shutdown() {
+        shutdowns += 1
+        if !defersExit { onExit?() }
+    }
 }

@@ -161,7 +161,7 @@ func (s *Service) closeViewer(ctx context.Context, v *serviceSession) error {
 		if err := s.backend.CloseSession(ctx, v.state.ID); err != nil {
 			s.mu.Lock()
 			v.state.State, v.state.Resources = StateClosing, PresenceUnknown
-			v.source.unknown = true
+			v.stale, v.source.stale, v.source.unknown = false, false, true
 			s.mu.Unlock()
 			return NewError(CodeCleanupIncomplete, err)
 		}
@@ -207,10 +207,16 @@ func (s *Service) observeViewer(ctx context.Context, v *serviceSession) error {
 	}
 	state, err := s.backend.SessionStatus(ctx, v.state.ID)
 	s.mu.Lock()
-	if err != nil || state.ID != v.state.ID || state.SourceKey != v.source.key || !s.fresh(state.ObservedAt) {
+	consistent := err == nil && state.ID == v.state.ID && state.SourceKey == v.source.key
+	if !consistent || !s.fresh(state.ObservedAt) {
+		// A newer observation settles an old consistent one. It leaves the source
+		// unknown for staleness alone only if nothing else was already unknown.
+		v.stale = consistent
+		v.source.stale = consistent && (v.source.stale || !v.source.unknown)
 		v.state.State, v.state.Resources = StateUnknown, PresenceUnknown
 		v.source.unknown = true
 	} else {
+		v.stale = false
 		state.Answer = nil
 		v.state = state
 		if state.Resources == PresenceAbsent {
@@ -233,12 +239,8 @@ func (s *Service) observeSource(ctx context.Context, src *serviceSource) error {
 	if state.Fault != "" {
 		src.fault = DescribeError(NewError(state.Fault, nil)).Code
 	}
-	src.unknown = src.resetFailed || err != nil || state.Key != src.key || !s.fresh(state.ObservedAt) || !knownStreamState(state)
-	for _, v := range src.live {
-		if !v.pending && v.state.Resources != PresencePresent {
-			src.unknown = true
-		}
-	}
+	stale, other := s.unknownCauses(src, state, err)
+	src.unknown, src.stale = stale || other, stale && !other
 	src.state = copyStreamState(state)
 	src.state.Key, src.state.Fault = src.key, src.fault
 	if src.unknown {
@@ -249,6 +251,21 @@ func (s *Service) observeSource(ctx context.Context, src *serviceSource) error {
 		delete(s.devices, src.device)
 	}
 	return err
+}
+
+// unknownCauses reports whether the source's or a viewer's observation is too
+// old to trust (stale), and whether anything else leaves the source unknown
+// (other). Admission waits out staleness alone (see reserveObserved); any other
+// cause refuses at once. Caller holds mu.
+func (s *Service) unknownCauses(src *serviceSource, state StreamState, err error) (stale, other bool) {
+	stale = !s.fresh(state.ObservedAt)
+	other = src.resetFailed || err != nil || state.Key != src.key || !knownStreamState(state)
+	for _, v := range src.live {
+		if !v.pending && v.state.Resources != PresencePresent {
+			stale, other = stale || v.stale, other || !v.stale
+		}
+	}
+	return stale, other
 }
 
 func idleStream(state StreamState) bool {

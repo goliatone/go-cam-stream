@@ -61,11 +61,26 @@ func TestRoomHTTPUsesScopedTypedCommands(t *testing.T) {
 	request("GET", "", "", "Bearer "+guest.Token, "", http.StatusOK)
 	request("GET", "/host", "", "Bearer "+guest.Token, "", http.StatusForbidden)
 	request("GET", "/host", "", "Bearer "+created.Admission.Token, "", http.StatusOK)
+	request("GET", "/host", "", "Bearer "+created.Admission.Token, "", http.StatusForbidden)
+	request("POST", "/browser-stopped", origin, "Bearer "+guest.Token, "", http.StatusForbidden)
 	request("POST", "/end", origin, "Bearer "+guest.Token, "", http.StatusForbidden)
 	request("POST", "/leave", origin, "Bearer "+guest.Token, `{"generation":999}`, http.StatusOK)
 	request("POST", "/redeem", origin, "", string(body), http.StatusOK)
 	request("POST", "/leave", origin, "Bearer "+guest.Token, `{}`, http.StatusForbidden)
-	request("POST", "/end", origin, "Bearer "+created.Admission.Token, "", http.StatusOK)
+	owner := conversations.WithOwner(t.Context())
+	if _, err := s.End(owner, conversations.EndRoom{RoomRef: created.Admission.Room.RoomRef}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.OwnerStatus(owner, created.Admission.Room.RoomRef)
+	if err != nil || status.BrowserCapturePending == nil || !*status.BrowserCapturePending {
+		t.Fatal("End released the browser's capture reservation")
+	}
+	request("POST", "/browser-stopped", origin, "Bearer "+created.Admission.Token, "", http.StatusOK)
+	status, err = s.OwnerStatus(owner, created.Admission.Room.RoomRef)
+	if err != nil || status.BrowserCapturePending == nil || *status.BrowserCapturePending {
+		t.Fatal("authenticated browser stop did not clear the reservation")
+	}
+	request("POST", "/browser-stopped", origin, "Bearer "+created.Admission.Token, "", http.StatusOK)
 	request("POST", "/redeem", origin, "", string(body), http.StatusGone)
 }
 

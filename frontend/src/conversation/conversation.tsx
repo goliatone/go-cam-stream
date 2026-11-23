@@ -6,7 +6,7 @@ import { deviceLabel, type CallEnd, type CallPhase, type CallState, type Capture
 import { CallView, type CallActions, type CallModel, type CallPresence } from "./call-view";
 import { failureOf, inputKinds, type Choices, type InputErrors, type InputFailure, type Pending } from "./devices";
 import { Icon, type IconName } from "./icons";
-import { download, redeem, redeemHost, type HostHandoff, type Invitation } from "./invitation";
+import { acknowledgeBrowserStop, BrowserCaptureStop, download, redeem, redeemHost, type HostHandoff, type Invitation } from "./invitation";
 import { duration } from "./layout";
 import { Notices, type Toast } from "./overlays";
 import { Prejoin, type PrejoinActions, type PrejoinModel } from "./prejoin";
@@ -133,6 +133,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
   const [announcement, setAnnouncement] = useState("");
   const [page, setPage] = useState<HTMLDivElement | null>(null);
   const preview = useRef<MediaStream | null>(null);
+  const browserCapture = useRef<BrowserCaptureStop | null>(null);
   const session = useRef<ConversationMedia | null>(null);
   const lifetime = useRef(new AbortController());
   const operation = useRef(0);
@@ -200,6 +201,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
   function finish(reason: CallEnd = "closed") {
     operation.current++;
     releasePreview();
+    browserCapture.current?.stopped();
     session.current = null;
     setCallSeconds(connectedAt.current === null ? 0 : Math.max(0, Math.round((Date.now() - connectedAt.current) / 1000)));
     connectedAt.current = null;
@@ -247,8 +249,10 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
       setWorking(true);
       const incoming = native ? native.admission() : redeemHost(host!, abort.signal);
       void incoming.then((value) => {
+        if (host) browserCapture.current = new BrowserCaptureStop(() => acknowledgeBrowserStop(host));
         if (abort.signal.aborted || operation.current !== revision) {
           discardAdmission(value);
+          browserCapture.current?.stopped();
           return;
         }
         const endpoint = adopt(value);
@@ -265,6 +269,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
       operation.current++;
       stop(preview.current);
       void session.current?.leave();
+      browserCapture.current?.stopped();
     };
     const onPageHide = (event: PageTransitionEvent) => {
       onHide();
@@ -313,6 +318,7 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
 
   /** Asks the Mac app for the device lease after an explicit device action. */
   async function nativeRefusal(): Promise<CaptureRefusal | null> {
+    if (host && !browserCapture.current) return "unavailable";
     if (!native) return null;
     const granted = await native.capture().catch((): CaptureRefusal => "unavailable");
     return granted === true ? null : granted;
@@ -368,7 +374,8 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
     setError("");
     const revision = ++operation.current;
     try {
-      await previewInputs(revision, requests);
+      const opening = previewInputs(revision, requests);
+      await (browserCapture.current?.track(opening) ?? opening);
     } catch (failure) {
       if (operation.current === revision) setError(describe(failure));
     } finally { if (operation.current === revision) setWorking(false); }
@@ -396,7 +403,8 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
       if (!endpoint) return;
 
       if (requests.length) {
-        const stream = await previewInputs(revision, requests);
+        const opening = previewInputs(revision, requests);
+        const stream = await (browserCapture.current?.track(opening) ?? opening);
         if (stream && operation.current === revision) startMedia(endpoint, stream);
         return;
       }
@@ -450,7 +458,8 @@ export function Conversation({ invitation, native, host = null, initialBlocked =
       for (const { kind, device } of inputs) {
         if (operation.current !== revision) return;
         try {
-          const selected = await endpoint.selectInput(kind, device === "default" ? true : device);
+          const opening = endpoint.selectInput(kind, device === "default" ? true : device);
+          const selected = await (browserCapture.current?.track(opening) ?? opening);
           if (operation.current !== revision) return;
           if (!selected) throw new DOMException("No selected track", "NotFoundError");
           setDevice(kind, device);
